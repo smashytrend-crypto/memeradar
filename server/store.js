@@ -141,6 +141,8 @@ export class Store extends Emitter {
         t[k] = { ...t[k], ...cleanObj(v) };
       } else if (TEXT.has(k)) {
         const text = String(v).replace(INVISIBLE, '').trim();
+        // Keep the first image: sources disagree on URLs, and swapping them makes avatars flicker.
+        if (k === 'image' && t.image) continue;
         if (text) t[k] = text.slice(0, k === 'description' ? 600 : 300);
       } else if (k === 'createdAt') {
         if (v > 0 && (!t.createdAt || v < t.createdAt)) t.createdAt = v;

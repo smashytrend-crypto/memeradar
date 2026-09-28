@@ -168,14 +168,18 @@ function renderStats(s) {
 const SRC_LABEL = { pumpportal: 'pump.fun', dexscreener: 'DexScreener', jupiter: 'Jupiter', geckoterminal: 'Gecko', rugcheck: 'RugCheck', x: 'X', ai: 'AI' };
 function renderSources(src) {
   const el = $('#sources');
-  el.innerHTML = Object.entries(SRC_LABEL)
+  // Rebuild only when a source's state or message changes (not on every snapshot).
+  const html = Object.entries(SRC_LABEL)
     .map(([k, label]) => {
       const s = src[k] || { state: 'connecting', msg: 'oczekiwanie…' };
-      const when = s.at ? ` · ${fmt.ago(s.at)} temu` : '';
       return `<span class="src ${s.state}" tabindex="0"><i></i><span class="lbl">${label}</span>
-        <span class="tip"><b>${label}</b><br>${esc(s.msg || s.state)}${when}</span></span>`;
+        <span class="tip"><b>${label}</b><br>${esc(s.msg || s.state)}</span></span>`;
     })
     .join('');
+  if (el.dataset.html !== html) {
+    el.dataset.html = html;
+    el.innerHTML = html;
+  }
 }
 
 // ---------- podium ----------
@@ -291,7 +295,7 @@ function updateRow(entry, d, idx) {
   el.classList.toggle('live', !!d.live);
 
   // rank (+ movement vs. previous snapshot)
-  const shownRank = state.view === 'hype' ? d.rank || idx + 1 : idx + 1;
+  const shownRank = idx + 1; // position on screen (order refreshes every REORDER_MS)
   q.rankN.textContent = shownRank;
   const prevRank = state.prevRanks.get(d.m);
   if (state.view === 'hype' && prevRank && prevRank !== shownRank) {
@@ -332,9 +336,9 @@ function updateRow(entry, d, idx) {
     node.textContent = fmt.pct(v);
     node.className = `pct ${cls(v)}`;
   }
-  setText(q.mc, fmt.usd(d.mc), d.mc, p.mc);
+  setText(q.mc, fmt.usd(d.mc));
   setText(q.liq, fmt.usd(d.lq));
-  setText(q.vol, fmt.usd(d.v1), d.v1, p.v1);
+  setText(q.vol, fmt.usd(d.v1));
 
   // buy / sell pressure (5m, falls back to 1h when quiet)
   const use5 = d.b5 + d.s5 >= 6;
@@ -346,7 +350,7 @@ function updateRow(entry, d, idx) {
   q.bsNs.textContent = fmt.n(s);
   q.bsL.textContent = use5 ? '5m' : '1h';
 
-  setText(q.holdB, fmt.n(d.h), d.h, p.h);
+  setText(q.holdB, fmt.n(d.h));
   q.holdS.textContent = d.hg ? `${d.hg > 0 ? '+' : ''}${fmt.n(d.hg)}/h` : '';
   q.holdS.className = d.hg > 0 ? 'up' : d.hg < 0 ? 'down' : '';
   setText(q.x, d.x == null ? '—' : `${d.x}${d.xc ? '+' : ''}`, d.x, p.x);
@@ -360,14 +364,35 @@ function updateRow(entry, d, idx) {
   entry.data = d;
 }
 
+// Values refresh in place every snapshot; the row ORDER changes at most every REORDER_MS so the
+// list doesn't jump around under the reader's finger.
+const REORDER_MS = 15_000;
+
+function displayOrder(rows) {
+  const now = Date.now();
+  if (!state.order || state.firstSnapshot || now - (state.lastReorder || 0) >= REORDER_MS) {
+    state.lastReorder = now;
+    state.order = rows.map((d) => d.m);
+    return { list: rows, reordered: true };
+  }
+  const byMint = new Map(rows.map((d) => [d.m, d]));
+  const kept = state.order.filter((m) => byMint.has(m));
+  const keptSet = new Set(kept);
+  state.order = [...kept, ...rows.filter((d) => !keptSet.has(d.m)).map((d) => d.m)];
+  return { list: state.order.map((m) => byMint.get(m)), reordered: false };
+}
+
 function renderRows(rows) {
   const tbody = $('#rows');
+  const { list, reordered } = displayOrder(rows);
+  const current = [...tbody.children].map((el) => el.dataset.m);
+  const orderChanged = current.length !== list.length || list.some((d, i) => current[i] !== d.m);
+
   const before = new Map();
-  for (const [m, e] of state.rows) before.set(m, e.el.getBoundingClientRect().top);
+  if (orderChanged) for (const [m, e] of state.rows) before.set(m, e.el.getBoundingClientRect().top);
 
   const seen = new Set();
-  const frag = document.createDocumentFragment();
-  rows.forEach((d, idx) => {
+  list.forEach((d, idx) => {
     seen.add(d.m);
     let entry = state.rows.get(d.m);
     if (!entry) {
@@ -377,7 +402,6 @@ function renderRows(rows) {
       state.rows.set(d.m, entry);
     }
     updateRow(entry, d, idx);
-    frag.appendChild(entry.el);
   });
   for (const [m, e] of state.rows) {
     if (!seen.has(m)) {
@@ -385,22 +409,28 @@ function renderRows(rows) {
       state.rows.delete(m);
     }
   }
-  tbody.appendChild(frag);
 
-  // FLIP: animate rows from old to new position.
-  for (const [m, top] of before) {
-    const e = state.rows.get(m);
-    if (!e) continue;
-    const dy = top - e.el.getBoundingClientRect().top;
-    if (Math.abs(dy) > 2) {
-      e.el.animate([{ transform: `translateY(${dy}px)` }, { transform: 'none' }], { duration: 600, easing: 'cubic-bezier(.2,.8,.2,1)' });
+  if (orderChanged) {
+    // Only touch the DOM order when it really changed (re-inserting nodes restarts animations).
+    const frag = document.createDocumentFragment();
+    for (const d of list) frag.appendChild(state.rows.get(d.m).el);
+    tbody.appendChild(frag);
+    // FLIP: animate rows from old to new position.
+    for (const [m, top] of before) {
+      const e = state.rows.get(m);
+      if (!e) continue;
+      const dy = top - e.el.getBoundingClientRect().top;
+      if (Math.abs(dy) > 2) {
+        e.el.animate([{ transform: `translateY(${dy}px)` }, { transform: 'none' }], { duration: 600, easing: 'cubic-bezier(.2,.8,.2,1)' });
+      }
     }
   }
 
-  state.prevRanks = new Map(rows.map((d, i) => [d.m, state.view === 'hype' ? d.rank || i + 1 : i + 1]));
+  if (reordered) state.prevRanks = new Map(list.map((d, i) => [d.m, i + 1]));
   const empty = $('#empty');
-  empty.hidden = rows.length > 0;
-  if (!rows.length) empty.innerHTML = emptyText();
+  empty.hidden = list.length > 0;
+  if (!list.length) empty.innerHTML = emptyText();
+  return list;
 }
 
 function emptyText() {
@@ -443,8 +473,7 @@ function applySnapshot(snap) {
   if (snap.view === 'hype') $('#c-hype').textContent = fmt.n(snap.stats.ranked);
   if (state.paused || snap.view !== state.view) return;
   if (state.firstSnapshot) $('#rows').innerHTML = '';
-  renderPodium(snap.rows);
-  renderRows(snap.rows);
+  renderPodium(renderRows(snap.rows));
   state.firstSnapshot = false;
 }
 
@@ -613,6 +642,7 @@ async function openDetail(mint, push = true) {
   state.selected = mint;
   state.detail = null;
   state.chartTab = STATIC ? 'hype' : 'dex';
+  state.detailLayout = null;
   $('#drawer').classList.add('open');
   $('#drawer').setAttribute('aria-hidden', 'false');
   $('#scrim').hidden = false;
@@ -777,8 +807,10 @@ function renderDetail(d) {
   const hasPair = !!d.pair && !STATIC; // the preview frame cannot embed other sites
   const chartTab = hasPair ? state.chartTab : 'hype';
 
-  body.innerHTML = `
-    <div class="d-head">${avatar(d, 'xl')}
+  // Sections are rebuilt only when their HTML actually changes, and the chart card is never
+  // rebuilt on refresh — re-inserting the DexScreener iframe would reload the chart.
+  const sections = {
+    head: `<div class="d-head">${avatar(d, 'xl')}
       <div class="d-id"><h2>${esc(d.n || fmt.short(d.m))} <small>$${esc(d.s)}</small></h2>
         ${d.lp ? `<span class="chip ${d.lp === 'bonk' ? 'bonk' : 'pump'}" style="margin-left:6px">${esc(d.lp)}</span>` : ''}
         ${d.gr ? '<span class="chip grad" style="margin-left:4px">🎓 graduated</span>' : ''}
@@ -787,11 +819,9 @@ function renderDetail(d) {
       <button class="d-close" data-act="close" aria-label="Zamknij">✕</button>
     </div>
     <div class="d-ca-row"><span class="d-ca-lbl">Adres kontraktu</span><code id="caFull" class="d-ca-full">${esc(d.m)}</code><button class="d-ca-btn" data-act="copy">Kopiuj</button></div>
-    <div class="d-links">${links.map(([l, u, p]) => `<a href="${esc(u)}" target="_blank" rel="noopener"${p ? ' class="primary"' : ''}>${esc(l)} ↗</a>`).join('')}</div>
-
-    ${aiCard(d)}
-
-    <div class="d-grid">
+    <div class="d-links">${links.map(([l, u, p]) => `<a href="${esc(u)}" target="_blank" rel="noopener"${p ? ' class="primary"' : ''}>${esc(l)} ↗</a>`).join('')}</div>`,
+    ai: aiCard(d),
+    grid: `<div class="d-grid">
       <div class="card d-score" style="--heat:${h}">
         <div class="ring"><svg viewBox="0 0 70 70"><circle class="bg" cx="35" cy="35" r="30" fill="none" stroke-width="5"/>
           <circle class="fg" cx="35" cy="35" r="30" fill="none" stroke-width="5" stroke-dasharray="188.5" stroke-dashoffset="${188.5 * (1 - d.hs / 100)}"/></svg><b>${d.hs.toFixed(0)}</b></div>
@@ -799,33 +829,51 @@ function renderDetail(d) {
       </div>
       <div class="card"><h3>Składowe Hype Score <small>0–100</small></h3><div class="parts">${parts}
         ${pen ? `<div class="part pen"><span>Kara za ryzyko</span><div class="pb"><i style="width:${pen}%"></i></div><b>−${pen}%</b></div>` : ''}</div></div>
-    </div>
-
-    <div class="d-stack">
-      <div class="card"><h3>Wykres <span class="chart-tabs">
-          ${hasPair ? `<button data-chart="dex" class="${chartTab === 'dex' ? 'active' : ''}">Cena (DexScreener)</button>` : ''}
-          <button data-chart="hype" class="${chartTab === 'hype' ? 'active' : ''}">Hype i cena (radar)</button></span></h3>
-        <div class="chart-box" id="chartBox"></div></div>
-
-      <div class="card"><h3>Rynek</h3><div class="kv">${kv.map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join('')}</div>
+    </div>`,
+    market: `<div class="card"><h3>Rynek</h3><div class="kv">${kv.map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join('')}</div>
         ${ranks.length ? `<h3 style="margin-top:14px">Obecność na listach trendów</h3><div class="ranks">${ranks.map(([k, r]) => `<span class="chip">${esc(RANK_LABEL[k] || k)} · #${r}</span>`).join('')}</div>` : ''}
-      </div>
-
-      <div class="card"><h3>Bezpieczeństwo <small>${RISK_TXT[d.risk?.level] || ''}</small></h3><div class="flags">${flags}</div></div>
-
-      <div class="card"><h3>𝕏 — ostatnia godzina ${x?.lastPoll ? `<small>aktualizacja ${fmt.ago(x.lastPoll)} temu</small>` : ''}</h3>
+      </div>`,
+    risk: `<div class="card"><h3>Bezpieczeństwo <small>${RISK_TXT[d.risk?.level] || ''}</small></h3><div class="flags">${flags}</div></div>`,
+    x: `<div class="card"><h3>𝕏 — ostatnia godzina ${x?.lastPoll ? `<small>aktualizacja ${fmt.ago(x.lastPoll)} temu</small>` : ''}</h3>
         ${x ? `<div class="kv" style="margin-bottom:12px">
           <div><span>Wzmianki / 1h</span><b>${x.mentions1h}${x.capped ? '+' : ''}</b></div>
           <div><span>Unikalni autorzy</span><b>${fmt.n(x.authors)}</b></div>
           <div><span>Zaangażowanie</span><b>${fmt.n(x.engagement)}</b></div>
           <div><span>Zasięg (obs.)</span><b>${fmt.n(x.reach)}</b></div></div>` : ''}
-        <div class="tweets">${tweets}</div></div>
+        <div class="tweets">${tweets}</div></div>`,
+    trades: `<div class="card"><h3>Transakcje na żywo <small>strumień on-chain</small></h3>${trades}</div>`,
+    desc: d.description ? `<div class="card"><h3>Opis</h3><p class="desc">${esc(d.description)}</p></div>` : '',
+  };
 
-      <div class="card"><h3>Transakcje na żywo <small>strumień on-chain</small></h3>${trades}</div>
-      ${d.description ? `<div class="card"><h3>Opis</h3><p class="desc">${esc(d.description)}</p></div>` : ''}
+  const layoutKey = `${d.m}|${hasPair}`;
+  if (state.detailLayout !== layoutKey) {
+    // First render for this token (or its DEX pair just appeared): build the whole drawer.
+    state.detailLayout = layoutKey;
+    state.detailHtml = { ...sections };
+    state.chartHist = null;
+    const sec = (k) => `<div data-sec="${k}">${sections[k]}</div>`;
+    body.innerHTML = `${sec('head')}${sec('ai')}${sec('grid')}
+    <div class="d-stack">
+      <div class="card"><h3>Wykres <span class="chart-tabs">
+          ${hasPair ? `<button data-chart="dex" class="${chartTab === 'dex' ? 'active' : ''}">Cena (DexScreener)</button>` : ''}
+          <button data-chart="hype" class="${chartTab === 'hype' ? 'active' : ''}">Hype i cena (radar)</button></span></h3>
+        <div class="chart-box" id="chartBox"></div></div>
+      ${sec('market')}${sec('risk')}${sec('x')}${sec('trades')}${sec('desc')}
     </div>`;
+    renderChart(d, chartTab);
+    $('#drawer').scrollTop = 0;
+    return;
+  }
 
-  renderChart(d, chartTab);
+  for (const [k, html] of Object.entries(sections)) {
+    if (state.detailHtml[k] === html) continue;
+    state.detailHtml[k] = html;
+    const el = body.querySelector(`[data-sec="${k}"]`);
+    if (el) el.innerHTML = html;
+  }
+  // Our own hype/price chart redraws only when a new history point arrives; the DexScreener
+  // iframe is left alone and updates itself.
+  if (chartTab === 'hype') renderChart(d, 'hype');
   $('#drawer').scrollTop = scroll;
 }
 
@@ -899,6 +947,9 @@ function renderChart(d, tab) {
     return;
   }
   const hist = d.hist || [];
+  const histKey = `${d.m}|${hist.length}|${hist[hist.length - 1]?.[0]}`;
+  if (state.chartHist === histKey && box.querySelector('svg')) return; // nothing new to draw
+  state.chartHist = histKey;
   if (hist.length < 2) {
     box.innerHTML = '<div class="empty"><b>Zbieram historię…</b>Wykres pojawi się po ~1 minucie obserwacji.</div>';
     return;
