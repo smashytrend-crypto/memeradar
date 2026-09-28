@@ -260,7 +260,8 @@ function rowTemplate() {
     <div class="c-hold num hold"><b></b><small></small></div>
     <div class="c-x num"></div>
     <div class="c-risk"><div class="risk">${SHIELD}</div></div>
-    <div class="c-star"><button class="star" aria-label="Obserwuj">☆</button></div>`;
+    <div class="c-star"><button class="star" aria-label="Obserwuj">☆</button></div>
+    <div class="c-quick"></div>`;
   return el;
 }
 
@@ -287,7 +288,7 @@ function updateRow(entry, d, idx) {
     sub: $('.tok-sub', el), hs: $('.hype-n', el), hbar: $('.hype-bar i', el), sp: $('.sp-l', el), price: $('.c-price', el),
     c5: $('.c-5m .pct', el), c1: $('.c-1h .pct', el), c24: $('.c-24 .pct', el), mc: $('.c-mc', el), liq: $('.c-liq', el),
     vol: $('.c-vol', el), bsB: $('.bs-bar .b', el), bsS: $('.bs-bar .s', el), bsNb: $('.bs-n .up', el), bsNs: $('.bs-n .down', el),
-    bsL: $('.bs-n .lbl', el), holdB: $('.hold b', el), holdS: $('.hold small', el), x: $('.c-x', el), risk: $('.risk', el), star: $('.star', el),
+    bsL: $('.bs-n .lbl', el), quick: $('.c-quick', el), holdB: $('.hold b', el), holdS: $('.hold small', el), x: $('.c-x', el), risk: $('.risk', el), star: $('.star', el),
   });
 
   const h = heat(d.hs);
@@ -349,6 +350,17 @@ function updateRow(entry, d, idx) {
   q.bsNb.textContent = fmt.n(b);
   q.bsNs.textContent = fmt.n(s);
   q.bsL.textContent = use5 ? '5m' : '1h';
+
+  // Compact line under the token for narrow screens, where these columns don't fit.
+  const xPart = d.x != null
+    ? `<a class="q-x" href="https://x.com/search?q=${encodeURIComponent(d.m)}&f=live" target="_blank" rel="noopener">𝕏 ${d.x}${d.xc ? '+' : ''} postów/h</a>`
+    : `<a class="q-x" href="https://x.com/search?q=${encodeURIComponent(d.m)}&f=live" target="_blank" rel="noopener" title="Najnowsze posty z tym kontraktem na X">𝕏 ↗</a>`;
+  const quick = `<span class="q-b" title="Kupna (${use5 ? '5 min' : '1 h'})">▲ ${fmt.n(b)}</span><span class="q-s" title="Sprzedaże (${use5 ? '5 min' : '1 h'})">▼ ${fmt.n(s)}</span><span class="q-l">${use5 ? '5m' : '1h'}</span>`
+    + `<span class="q-kv"><i>MC</i> ${fmt.usd(d.mc)}</span><span class="q-kv"><i>Vol</i> ${fmt.usd(d.v1)}</span>${xPart}`;
+  if (entry.quick !== quick) {
+    q.quick.innerHTML = quick;
+    entry.quick = quick;
+  }
 
   setText(q.holdB, fmt.n(d.h));
   q.holdS.textContent = d.hg ? `${d.hg > 0 ? '+' : ''}${fmt.n(d.hg)}/h` : '';
@@ -1050,7 +1062,7 @@ $('#pauseBtn').addEventListener('click', togglePause);
 $('#rows').addEventListener('click', (e) => {
   const star = e.target.closest('.star');
   const row = e.target.closest('.row[data-m]');
-  if (!row) return;
+  if (!row || e.target.closest('a')) return; // links (e.g. 𝕏 search) open on their own
   if (star) {
     e.stopPropagation();
     toggleWatch(row.dataset.m);
