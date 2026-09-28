@@ -378,7 +378,7 @@ function updateRow(entry, d, idx) {
 
 // Values refresh in place every snapshot; the row ORDER changes at most every REORDER_MS so the
 // list doesn't jump around under the reader's finger.
-const REORDER_MS = 15_000;
+const REORDER_MS = 5_000;
 
 function displayOrder(rows) {
   const now = Date.now();

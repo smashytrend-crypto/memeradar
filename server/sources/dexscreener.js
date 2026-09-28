@@ -148,7 +148,8 @@ export function startDexScreener(store, config) {
       const batch = store.pickForRefresh('dex', 30, Date.now(), {
         // Fresh launches get refreshed every minute: without a paid PumpPortal key this is
         // where their live activity (txns / volume / curve progress) comes from.
-        intervals: { young: 60_000 },
+        // Top 100 every 5 s, the next 400 / active ones every 20 s (≈90 of the 300 req/min allowed).
+        intervals: { top: config.refreshTopMs ?? 5_000, hot: 20_000, young: 60_000 },
       });
       if (!batch.length) {
         await sleep(1000);
