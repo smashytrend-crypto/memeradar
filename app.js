@@ -411,10 +411,16 @@ function renderRows(rows) {
   }
 
   if (orderChanged) {
-    // Only touch the DOM order when it really changed (re-inserting nodes restarts animations).
-    const frag = document.createDocumentFragment();
-    for (const d of list) frag.appendChild(state.rows.get(d.m).el);
-    tbody.appendChild(frag);
+    // Move rows in place, one by one: never detach the whole list, or the page shrinks for a
+    // moment and the browser jumps the scroll position back to the top.
+    const scrollY = window.scrollY;
+    let ref = tbody.firstElementChild;
+    for (const d of list) {
+      const el = state.rows.get(d.m).el;
+      if (el === ref) ref = ref.nextElementSibling;
+      else tbody.insertBefore(el, ref);
+    }
+    if (window.scrollY !== scrollY) window.scrollTo(0, scrollY);
     // FLIP: animate rows from old to new position.
     for (const [m, top] of before) {
       const e = state.rows.get(m);
