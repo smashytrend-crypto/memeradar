@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>MemeRadar — hype memecoinów Solany na żywo</title>
+  <meta name="description" content="Najbardziej hypowane memecoiny Solany w czasie rzeczywistym: dane on-chain, DEX i X w jednym rankingu." />
+  <meta name="theme-color" content="#07090d" />
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="/" aria-label="MemeRadar">
+      <svg class="brand-logo" viewBox="0 0 32 32" aria-hidden="true">
+        <defs>
+          <linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#ff8a3d" /><stop offset="1" stop-color="#ff2d95" />
+          </linearGradient>
+        </defs>
+        <circle cx="16" cy="16" r="14" fill="none" stroke="url(#lg)" stroke-width="2" opacity=".5" />
+        <circle cx="16" cy="16" r="8" fill="none" stroke="url(#lg)" stroke-width="2" opacity=".8" />
+        <path class="sweep" d="M16 16 L16 2 A14 14 0 0 1 28.1 9 Z" fill="url(#lg)" opacity=".55" />
+        <circle cx="16" cy="16" r="2.6" fill="#fff" />
+      </svg>
+      <span class="brand-name">Meme<span>Radar</span></span>
+      <span class="live-badge" id="liveBadge"><i></i>LIVE</span>
+    </a>
+    <div class="stats" id="stats"></div>
+    <div class="sources" id="sources" aria-label="Status źródeł danych"></div>
+  </header>
+
+  <div class="demo-banner" id="demoBanner" hidden>
+    Tryb <b>DEMO</b> — dane są symulowane.<span> Uruchom <code>npm start</code> bez <code>DEMO=1</code>, aby czytać prawdziwe dane.</span>
+  </div>
+
+  <nav class="tabs" id="tabs" role="tablist">
+    <button role="tab" data-view="hype" class="active"><span class="ti">🔥</span>Hype<span class="tc" id="c-hype"></span></button>
+    <button role="tab" data-view="surge"><span class="ti">🚀</span>Wybicia wolumenu</button>
+    <button role="tab" data-view="new"><span class="ti">✨</span>Nowe</button>
+    <button role="tab" data-view="graduating"><span class="ti">⏳</span>Blisko graduacji</button>
+    <button role="tab" data-view="graduated"><span class="ti">🎓</span>Po graduacji</button>
+    <button role="tab" data-view="social"><span class="ti">𝕏</span>Social</button>
+    <button role="tab" data-view="watch"><span class="ti">★</span>Obserwowane<span class="tc" id="c-watch"></span></button>
+  </nav>
+
+  <section class="toolbar">
+    <div class="search">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+      <input id="search" type="search" placeholder="Szukaj nazwy, $symbolu lub adresu kontraktu…" autocomplete="off" spellcheck="false" />
+      <kbd>/</kbd>
+      <div class="search-results" id="searchResults" hidden></div>
+    </div>
+    <div class="filters">
+      <label class="sel"><span>MCap od</span>
+        <select id="fMcap">
+          <option value="0">dowolny</option><option value="10000">$10K</option><option value="50000">$50K</option>
+          <option value="100000">$100K</option><option value="500000">$500K</option><option value="1000000">$1M</option>
+          <option value="10000000">$10M</option>
+        </select>
+      </label>
+      <label class="sel"><span>Płynność od</span>
+        <select id="fLiq">
+          <option value="0">dowolna</option><option value="5000">$5K</option><option value="20000">$20K</option>
+          <option value="50000">$50K</option><option value="250000">$250K</option>
+        </select>
+      </label>
+      <label class="sel"><span>Wiek do</span>
+        <select id="fAge">
+          <option value="0">dowolny</option><option value="1">1 h</option><option value="6">6 h</option>
+          <option value="24">24 h</option><option value="72">3 dni</option><option value="168">7 dni</option>
+        </select>
+      </label>
+      <label class="toggle"><input type="checkbox" id="fSafe" /><i></i><span>Ukryj ryzykowne</span></label>
+      <button class="btn-ghost" id="pauseBtn" title="Zamroź tabelę (P)"><span class="pi">❚❚</span><span class="pl">Zamroź</span></button>
+    </div>
+  </section>
+
+  <main class="layout">
+    <section class="board">
+      <div class="podium" id="podium"></div>
+      <div class="table" id="table">
+        <div class="thead">
+          <div class="c-rank">#</div>
+          <div class="c-token">Token</div>
+          <div class="c-hype" title="Hype Score 0–100: aktywność, wolumen, presja kupna, cena, X, trendy, wzrost holderów, minus ryzyko">Hype</div>
+          <div class="c-price num">Cena</div>
+          <div class="c-ch c-5m num">5m</div>
+          <div class="c-ch c-1h num">1h</div>
+          <div class="c-ch c-24 num">24h</div>
+          <div class="c-mc num">MCap</div>
+          <div class="c-liq num">Płynność</div>
+          <div class="c-vol num">Wol. 1h</div>
+          <div class="c-bs">Kup / Sprzedaj</div>
+          <div class="c-hold num">Holderzy</div>
+          <div class="c-x num">𝕏 / 1h</div>
+          <div class="c-risk">Bezp.</div>
+          <div class="c-star"></div>
+        </div>
+        <div class="tbody" id="rows"></div>
+        <div class="empty" id="empty" hidden></div>
+      </div>
+    </section>
+
+    <aside class="feed">
+      <div class="feed-head">
+        <h2><i class="pulse"></i>Na żywo</h2>
+        <div class="chips" id="feedChips">
+          <button data-f="all" class="active">Wszystko</button>
+          <button data-f="launch">✨ Launche</button>
+          <button data-f="whale">🐋 Wieloryby</button>
+          <button data-f="migrate">🎓 Graduacje</button>
+          <button data-f="spike">🔥 Skoki</button>
+          <button data-f="surge">🚀 Wolumen</button>
+          <button data-f="x">𝕏</button>
+          <button data-f="ai">🤖 AI</button>
+        </div>
+      </div>
+      <ul class="feed-list" id="feed"></ul>
+    </aside>
+  </main>
+
+  <div class="scrim" id="scrim" hidden></div>
+  <aside class="drawer" id="drawer" aria-hidden="true">
+    <div class="drawer-inner" id="drawerBody"></div>
+  </aside>
+
+  <div class="toast" id="toast" role="status"></div>
+
+  <footer class="foot">
+    Dane: PumpPortal (on-chain), DexScreener, GeckoTerminal, Jupiter, RugCheck, X API. To nie jest porada inwestycyjna — memecoiny są skrajnie ryzykowne.
+  </footer>
+
+  <script type="module" src="boot.js"></script>
+</body>
+</html>
