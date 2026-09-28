@@ -493,6 +493,7 @@ export class Store extends Emitter {
       bo: t.boosts || 0,
       rank: this.rank.get(t.mint) || null,
       vs: m.surge || null,
+      fr: now - (t.enriched.dexAt || 0) < 120_000, // price freshly confirmed by DexScreener
       ai: t.ai?.result?.headline || null,
       live: now - t.lastActivity < 60_000,
     };

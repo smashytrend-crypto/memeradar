@@ -580,3 +580,12 @@ a { color: inherit; text-decoration: none; }
   .row .c-quick { gap: 3px 8px; font-size: 11px; }
   .q-x { padding: 1px 6px; }
 }
+
+/* "since you first saw it" chip: in the sub-line on wide screens, in the quick line on phones */
+.chip.seen { font-weight: 700; }
+@container board (max-width: 895px) {
+  .tok-sub .chip.seen { display: none; }
+  .c-quick .chip.seen { padding: 1px 7px; }
+}
+.c-quick > .chip.seen { display: none; }
+@container board (max-width: 895px) { .c-quick > .chip.seen { display: inline-flex; } }

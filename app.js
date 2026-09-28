@@ -137,6 +137,51 @@ function sparkPath(values, w, h, pad = 2) {
 const SHIELD = `<svg class="shield" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 3 4.5 6v5.5c0 4.6 3.1 8.4 7.5 9.5 4.4-1.1 7.5-4.9 7.5-9.5V6L12 3Z"/><path class="chk" d="m8.8 12.2 2.2 2.2 4.3-4.6"/></svg>`;
 const RISK_TXT = { ok: 'Brak istotnych flag', warn: 'Ostrzeżenia', danger: 'Wysokie ryzyko', unknown: 'Nie sprawdzono' };
 
+// ---------- "since you first saw it" ----------
+// Per-viewer baseline: the price when a token first appeared on this viewer's list, kept in
+// localStorage so it survives reloads. Old entries expire after 7 days.
+const SEEN_TTL = 7 * 86400e3;
+const seen = new Map(Object.entries(LS.get('seen', {})));
+let seenDirty = false;
+
+function seenBase(d) {
+  if (STATIC || !(d.p > 0)) return null;
+  let s = seen.get(d.m);
+  if (!s) {
+    // Only start from a price DexScreener just confirmed: early prices from other sources
+    // can differ and would fake a big move.
+    if (d.fr === false) return null;
+    s = { p: d.p, t: Date.now() };
+    seen.set(d.m, s);
+    seenDirty = true;
+  }
+  return s;
+}
+
+const fmtX = (r) => `${r >= 10 ? r.toFixed(0) : r >= 2 ? r.toFixed(1) : r.toFixed(2)}×`;
+
+/** e.g. "👁 12m +340% · 4.4×" — null until there is something worth showing. */
+function sinceSeen(d) {
+  const base = seenBase(d);
+  if (!base) return null;
+  const r = d.p / base.p;
+  const pct = (r - 1) * 100;
+  if (Date.now() - base.t < 60_000 && Math.abs(pct) < 0.5) return null;
+  return { r, pct, t: base.t, cls: cls(pct), text: `👁 ${fmt.ago(base.t)} ${fmt.pct(pct)} · ${fmtX(r)}` };
+}
+
+setInterval(() => {
+  if (!seenDirty) return;
+  seenDirty = false;
+  const now = Date.now();
+  for (const [m, s] of seen) if (now - s.t > SEEN_TTL) seen.delete(m);
+  if (seen.size > 3000) {
+    const oldest = [...seen.entries()].sort((a, b) => a[1].t - b[1].t).slice(0, seen.size - 3000);
+    for (const [m] of oldest) seen.delete(m);
+  }
+  LS.set('seen', Object.fromEntries(seen));
+}, 10_000);
+
 // ---------- header ----------
 function renderStats(s) {
   const items = [
@@ -314,7 +359,12 @@ function updateRow(entry, d, idx) {
 
   // sub line: age, launchpad / bonding curve, socials
   const chips = [];
+  const since = sinceSeen(d);
+  const sinceChip = since
+    ? `<span class="chip seen ${since.cls}" title="Od kiedy widzisz ten token na liście (${fmt.ago(since.t)} temu)">${since.text}</span>`
+    : '';
   if (d.ca) chips.push(`<span class="chip ${now - d.ca < 3600e3 ? 'new' : ''}">${fmt.ago(d.ca, now)}</span>`);
+  if (sinceChip) chips.push(sinceChip);
   if (d.bp != null) chips.push(`<span class="chip ${d.lp === 'bonk' ? 'bonk' : 'pump'}">${d.lp === 'bonk' ? 'bonk' : 'pump'}</span><span class="bc"><span class="bc-bar"><i style="width:${d.bp}%"></i></span>${d.bp.toFixed(0)}%</span>`);
   else if (d.gr) chips.push('<span class="chip grad">🎓 DEX</span>');
   if (d.vs >= 2) chips.push(`<span class="chip surge" title="Wolumen 5 min względem własnej średniej">🚀 ${d.vs.toFixed(1)}×</span>`);
@@ -355,7 +405,7 @@ function updateRow(entry, d, idx) {
   const xPart = d.x != null
     ? `<a class="q-x" href="https://x.com/search?q=${encodeURIComponent(d.m)}&f=live" target="_blank" rel="noopener">𝕏 ${d.x}${d.xc ? '+' : ''} postów/h</a>`
     : `<a class="q-x" href="https://x.com/search?q=${encodeURIComponent(d.m)}&f=live" target="_blank" rel="noopener" title="Najnowsze posty z tym kontraktem na X">𝕏 ↗</a>`;
-  const quick = `<span class="q-b" title="Kupna (${use5 ? '5 min' : '1 h'})">▲ ${fmt.n(b)}</span><span class="q-s" title="Sprzedaże (${use5 ? '5 min' : '1 h'})">▼ ${fmt.n(s)}</span><span class="q-l">${use5 ? '5m' : '1h'}</span>`
+  const quick = sinceChip + `<span class="q-b" title="Kupna (${use5 ? '5 min' : '1 h'})">▲ ${fmt.n(b)}</span><span class="q-s" title="Sprzedaże (${use5 ? '5 min' : '1 h'})">▼ ${fmt.n(s)}</span><span class="q-l">${use5 ? '5m' : '1h'}</span>`
     + `<span class="q-kv"><i>MC</i> ${fmt.usd(d.mc)}</span><span class="q-kv"><i>Vol</i> ${fmt.usd(d.v1)}</span>${xPart}`;
   if (entry.quick !== quick) {
     q.quick.innerHTML = quick;
@@ -788,6 +838,10 @@ function renderDetail(d) {
     ['Kupno/sprz. 1h', `<span class="up">${fmt.n(d.b1)}</span> / <span class="down">${fmt.n(d.s1)}</span>`],
     ['Holderzy', `${fmt.n(d.h)} ${d.hg ? `<small class="${d.hg > 0 ? 'up' : 'down'}">${d.hg > 0 ? '+' : ''}${fmt.n(d.hg)}/h</small>` : ''}`],
     ['Wiek', d.ca ? fmt.ago(d.ca) : '—'],
+    (() => {
+      const s = sinceSeen(d);
+      return ['Od kiedy go widzisz', s ? `<span class="${s.cls}">${fmt.pct(s.pct)} · ${fmtX(s.r)}</span> <small class="muted">${fmt.ago(s.t)}</small>` : '—'];
+    })(),
     ['Zmiana 5m', `<span class="${cls(d.c5)}">${fmt.pct(d.c5)}</span>`],
     ['Zmiana 1h', `<span class="${cls(d.c1)}">${fmt.pct(d.c1)}</span>`],
     ['Zmiana 6h', `<span class="${cls(d.c6)}">${fmt.pct(d.c6)}</span>`],
