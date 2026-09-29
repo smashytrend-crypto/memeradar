@@ -134,6 +134,107 @@ function sparkPath(values, w, h, pad = 2) {
   return { line, area: `${line}L${w},${h}L0,${h}Z` };
 }
 
+// ---------- mini price charts ----------
+const MIN_MS = 60e3;
+
+/**
+ * Price points for a token's mini chart, oldest first, as [ageMs, price]. DexScreener's % changes
+ * give where the price was 24 h / 6 h / 1 h / 5 min ago (so a full chart shows immediately), and
+ * our own samples (every ~15 s) fill in the last minutes. For a market younger than a window, that
+ * window's change is taken as "since the pool opened".
+ */
+function priceSeries(d) {
+  if (!(d.p > 0)) return [];
+  const now = nowTs();
+  const age = Math.max(MIN_MS, now - (d.ma || d.ca || now - 86400e3));
+  const pts = [];
+  let origin = false;
+  for (const [win, ch] of [[86400e3, d.c24], [6 * 3600e3, d.c6], [3600e3, d.c1], [300e3, d.c5]]) {
+    if (ch == null || !Number.isFinite(ch) || ch <= -100) continue;
+    const p = d.p / (1 + ch / 100);
+    if (!(p > 0)) continue;
+    if (age >= win) pts.push([win, p]);
+    else if (!origin) {
+      pts.push([age, p]);
+      origin = true;
+    }
+  }
+  const ph = (d.ph || []).filter((v) => v > 0);
+  ph.forEach((v, i) => pts.push([(ph.length - 1 - i) * 15e3 + 1000, v]));
+  pts.push([0, d.p]);
+  return pts.sort((a, b) => b[0] - a[0]);
+}
+
+/** Smooth path through points without overshoot (monotone cubic, Fritsch–Carlson). */
+function monotonePath(pts) {
+  const n = pts.length;
+  const f = (v) => v.toFixed(1);
+  if (n < 2) return '';
+  if (n === 2) return `M${f(pts[0][0])},${f(pts[0][1])}L${f(pts[1][0])},${f(pts[1][1])}`;
+  const dx = [];
+  const m = [];
+  for (let i = 0; i < n - 1; i++) {
+    dx[i] = pts[i + 1][0] - pts[i][0];
+    m[i] = dx[i] ? (pts[i + 1][1] - pts[i][1]) / dx[i] : 0;
+  }
+  const t = [m[0]];
+  for (let i = 1; i < n - 1; i++) t[i] = m[i - 1] * m[i] <= 0 ? 0 : (m[i - 1] + m[i]) / 2;
+  t[n - 1] = m[n - 2];
+  for (let i = 0; i < n - 1; i++) {
+    if (m[i] === 0) {
+      t[i] = 0;
+      t[i + 1] = 0;
+      continue;
+    }
+    const a = t[i] / m[i];
+    const b = t[i + 1] / m[i];
+    const h = a * a + b * b;
+    if (h > 9) {
+      const s = 3 / Math.sqrt(h);
+      t[i] = s * a * m[i];
+      t[i + 1] = s * b * m[i];
+    }
+  }
+  let path = `M${f(pts[0][0])},${f(pts[0][1])}`;
+  for (let i = 0; i < n - 1; i++) {
+    const h = dx[i] / 3;
+    path += `C${f(pts[i][0] + h)},${f(pts[i][1] + t[i] * h)} ${f(pts[i + 1][0] - h)},${f(pts[i + 1][1] - t[i + 1] * h)} ${f(pts[i + 1][0])},${f(pts[i + 1][1])}`;
+  }
+  return path;
+}
+
+/**
+ * Mini chart geometry on a log time axis (the whole day fits, recent minutes stay readable).
+ * Returns line / area paths, the end-point dot and the trend direction.
+ */
+function miniChart(d, W, H, pad = 3) {
+  const series = priceSeries(d);
+  if (series.length < 2) return null;
+  const maxAge = series[0][0] || 1;
+  const lx = (a) => W * (1 - Math.log1p(a / MIN_MS) / Math.log1p(maxAge / MIN_MS));
+  const vals = series.map((p) => p[1]);
+  const min = Math.min(...vals);
+  const max = Math.max(...vals);
+  const flat = max - min < max * 0.002;
+  const y = (v) => (flat ? H / 2 : H - pad - ((v - min) / (max - min)) * (H - pad * 2));
+  const pts = [];
+  for (const [a, v] of series) {
+    const x = lx(a);
+    const last = pts[pts.length - 1];
+    if (last && x - last[0] < 0.6) last[1] = y(v); // merge points closer than a pixel
+    else pts.push([x, y(v)]);
+  }
+  if (pts.length < 2) return null;
+  const line = monotonePath(pts);
+  const end = pts[pts.length - 1];
+  return {
+    line,
+    area: `${line}L${W},${H}L${pts[0][0].toFixed(1)},${H}Z`,
+    dot: `M${end[0].toFixed(1)},${end[1].toFixed(1)}l0,0`,
+    up: vals[vals.length - 1] >= vals[0],
+  };
+}
+
 const SHIELD = `<svg class="shield" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 3 4.5 6v5.5c0 4.6 3.1 8.4 7.5 9.5 4.4-1.1 7.5-4.9 7.5-9.5V6L12 3Z"/><path class="chk" d="m8.8 12.2 2.2 2.2 4.3-4.6"/></svg>`;
 const RISK_TXT = { ok: 'Brak istotnych flag', warn: 'Ostrzeżenia', danger: 'Wysokie ryzyko', unknown: 'Nie sprawdzono' };
 
@@ -249,9 +350,8 @@ function renderPodium(rows) {
             <circle class="fg" cx="35" cy="35" r="30" fill="none" stroke-width="6" stroke-dasharray="188.5" stroke-dashoffset="188.5"/></svg><b data-k="hs"></b></div>
         </div>
         <p class="pc-ai" data-k="ai" hidden></p>
-        <div class="pc-spark"><svg viewBox="0 0 300 46" preserveAspectRatio="none">
-          <defs><linearGradient id="pg${i}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="currentColor" stop-opacity=".35"/><stop offset="1" stop-color="currentColor" stop-opacity="0"/></linearGradient></defs>
-          <path data-k="area" fill="url(#pg${i})"/><path data-k="line" fill="none" stroke="currentColor" stroke-width="2" vector-effect="non-scaling-stroke"/></svg></div>
+        <div class="pc-spark"><svg class="spark big" viewBox="0 0 300 46" preserveAspectRatio="none" aria-label="Cena: ostatnie 24 h">
+          <path class="sp-a" data-k="area"/><path class="sp-l" data-k="line" fill="none" stroke-width="2.2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/><path class="sp-d" data-k="dot" fill="none" stroke-width="6" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg></div>
         <div class="pc-metrics">
           <div><span>MCap</span><b data-k="mc"></b></div>
           <div><span>1h</span><b data-k="c1"></b></div>
@@ -266,13 +366,14 @@ function renderPodium(rows) {
     const card = el.children[i];
     const h = heat(d.hs);
     card.style.setProperty('--heat', h);
-    card.querySelector('.pc-spark').style.color = `hsl(${h},95%,60%)`;
     const k = (n) => card.querySelector(`[data-k="${n}"]`);
     k('hs').textContent = d.hs.toFixed(0);
     card.querySelector('.fg').style.strokeDashoffset = String(188.5 * (1 - d.hs / 100));
-    const { line, area } = sparkPath(d.hh, 300, 46, 4);
-    k('line').setAttribute('d', line);
-    k('area').setAttribute('d', area);
+    const mc = miniChart(d, 300, 46, 4);
+    card.querySelector('.spark').classList.toggle('down', !!mc && !mc.up);
+    k('line').setAttribute('d', mc ? mc.line : '');
+    k('area').setAttribute('d', mc ? mc.area : '');
+    k('dot').setAttribute('d', mc ? mc.dot : '');
     k('mc').textContent = fmt.usd(d.mc);
     k('c1').textContent = fmt.pct(d.c1);
     k('c1').className = cls(d.c1);
@@ -293,7 +394,7 @@ function rowTemplate() {
     <div class="c-token"><div class="tok"><span class="av-slot"></span><div class="tok-t">
       <div class="tok-name"><b></b><small></small></div><div class="tok-sub"></div></div></div></div>
     <div class="c-hype"><div class="hype"><span class="hype-n"></span><div class="hype-v"><div class="hype-bar"><i></i></div>
-      <svg class="spark" viewBox="0 0 100 22" preserveAspectRatio="none"><path class="sp-l" fill="none" stroke-width="1.6" vector-effect="non-scaling-stroke"/></svg></div></div></div>
+      <svg class="spark" viewBox="0 0 100 30" preserveAspectRatio="none" aria-label="Cena: ostatnie 24 h"><path class="sp-a"/><path class="sp-l" fill="none" stroke-width="1.8" stroke-linejoin="round" vector-effect="non-scaling-stroke"/><path class="sp-d" fill="none" stroke-width="5" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg></div></div></div>
     <div class="c-price num"></div>
     <div class="c-ch c-5m num"><span class="pct"></span></div>
     <div class="c-ch c-1h num"><span class="pct"></span></div>
@@ -330,7 +431,7 @@ function updateRow(entry, d, idx) {
   const now = nowTs();
   const q = entry.q || (entry.q = {
     rankN: $('.rank-n', el), rankD: $('.rank-d', el), av: $('.av-slot', el), name: $('.tok-name b', el), sym: $('.tok-name small', el),
-    sub: $('.tok-sub', el), hs: $('.hype-n', el), hbar: $('.hype-bar i', el), sp: $('.sp-l', el), price: $('.c-price', el),
+    sub: $('.tok-sub', el), hs: $('.hype-n', el), hbar: $('.hype-bar i', el), sp: $('.sp-l', el), spA: $('.sp-a', el), spD: $('.sp-d', el), svg: $('.spark', el), price: $('.c-price', el),
     c5: $('.c-5m .pct', el), c1: $('.c-1h .pct', el), c24: $('.c-24 .pct', el), mc: $('.c-mc', el), liq: $('.c-liq', el),
     vol: $('.c-vol', el), bsB: $('.bs-bar .b', el), bsS: $('.bs-bar .s', el), bsNb: $('.bs-n .up', el), bsNs: $('.bs-n .down', el),
     bsL: $('.bs-n .lbl', el), quick: $('.c-quick', el), holdB: $('.hold b', el), holdS: $('.hold small', el), x: $('.c-x', el), risk: $('.risk', el), star: $('.star', el),
@@ -382,8 +483,15 @@ function updateRow(entry, d, idx) {
 
   setText(q.hs, d.hs.toFixed(0), d.hs, p.hs);
   q.hbar.style.width = `${d.hs}%`;
-  q.sp.setAttribute('d', sparkPath(d.hh, 100, 22).line);
-  q.sp.setAttribute('stroke', `hsl(${h},95%,62%)`);
+  const mc = miniChart(d, 100, 30);
+  const key = mc ? mc.line : '';
+  if (entry.spark !== key) {
+    entry.spark = key;
+    q.svg.classList.toggle('down', !!mc && !mc.up);
+    q.sp.setAttribute('d', mc ? mc.line : '');
+    q.spA.setAttribute('d', mc ? mc.area : '');
+    q.spD.setAttribute('d', mc ? mc.dot : '');
+  }
 
   setText(q.price, fmt.price(d.p), d.p, p.p);
   for (const [node, v] of [[q.c5, d.c5], [q.c1, d.c1], [q.c24, d.c24]]) {

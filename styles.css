@@ -286,7 +286,12 @@ a { color: inherit; text-decoration: none; }
 .hype-v { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .hype-bar { height: 4px; border-radius: 3px; background: var(--panel3); overflow: hidden; }
 .hype-bar i { display: block; height: 100%; border-radius: 3px; background: linear-gradient(90deg, hsl(calc(var(--heat) + 40), 90%, 55%), hsl(var(--heat), 95%, 60%)); transition: width 0.8s cubic-bezier(0.2, 0.8, 0.2, 1); }
-.spark { width: 100%; height: 22px; display: block; overflow: visible; }
+.spark { width: 100%; height: 30px; display: block; overflow: visible; }
+.spark .sp-a { fill: url(#spark-up); }
+.spark .sp-l { stroke: var(--up); }
+.spark .sp-d { stroke: var(--up); }
+.spark.down .sp-a { fill: url(#spark-down); }
+.spark.down .sp-l, .spark.down .sp-d { stroke: var(--down); }
 
 .pct { display: inline-block; font: 600 12.5px/1 var(--mono); padding: 4px 6px; border-radius: 6px; min-width: 54px; text-align: right; }
 .pct.up { background: var(--up-bg); }
