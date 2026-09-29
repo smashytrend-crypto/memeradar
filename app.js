@@ -339,6 +339,9 @@ function updateRow(entry, d, idx) {
   const h = heat(d.hs);
   el.style.setProperty('--heat', h);
   el.classList.toggle('live', !!d.live);
+  // Doubled (2×+) since the viewer first saw it: blinking gold frame.
+  const doubled = sinceSeen(d)?.r >= 2;
+  el.classList.toggle('x2', doubled);
 
   // rank (+ movement vs. previous snapshot)
   const shownRank = idx + 1; // position on screen (order refreshes every REORDER_MS)
@@ -361,7 +364,7 @@ function updateRow(entry, d, idx) {
   const chips = [];
   const since = sinceSeen(d);
   const sinceChip = since
-    ? `<span class="chip seen ${since.cls}" title="Od kiedy widzisz ten token na liście (${fmt.ago(since.t)} temu)">${since.text}</span>`
+    ? `<span class="chip seen ${since.r >= 2 ? 'gold' : since.cls}" title="Od kiedy widzisz ten token na liście (${fmt.ago(since.t)} temu)">${since.text}</span>`
     : '';
   if (d.ca) chips.push(`<span class="chip ${now - d.ca < 3600e3 ? 'new' : ''}">${fmt.ago(d.ca, now)}</span>`);
   if (sinceChip) chips.push(sinceChip);
