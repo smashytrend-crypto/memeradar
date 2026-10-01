@@ -72,7 +72,7 @@ const fmt = {
   pct(v) {
     if (v == null || !Number.isFinite(v)) return '—';
     const a = Math.abs(v);
-    const s = a >= 10000 ? `${(v / 1000).toFixed(0)}K` : a >= 1000 ? `${(v / 1000).toFixed(1)}K` : a >= 100 ? v.toFixed(0) : v.toFixed(1);
+    const s = a >= 1e6 ? `${(v / 1e6).toFixed(a >= 1e7 ? 0 : 1)}M` : a >= 10000 ? `${(v / 1000).toFixed(0)}K` : a >= 1000 ? `${(v / 1000).toFixed(1)}K` : a >= 100 ? v.toFixed(0) : v.toFixed(1);
     return `${v > 0 ? '+' : ''}${s}%`;
   },
   n(v) {
@@ -454,7 +454,7 @@ function rowTemplate() {
     <div class="c-ch c-5m num"><span class="pct"></span></div>
     <div class="c-ch c-1h num"><span class="pct"></span></div>
     <div class="c-ch c-4h num"><span class="pct"></span></div>
-    <div class="c-mc num"></div>
+    <div class="c-mc num mv"><b></b><small><i>Vol</i><span></span></small></div>
     <div class="c-liq num"></div>
     <div class="c-vol num"></div>
     <div class="c-bs"><div class="bs"><div class="bs-bar"><span class="b"></span><span class="s"></span></div><div class="bs-r up"><span class="n"></span><span class="v"></span></div><div class="bs-r down"><span class="n"></span><span class="v"></span></div></div></div>
@@ -492,7 +492,7 @@ function updateRow(entry, d, idx) {
   const q = entry.q || (entry.q = {
     rankN: $('.rank-n', el), rankD: $('.rank-d', el), av: $('.av-slot', el), name: $('.tok-name b', el), sym: $('.tok-name small', el),
     sub: $('.tok-sub', el), hs: $('.hype-n', el), hbar: $('.hype-bar i', el), sp: $('.sp-l', el), spA: $('.sp-a', el), spD: $('.sp-d', el), svg: $('.spark', el), actX: $('.act-x', el),
-    c5: $('.c-5m .pct', el), c1: $('.c-1h .pct', el), c4: $('.c-4h .pct', el), mc: $('.c-mc', el), liq: $('.c-liq', el),
+    c5: $('.c-5m .pct', el), c1: $('.c-1h .pct', el), c4: $('.c-4h .pct', el), mc: $('.c-mc b', el), mcV: $('.c-mc small span', el), liq: $('.c-liq', el),
     vol: $('.c-vol', el), bsB: $('.bs-bar .b', el), bsS: $('.bs-bar .s', el), bsNb: $('.bs-r.up .n', el), bsNs: $('.bs-r.down .n', el),
     bsVb: $('.bs-r.up .v', el), bsVs: $('.bs-r.down .v', el), bs: $('.bs', el), quick: $('.c-quick', el), holdB: $('.hold b', el), holdS: $('.hold small', el), x: $('.c-x', el), risk: $('.risk', el), star: $('.star', el),
   });
@@ -562,6 +562,7 @@ function updateRow(entry, d, idx) {
     node.className = `pct ${cls(v)}`;
   }
   setText(q.mc, fmt.usd(d.mc));
+  setText(q.mcV, fmt.usd(d.v24));
   setText(q.liq, fmt.usd(d.lq));
   setText(q.vol, fmt.usd(d.v1));
 
@@ -593,8 +594,8 @@ function updateRow(entry, d, idx) {
   const win = use5 ? '5m' : '1h';
   const quick =
     `<div class="q-l">` +
-    `<div class="q-top">${sinceChip}<span class="q-kv"><i>MC</i> ${fmt.usd(d.mc)}</span><span class="q-kv"><i>Vol</i> ${fmt.usd(d.v1)}</span>` +
-    `${d.x != null ? `<span class="q-kv"><i>𝕏</i> ${d.x}${d.xc ? '+' : ''}/h</span>` : ''}</div>` +
+    `<div class="q-mv"><span><i>MC</i>${fmt.usd(d.mc)}</span><span><i>Vol 24h</i>${fmt.usd(d.v24)}</span></div>` +
+    `<div class="q-top">${sinceChip}${d.x != null ? `<span class="q-kv"><i>𝕏</i> ${d.x}${d.xc ? '+' : ''}/h</span>` : ''}</div>` +
     `<div class="q-b">▲ ${fmt.n(b)}${hasVol ? ` · ${fmt.usd(bv)}` : ''}<i>kupno ${win}</i></div>` +
     `<div class="q-s">▼ ${fmt.n(s)}${hasVol ? ` · ${fmt.usd(sv)}` : ''}<i>sprzedaż ${win}</i></div>` +
     `</div>` +

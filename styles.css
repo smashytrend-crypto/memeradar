@@ -185,7 +185,7 @@ a { color: inherit; text-decoration: none; }
 .layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; padding: 0 20px 20px; align-items: start; }
 .board { min-width: 0; container-type: inline-size; container-name: board; }
 .table {
-  --cols: 36px minmax(200px, 1.6fr) 124px 96px 60px 60px 60px 84px 84px 84px 128px 86px 60px 40px 28px;
+  --cols: 36px minmax(200px, 1.6fr) 124px 96px 60px 60px 60px 104px 84px 128px 86px 60px 40px 28px;
 }
 
 /* ---------- podium ---------- */
@@ -245,6 +245,11 @@ a { color: inherit; text-decoration: none; }
 @keyframes rowIn { from { opacity: 0; background: rgba(255, 122, 46, 0.12); } to { opacity: 1; } }
 .row > div { min-width: 0; }
 .row .num { text-align: right; font-size: 13px; }
+/* Market cap + total volume (24 h), stacked and bright so they read at a glance. */
+.c-vol { display: none; }
+.mv b { display: block; font: 700 14.5px/1.2 var(--mono); color: var(--text); letter-spacing: -0.01em; }
+.mv small { display: block; margin-top: 2px; font: 600 12px/1.2 var(--mono); color: #b9c3d3; white-space: nowrap; }
+.mv small i { font-style: normal; font-family: var(--sans); font-weight: 500; color: var(--muted); margin-right: 3px; }
 
 .c-rank { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
 .rank-n { font: 700 13px/1 var(--mono); color: var(--muted); }
@@ -446,23 +451,23 @@ a { color: inherit; text-decoration: none; }
 /* Table columns collapse by the board's own width (container queries), so they always fit. */
 /* 5m / 1h / 4h stay visible longest; below 964px the quick line under each token takes over. */
 @container board (max-width: 1357px) {
-  .table { --cols: 36px minmax(200px, 1.6fr) 124px 96px 60px 60px 60px 84px 84px 128px 86px 60px 40px 28px; }
+  .table { --cols: 36px minmax(200px, 1.6fr) 124px 96px 60px 60px 60px 104px 128px 86px 60px 40px 28px; }
   .c-liq { display: none; }
 }
 @container board (max-width: 1265px) {
-  .table { --cols: 36px minmax(200px, 1.6fr) 124px 96px 60px 60px 60px 84px 84px 128px 86px 40px 28px; }
+  .table { --cols: 36px minmax(200px, 1.6fr) 124px 96px 60px 60px 60px 104px 128px 86px 40px 28px; }
   .c-x { display: none; }
 }
 @container board (max-width: 1197px) {
-  .table { --cols: 36px minmax(200px, 1.6fr) 124px 96px 60px 60px 60px 84px 84px 128px 40px 28px; }
+  .table { --cols: 36px minmax(200px, 1.6fr) 124px 96px 60px 60px 60px 104px 128px 40px 28px; }
   .c-hold { display: none; }
 }
 @container board (max-width: 1103px) {
-  .table { --cols: 36px minmax(200px, 1.6fr) 124px 96px 60px 60px 60px 84px 128px 28px; }
-  .c-vol, .c-risk { display: none; }
+  .table { --cols: 36px minmax(180px, 1.6fr) 124px 96px 60px 60px 60px 104px 128px 28px; }
+  .c-risk { display: none; }
 }
 @container board (max-width: 963px) {
-  .table { --cols: 32px minmax(160px, 1.6fr) 120px 92px 60px 84px 28px; }
+  .table { --cols: 32px minmax(140px, 1.6fr) 120px 92px 60px 104px 28px; }
   .c-5m, .c-4h, .c-bs { display: none; }
 }
 @container board (max-width: 703px) {
@@ -584,8 +589,10 @@ a { color: inherit; text-decoration: none; }
     font: 600 11.5px/1.3 var(--mono); font-variant-numeric: tabular-nums; color: var(--muted);
   }
   .q-l { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .q-mv { display: none; }
   .q-top { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 10px; }
   .q-top > * { white-space: nowrap; }
+  .q-top:empty { display: none; }
   .q-b, .q-s { white-space: nowrap; }
   .q-b { color: var(--up); }
   .q-s { color: var(--down); }
@@ -598,6 +605,14 @@ a { color: inherit; text-decoration: none; }
 }
 @container board (max-width: 703px) {
   .row .c-quick { font-size: 11px; }
+  /* Phones: market cap and total volume as two bright tiles at the top of the block. */
+  .q-mv { display: flex; flex-wrap: wrap; gap: 4px 6px; margin-bottom: 2px; }
+  .q-mv span {
+    display: inline-flex; align-items: baseline; gap: 5px; padding: 4px 8px; border-radius: 7px;
+    background: var(--panel3); border: 1px solid var(--line2);
+    font: 700 14px/1.1 var(--mono); color: var(--text); white-space: nowrap;
+  }
+  .q-mv i { font: 600 10px/1 var(--sans); font-style: normal; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
 }
 
 /* "since you first saw it" chip: in the sub-line on wide screens, in the quick line on phones */
