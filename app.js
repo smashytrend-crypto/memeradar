@@ -279,6 +279,11 @@ function sinceSeen(d) {
   const base = seenBase(d);
   if (!base) return null;
   const r = d.p / base.p;
+  // Highest multiple reached since first seen (fresh DexScreener prices only), for the win rate.
+  if (d.fr !== false && r > (base.m || 1)) {
+    base.m = r;
+    seenDirty = true;
+  }
   const pct = (r - 1) * 100;
   if (Date.now() - base.t < 60_000 && Math.abs(pct) < 0.5) return null;
   return { r, pct, t: base.t, cls: cls(pct), text: `👁 ${fmt.ago(base.t)} ${fmt.pct(pct)} · ${fmtX(r)}` };
@@ -296,10 +301,29 @@ setInterval(() => {
   LS.set('seen', Object.fromEntries(seen));
 }, 10_000);
 
+/**
+ * Win rate of the tokens this viewer has seen on the list (last 7 days): a win is a token that
+ * reached 2× its price at first sight at any point since; everything else counts as a loss.
+ */
+function winRate() {
+  let wins = 0;
+  for (const s of seen.values()) if (s.m >= 2) wins++;
+  return { wins, total: seen.size, pct: seen.size ? (wins / seen.size) * 100 : null };
+}
+
 // ---------- header ----------
 function renderStats(s) {
+  const wr = STATIC ? null : winRate();
   const items = [
     ['SOL', s.solPrice ? `$${s.solPrice.toFixed(2)}` : '—'],
+    ...(wr
+      ? [[
+          'Win rate 2×',
+          wr.pct == null ? '—' : `${wr.pct.toFixed(1)}% · ${wr.wins}/${wr.total}`,
+          `Tokeny, które od chwili, gdy pojawiły się u Ciebie na liście, zrobiły co najmniej 2×: ${wr.wins} z ${wr.total} (ostatnie 7 dni). Reszta liczy się jako przegrana.`,
+          wr.wins ? 'gold' : '',
+        ]]
+      : []),
     ['Śledzone tokeny', fmt.n(s.tracked)],
     ['Aktywne (5 min)', fmt.n(s.active5m)],
     ...(s.onlyGraduated
@@ -317,9 +341,12 @@ function renderStats(s) {
     el.dataset.labels = labels;
     el.innerHTML = items.map(([l]) => `<div class="stat"><b></b><span>${l}</span></div>`).join('');
   }
-  items.forEach(([, v], i) => {
-    const b = el.children[i].firstElementChild;
+  items.forEach(([, v, title = '', tone = ''], i) => {
+    const box = el.children[i];
+    const b = box.firstElementChild;
     if (b.textContent !== v) b.textContent = v;
+    if (box.title !== title) box.title = title;
+    if (b.className !== tone) b.className = tone;
   });
   if (!STATIC) $('#demoBanner').hidden = !s.demo;
 }
