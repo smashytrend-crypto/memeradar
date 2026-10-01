@@ -596,8 +596,8 @@ function updateRow(entry, d, idx) {
     `<div class="q-l">` +
     `<div class="q-mv"><span><i>MC</i>${fmt.usd(d.mc)}</span><span><i>Vol 24h</i>${fmt.usd(d.v24)}</span></div>` +
     `<div class="q-top">${sinceChip}${d.x != null ? `<span class="q-kv"><i>𝕏</i> ${d.x}${d.xc ? '+' : ''}/h</span>` : ''}</div>` +
-    `<div class="q-b">▲ ${fmt.n(b)}${hasVol ? ` · ${fmt.usd(bv)}` : ''}<i>kupno ${win}</i></div>` +
-    `<div class="q-s">▼ ${fmt.n(s)}${hasVol ? ` · ${fmt.usd(sv)}` : ''}<i>sprzedaż ${win}</i></div>` +
+    `<div class="q-b" title="Kupno — ostatnie ${use5 ? '5 min' : '1 h'}">▲ ${fmt.n(b)}${hasVol ? ` · ${fmt.usd(bv)}` : ''}<i>${win}</i></div>` +
+    `<div class="q-s" title="Sprzedaż — ostatnie ${use5 ? '5 min' : '1 h'}">▼ ${fmt.n(s)}${hasVol ? ` · ${fmt.usd(sv)}` : ''}<i>${win}</i></div>` +
     `</div>` +
     `<div class="q-r">${chg('5m', d.c5)}${chg('1h', d.c1)}${chg('4h', d.c4)}</div>`;
   if (entry.quick !== quick) {
