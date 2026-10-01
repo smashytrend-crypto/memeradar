@@ -274,16 +274,23 @@ function seenBase(d) {
 
 const fmtX = (r) => `${r >= 10 ? r.toFixed(0) : r >= 2 ? r.toFixed(1) : r.toFixed(2)}×`;
 
-/** e.g. "👁 12m +340% · 4.4×" — null until there is something worth showing. */
-function sinceSeen(d) {
+/** Baseline plus the highest multiple reached since first seen (fresh DexScreener prices only). */
+function trackSeen(d) {
   const base = seenBase(d);
   if (!base) return null;
   const r = d.p / base.p;
-  // Highest multiple reached since first seen (fresh DexScreener prices only), for the win rate.
   if (d.fr !== false && r > (base.m || 1)) {
     base.m = r;
     seenDirty = true;
   }
+  return base;
+}
+
+/** e.g. "👁 12m +340% · 4.4×" — null until there is something worth showing. */
+function sinceSeen(d) {
+  const base = trackSeen(d);
+  if (!base) return null;
+  const r = d.p / base.p;
   const pct = (r - 1) * 100;
   if (Date.now() - base.t < 60_000 && Math.abs(pct) < 0.5) return null;
   return { r, pct, t: base.t, cls: cls(pct), text: `👁 ${fmt.ago(base.t)} ${fmt.pct(pct)} · ${fmtX(r)}` };
@@ -302,25 +309,29 @@ setInterval(() => {
 }, 10_000);
 
 /**
- * Win rate of the tokens this viewer has seen on the list (last 7 days): a win is a token that
- * reached 2× its price at first sight at any point since; everything else counts as a loss.
+ * Win rate of the (up to) 100 tokens on the main Hype list right now: a win is a token that
+ * reached 2× its price at first sight at any point since — it stays a win even if it then
+ * falls to zero; every other token on the list counts as a loss.
  */
-function winRate() {
+function winRate(rows) {
   let wins = 0;
-  for (const s of seen.values()) if (s.m >= 2) wins++;
-  return { wins, total: seen.size, pct: seen.size ? (wins / seen.size) * 100 : null };
+  for (const d of rows) {
+    trackSeen(d);
+    if (seen.get(d.m)?.m >= 2) wins++;
+  }
+  return { wins, total: rows.length, pct: rows.length ? (wins / rows.length) * 100 : null };
 }
 
 // ---------- header ----------
 function renderStats(s) {
-  const wr = STATIC ? null : winRate();
+  const wr = STATIC || !state.hypeRows ? null : winRate(state.hypeRows);
   const items = [
     ['SOL', s.solPrice ? `$${s.solPrice.toFixed(2)}` : '—'],
     ...(wr
       ? [[
           'Win rate 2×',
           wr.pct == null ? '—' : `${wr.pct.toFixed(1)}% · ${wr.wins}/${wr.total}`,
-          `Tokeny, które od chwili, gdy pojawiły się u Ciebie na liście, zrobiły co najmniej 2×: ${wr.wins} z ${wr.total} (ostatnie 7 dni). Reszta liczy się jako przegrana.`,
+          `Z ${wr.total} tokenów na głównej liście Hype ${wr.wins} zrobiło co najmniej 2× od chwili, gdy je zobaczyłeś (zostają wygraną, nawet gdy potem spadną). Reszta liczy się jako przegrana.`,
           wr.wins ? 'gold' : '',
         ]]
       : []),
@@ -713,6 +724,7 @@ function applyMode(s) {
 function applySnapshot(snap) {
   applyMode(snap.stats);
   $('#feedChips [data-f="whale"]').hidden = !snap.stats.liveTrades;
+  if (snap.view === 'hype') state.hypeRows = snap.rows;
   renderStats(snap.stats);
   renderSources(snap.sources);
   $('#liveBadge').className = `live-badge${state.paused ? ' paused' : ''}`;
@@ -752,6 +764,8 @@ function connect() {
     const filters = { minMcap: f.minMcap || 0, minLiq: f.minLiq || 0, maxAgeH: f.maxAgeH || 0, safe: !!f.safe, q: '' };
     const run = () => {
       state.lastSnapshot = Date.now();
+      // The win rate always counts the main Hype list, whichever tab is open.
+      if (state.view !== 'hype') state.hypeRows = ENGINE.snapshot('hype', filters, 100).rows;
       applySnapshot(ENGINE.snapshot(state.view, filters, 100, state.view === 'watch' ? [...state.watch] : []));
     };
     run();
