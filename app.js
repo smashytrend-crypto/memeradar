@@ -313,28 +313,32 @@ setInterval(() => {
  * reached 2× its price at first sight at any point since — it stays a win even if it then
  * falls to zero; every other token on the list counts as a loss.
  */
-function winRate(rows) {
+function winRate(rows, target) {
   let wins = 0;
   for (const d of rows) {
     trackSeen(d);
-    if (seen.get(d.m)?.m >= 2) wins++;
+    if (seen.get(d.m)?.m >= target) wins++;
   }
   return { wins, total: rows.length, pct: rows.length ? (wins / rows.length) * 100 : null };
 }
 
+/** Header tile for a win rate: [label, value, tooltip, class]. */
+function winTile(rows, target, label, goal) {
+  const wr = winRate(rows, target);
+  return [
+    label,
+    wr.pct == null ? '—' : `${wr.pct.toFixed(1)}% · ${wr.wins}/${wr.total}`,
+    `Z ${wr.total} tokenów na głównej liście Hype ${wr.wins} zrobiło co najmniej ${goal} od chwili, gdy je zobaczyłeś (zostają wygraną, nawet gdy potem spadną). Reszta liczy się jako przegrana.`,
+    wr.wins ? 'gold' : '',
+  ];
+}
+
 // ---------- header ----------
 function renderStats(s) {
-  const wr = STATIC || !state.hypeRows ? null : winRate(state.hypeRows);
+  const hr = STATIC ? null : state.hypeRows;
   const items = [
     ['SOL', s.solPrice ? `$${s.solPrice.toFixed(2)}` : '—'],
-    ...(wr
-      ? [[
-          'Win rate 2×',
-          wr.pct == null ? '—' : `${wr.pct.toFixed(1)}% · ${wr.wins}/${wr.total}`,
-          `Z ${wr.total} tokenów na głównej liście Hype ${wr.wins} zrobiło co najmniej 2× od chwili, gdy je zobaczyłeś (zostają wygraną, nawet gdy potem spadną). Reszta liczy się jako przegrana.`,
-          wr.wins ? 'gold' : '',
-        ]]
-      : []),
+    ...(hr ? [winTile(hr, 2, 'Win rate 2×', '2×'), winTile(hr, 1.5, 'Win rate +50%', '+50%')] : []),
     ['Śledzone tokeny', fmt.n(s.tracked)],
     ['Aktywne (5 min)', fmt.n(s.active5m)],
     ...(s.onlyGraduated
@@ -443,17 +447,17 @@ function rowTemplate() {
   el.innerHTML = `
     <div class="c-rank"><span class="rank-n"></span><span class="rank-d"></span></div>
     <div class="c-token"><div class="tok"><span class="av-slot"></span><div class="tok-t">
-      <div class="tok-name"><b></b><small></small><button class="cp-btn" data-copy aria-label="Kopiuj adres kontraktu" title="Kopiuj adres kontraktu">⧉</button></div><div class="tok-sub"></div></div></div></div>
+      <div class="tok-name"><b></b><small></small></div><div class="tok-sub"></div></div></div></div>
     <div class="c-hype"><div class="hype"><span class="hype-n"></span><div class="hype-v"><div class="hype-bar"><i></i></div>
       <svg class="spark" viewBox="0 0 100 30" preserveAspectRatio="none" aria-label="Cena: ostatnie 24 h"><path class="sp-a"/><path class="sp-l" fill="none" stroke-width="1.8" stroke-linejoin="round" vector-effect="non-scaling-stroke"/><path class="sp-d" fill="none" stroke-width="5" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg></div></div></div>
-    <div class="c-price num"></div>
+    <div class="c-act"><a class="act-x" target="_blank" rel="noopener" title="Posty z tym kontraktem na X">𝕏</a><button class="act-cp" data-copy aria-label="Kopiuj adres kontraktu" title="Kopiuj adres kontraktu">⧉ CA</button></div>
     <div class="c-ch c-5m num"><span class="pct"></span></div>
     <div class="c-ch c-1h num"><span class="pct"></span></div>
     <div class="c-ch c-4h num"><span class="pct"></span></div>
     <div class="c-mc num"></div>
     <div class="c-liq num"></div>
     <div class="c-vol num"></div>
-    <div class="c-bs"><div class="bs"><div class="bs-bar"><span class="b"></span><span class="s"></span></div><div class="bs-n"><span class="up"></span><span class="lbl"></span><span class="down"></span></div><div class="bs-v"><span class="up"></span><span class="down"></span></div></div></div>
+    <div class="c-bs"><div class="bs"><div class="bs-bar"><span class="b"></span><span class="s"></span></div><div class="bs-r up"><span class="n"></span><span class="v"></span></div><div class="bs-r down"><span class="n"></span><span class="v"></span></div></div></div>
     <div class="c-hold num hold"><b></b><small></small></div>
     <div class="c-x num"></div>
     <div class="c-risk"><div class="risk">${SHIELD}</div></div>
@@ -487,10 +491,10 @@ function updateRow(entry, d, idx) {
   const now = nowTs();
   const q = entry.q || (entry.q = {
     rankN: $('.rank-n', el), rankD: $('.rank-d', el), av: $('.av-slot', el), name: $('.tok-name b', el), sym: $('.tok-name small', el),
-    sub: $('.tok-sub', el), hs: $('.hype-n', el), hbar: $('.hype-bar i', el), sp: $('.sp-l', el), spA: $('.sp-a', el), spD: $('.sp-d', el), svg: $('.spark', el), price: $('.c-price', el),
+    sub: $('.tok-sub', el), hs: $('.hype-n', el), hbar: $('.hype-bar i', el), sp: $('.sp-l', el), spA: $('.sp-a', el), spD: $('.sp-d', el), svg: $('.spark', el), actX: $('.act-x', el),
     c5: $('.c-5m .pct', el), c1: $('.c-1h .pct', el), c4: $('.c-4h .pct', el), mc: $('.c-mc', el), liq: $('.c-liq', el),
-    vol: $('.c-vol', el), bsB: $('.bs-bar .b', el), bsS: $('.bs-bar .s', el), bsNb: $('.bs-n .up', el), bsNs: $('.bs-n .down', el),
-    bsL: $('.bs-n .lbl', el), bsVb: $('.bs-v .up', el), bsVs: $('.bs-v .down', el), bs: $('.bs', el), quick: $('.c-quick', el), holdB: $('.hold b', el), holdS: $('.hold small', el), x: $('.c-x', el), risk: $('.risk', el), star: $('.star', el),
+    vol: $('.c-vol', el), bsB: $('.bs-bar .b', el), bsS: $('.bs-bar .s', el), bsNb: $('.bs-r.up .n', el), bsNs: $('.bs-r.down .n', el),
+    bsVb: $('.bs-r.up .v', el), bsVs: $('.bs-r.down .v', el), bs: $('.bs', el), quick: $('.c-quick', el), holdB: $('.hold b', el), holdS: $('.hold small', el), x: $('.c-x', el), risk: $('.risk', el), star: $('.star', el),
   });
 
   const h = heat(d.hs);
@@ -552,7 +556,7 @@ function updateRow(entry, d, idx) {
     q.spD.setAttribute('d', mc ? mc.dot : '');
   }
 
-  setText(q.price, fmt.price(d.p), d.p, p.p);
+  setIf(q.actX, 'href', `https://x.com/search?q=${encodeURIComponent(d.m)}&f=live`);
   for (const [node, v] of [[q.c5, d.c5], [q.c1, d.c1], [q.c4, d.c4]]) {
     node.textContent = fmt.pct(v);
     node.className = `pct ${cls(v)}`;
@@ -576,27 +580,25 @@ function updateRow(entry, d, idx) {
   const ws = hasVol ? sv : s;
   q.bsB.style.flexGrow = wb || (ws ? 0 : 1);
   q.bsS.style.flexGrow = ws || (wb ? 0 : 1);
-  q.bsNb.textContent = `▲ ${fmt.n(b)}`;
-  q.bsNs.textContent = `▼ ${fmt.n(s)}`;
-  q.bsL.textContent = use5 ? '5m' : '1h';
+  setIf(q.bsNb, 'textContent', `▲ ${fmt.n(b)}`);
+  setIf(q.bsNs, 'textContent', `▼ ${fmt.n(s)}`);
   setIf(q.bsVb, 'textContent', hasVol ? fmt.usd(bv) : '');
   setIf(q.bsVs, 'textContent', hasVol ? fmt.usd(sv) : '');
+  q.bs.classList.toggle('h1', !use5);
   setIf(q.bs, 'title', `${use5 ? 'Ostatnie 5 min' : 'Ostatnia godzina'}: ${fmt.n(b)} kupna${hasVol ? ` za ${fmt.usd(bv)}` : ''}, ${fmt.n(s)} sprzedaży${hasVol ? ` za ${fmt.usd(sv)}` : ''}`);
 
-  // Compact line under the token for narrow screens, where these columns don't fit.
-  const xPart = d.x != null
-    ? `<a class="q-x" href="https://x.com/search?q=${encodeURIComponent(d.m)}&f=live" target="_blank" rel="noopener">𝕏 ${d.x}${d.xc ? '+' : ''} postów/h</a>`
-    : `<a class="q-x" href="https://x.com/search?q=${encodeURIComponent(d.m)}&f=live" target="_blank" rel="noopener" title="Najnowsze posty z tym kontraktem na X">𝕏 ↗</a>`;
+  // Compact block under the token for narrow screens, where these columns don't fit: on the left
+  // MC / Vol and buys over sells (count · volume); on the right 5m / 1h / 4h stacked.
   const chg = (label, v) => `<span class="q-c ${cls(v)}"><i>${label}</i>${fmt.pct(v)}</span>`;
-  const win = use5 ? '5 min' : '1 h';
-  // Groups wrap as whole units: price changes · buys/sells (count · volume) · market cap, volume, X.
+  const win = use5 ? '5m' : '1h';
   const quick =
-    sinceChip +
-    `<span class="q-g">${chg('5m', d.c5)}${chg('1h', d.c1)}${chg('4h', d.c4)}</span>` +
-    `<span class="q-g"><span class="q-b" title="Kupna (${win})">▲ ${fmt.n(b)}${hasVol ? ` · ${fmt.usd(bv)}` : ''}</span>` +
-    `<span class="q-s" title="Sprzedaże (${win})">▼ ${fmt.n(s)}${hasVol ? ` · ${fmt.usd(sv)}` : ''}</span><span class="q-l">${use5 ? '5m' : '1h'}</span></span>` +
-    `<span class="q-g"><span class="q-kv"><i>MC</i> ${fmt.usd(d.mc)}</span><span class="q-kv"><i>Vol</i> ${fmt.usd(d.v1)}</span>${xPart}` +
-    `<button class="q-cp" data-copy aria-label="Kopiuj adres kontraktu">⧉ CA</button></span>`;
+    `<div class="q-l">` +
+    `<div class="q-top">${sinceChip}<span class="q-kv"><i>MC</i> ${fmt.usd(d.mc)}</span><span class="q-kv"><i>Vol</i> ${fmt.usd(d.v1)}</span>` +
+    `${d.x != null ? `<span class="q-kv"><i>𝕏</i> ${d.x}${d.xc ? '+' : ''}/h</span>` : ''}</div>` +
+    `<div class="q-b">▲ ${fmt.n(b)}${hasVol ? ` · ${fmt.usd(bv)}` : ''}<i>kupno ${win}</i></div>` +
+    `<div class="q-s">▼ ${fmt.n(s)}${hasVol ? ` · ${fmt.usd(sv)}` : ''}<i>sprzedaż ${win}</i></div>` +
+    `</div>` +
+    `<div class="q-r">${chg('5m', d.c5)}${chg('1h', d.c1)}${chg('4h', d.c4)}</div>`;
   if (entry.quick !== quick) {
     q.quick.innerHTML = quick;
     entry.quick = quick;
@@ -910,7 +912,7 @@ async function copyFromList(mint, btn) {
   if (!ok || !btn) return;
   const label = btn.textContent;
   btn.classList.add('ok');
-  btn.textContent = btn.classList.contains('q-cp') ? '✓ CA' : '✓';
+  btn.textContent = '✓ CA';
   setTimeout(() => {
     btn.classList.remove('ok');
     btn.textContent = label;
