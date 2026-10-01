@@ -383,63 +383,6 @@ function renderSources(src) {
   }
 }
 
-// ---------- podium ----------
-function renderPodium(rows) {
-  const el = $('#podium');
-  if (state.view !== 'hype' || rows.length < 3) {
-    el.innerHTML = '';
-    return;
-  }
-  const top = rows.slice(0, 3);
-  const key = top.map((r) => r.m).join();
-  if (el.dataset.key !== key) {
-    el.dataset.key = key;
-    el.innerHTML = top
-      .map(
-        (d, i) => `<article class="pcard" data-m="${d.m}">
-        <span class="pc-medal">#${i + 1} HYPE</span>
-        <div class="pc-top">
-          ${avatar(d, 'lg')}
-          <div class="pc-id"><b>${esc(d.n || d.s)}</b><small>$${esc(d.s)}</small></div>
-          <div class="ring"><svg viewBox="0 0 70 70"><circle class="bg" cx="35" cy="35" r="30" fill="none" stroke-width="6"/>
-            <circle class="fg" cx="35" cy="35" r="30" fill="none" stroke-width="6" stroke-dasharray="188.5" stroke-dashoffset="188.5"/></svg><b data-k="hs"></b></div>
-        </div>
-        <p class="pc-ai" data-k="ai" hidden></p>
-        <div class="pc-spark"><svg class="spark big" viewBox="0 0 300 46" preserveAspectRatio="none" aria-label="Cena: ostatnie 24 h">
-          <path class="sp-a" data-k="area"/><path class="sp-l" data-k="line" fill="none" stroke-width="2.2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/><path class="sp-d" data-k="dot" fill="none" stroke-width="6" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg></div>
-        <div class="pc-metrics">
-          <div><span>MCap</span><b data-k="mc"></b></div>
-          <div><span>1h</span><b data-k="c1"></b></div>
-          <div><span>Wol. 1h</span><b data-k="v1"></b></div>
-          <div><span>${d.x != null ? '𝕏 / 1h' : 'Holderzy'}</span><b data-k="x"></b></div>
-        </div>
-      </article>`,
-      )
-      .join('');
-  }
-  top.forEach((d, i) => {
-    const card = el.children[i];
-    const h = heat(d.hs);
-    card.style.setProperty('--heat', h);
-    const k = (n) => card.querySelector(`[data-k="${n}"]`);
-    k('hs').textContent = d.hs.toFixed(0);
-    card.querySelector('.fg').style.strokeDashoffset = String(188.5 * (1 - d.hs / 100));
-    const mc = miniChart(d, 300, 46, 4);
-    card.querySelector('.spark').classList.toggle('down', !!mc && !mc.up);
-    k('line').setAttribute('d', mc ? mc.line : '');
-    k('area').setAttribute('d', mc ? mc.area : '');
-    k('dot').setAttribute('d', mc ? mc.dot : '');
-    k('mc').textContent = fmt.usd(d.mc);
-    k('c1').textContent = fmt.pct(d.c1);
-    k('c1').className = cls(d.c1);
-    k('v1').textContent = fmt.usd(d.v1);
-    k('x').textContent = d.x != null ? `${d.x}${d.xc ? '+' : ''}` : fmt.n(d.h);
-    const ai = k('ai');
-    ai.hidden = !d.ai;
-    if (d.ai && ai.textContent !== `🤖 ${d.ai}`) ai.textContent = `🤖 ${d.ai}`;
-  });
-}
-
 // ---------- table ----------
 function rowTemplate() {
   const el = document.createElement('div');
@@ -735,7 +678,7 @@ function applySnapshot(snap) {
   if (snap.view === 'hype') $('#c-hype').textContent = fmt.n(snap.stats.ranked);
   if (state.paused || snap.view !== state.view) return;
   if (state.firstSnapshot) $('#rows').innerHTML = '';
-  renderPodium(renderRows(snap.rows));
+  renderRows(snap.rows);
   state.firstSnapshot = false;
 }
 
@@ -828,8 +771,6 @@ function setView(view) {
   state.rows.clear();
   state.prevRanks.clear();
   state.firstSnapshot = true;
-  $('#podium').innerHTML = '';
-  $('#podium').dataset.key = '';
   $('#empty').hidden = true;
   skeleton();
   connect();
@@ -1367,10 +1308,7 @@ $('#rows').addEventListener('click', (e) => {
   }
   openDetail(row.dataset.m);
 });
-$('#podium').addEventListener('click', (e) => {
-  const c = e.target.closest('.pcard');
-  if (c) openDetail(c.dataset.m);
-});
+
 $('#feed').addEventListener('click', (e) => {
   const li = e.target.closest('.fi[data-m]');
   if (li) openDetail(li.dataset.m);
