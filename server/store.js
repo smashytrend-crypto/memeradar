@@ -67,6 +67,7 @@ function blank(mint, now) {
     candles: null,
     candlesAt: 0,
     candlesPool: '',
+    candleMs: undefined,
   };
 }
 
@@ -285,13 +286,14 @@ export class Store extends Emitter {
   }
 
   /** Mark a token as requested by a viewer — protects it from pruning and bumps refresh priority. */
-  /** 15-minute price candles from GeckoTerminal for the token's main pool (see candles.js). */
-  setCandles(mint, candles, pool) {
+  /** Price candles (`ms` long) from GeckoTerminal for the token's main pool (see candles.js). */
+  setCandles(mint, candles, pool, ms) {
     const t = this.tokens.get(mint);
     if (!t) return;
     t.candles = candles?.length ? candles : null;
     t.candlesAt = Date.now();
     t.candlesPool = pool;
+    t.candleMs = ms || undefined;
   }
 
   pin(mint, ms = 15 * MIN) {
@@ -497,7 +499,7 @@ export class Store extends Emitter {
       js5: jt.s5 ?? null,
       jb1: jt.b1 ?? null,
       js1: jt.s1 ?? null,
-      cd: sparkPoints(freshCandles(t, now), now, t.candlesAt),
+      cd: sparkPoints(freshCandles(t, now), now, t.candlesAt, t.candleMs),
       b5: m.buys5 || 0,
       s5: m.sells5 || 0,
       b1: m.buys1h || 0,
