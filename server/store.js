@@ -1,6 +1,7 @@
 import { computeHype } from './scoring.js';
 import { CURVE_DEXES, NON_MEME, NON_MEME_TAGS, PUMP_INITIAL_VTOKENS, PUMP_K, PUMP_TOKENS_FOR_SALE } from './constants.js';
 import { Emitter, clamp, isMint } from './util.js';
+import { change4h, freshCandles, sparkPoints } from './candles.js';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -60,6 +61,12 @@ function blank(mint, now) {
     lastSpike: 0,
     lastWhale: 0,
     lastMarketFromStream: 0,
+    buyVol: {},
+    sellVol: {},
+    jupTx: {},
+    candles: null,
+    candlesAt: 0,
+    candlesPool: '',
   };
 }
 
@@ -278,6 +285,15 @@ export class Store extends Emitter {
   }
 
   /** Mark a token as requested by a viewer — protects it from pruning and bumps refresh priority. */
+  /** 15-minute price candles from GeckoTerminal for the token's main pool (see candles.js). */
+  setCandles(mint, candles, pool) {
+    const t = this.tokens.get(mint);
+    if (!t) return;
+    t.candles = candles?.length ? candles : null;
+    t.candlesAt = Date.now();
+    t.candlesPool = pool;
+  }
+
   pin(mint, ms = 15 * MIN) {
     const t = this.tokens.get(mint);
     if (t) t.pinnedUntil = Math.max(t.pinnedUntil, Date.now() + ms);
@@ -452,6 +468,10 @@ export class Store extends Emitter {
   row(t, now = Date.now()) {
     const m = t.hype.market || {};
     const r1 = (v) => (v == null ? null : Math.round(v * 10) / 10);
+    // Jupiter's buy/sell split, only while fresh (it refreshes every ~15 s for the top tokens).
+    const jupFresh = now - (t.enriched.jupAt || 0) < 3 * MIN;
+    const vol = (o, k) => (jupFresh && o?.[k] != null ? Math.round(o[k]) : null);
+    const jt = jupFresh ? t.jupTx || {} : {};
     return {
       m: t.mint,
       n: t.name,
@@ -468,6 +488,16 @@ export class Store extends Emitter {
       c1: r1(t.change?.h1),
       c6: r1(t.change?.h6),
       c24: r1(t.change?.h24),
+      c4: r1(change4h(t, now)),
+      bv5: vol(t.buyVol, 'm5'),
+      sv5: vol(t.sellVol, 'm5'),
+      bv1: vol(t.buyVol, 'h1'),
+      sv1: vol(t.sellVol, 'h1'),
+      jb5: jt.b5 ?? null,
+      js5: jt.s5 ?? null,
+      jb1: jt.b1 ?? null,
+      js1: jt.s1 ?? null,
+      cd: sparkPoints(freshCandles(t, now), now, t.candlesAt),
       b5: m.buys5 || 0,
       s5: m.sells5 || 0,
       b1: m.buys1h || 0,
@@ -519,6 +549,8 @@ export class Store extends Emitter {
       txns: t.txns,
       volume: t.volume,
       change: t.change,
+      buyVol: t.buyVol,
+      sellVol: t.sellVol,
       x: t.x && {
         mentions1h: t.x.mentions1h,
         capped: t.x.capped,

@@ -1,9 +1,32 @@
-// GeckoTerminal public API (https://www.geckoterminal.com/dex-api): trending + new Solana pools.
-import { RateLimiter, errMsg, every, getJSON, isMint, num, toMs } from '../util.js';
+// GeckoTerminal public API (https://www.geckoterminal.com/dex-api): trending + new Solana pools,
+// and 15-minute price candles (OHLCV) for the top tokens — used for the 4h change and the
+// mini charts, since DexScreener only reports 5m / 1h / 6h / 24h changes.
+import { IS_BROWSER, RateLimiter, errMsg, every, getJSON, isMint, num, toMs } from '../util.js';
 
 const BASE = 'https://api.geckoterminal.com/api/v2/networks/solana';
 const NAME = 'geckoterminal';
 const HEADERS = { accept: 'application/json;version=20230302' };
+const MIN = 60_000;
+export const CANDLE_MS = 15 * MIN;
+
+/**
+ * OHLCV response → candles as [startMs, open, close], oldest first. GeckoTerminal lists newest
+ * first and leaves out intervals without trades; rows with a non-positive price are dropped.
+ */
+export function parseOhlcv(json) {
+  const list = json?.data?.attributes?.ohlcv_list;
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const row of list) {
+    if (!Array.isArray(row)) continue;
+    const ts = num(row[0]);
+    const open = num(row[1]);
+    const close = num(row[4]);
+    if (!(ts > 0) || !(open > 0) || !(close > 0)) continue;
+    out.push([ts * 1000, open, close]);
+  }
+  return out.sort((a, b) => a[0] - b[0]);
+}
 
 export function poolToPatch(pool, tokensById) {
   const a = pool.attributes || {};
@@ -33,7 +56,10 @@ export function poolToPatch(pool, tokensById) {
 }
 
 export function startGeckoTerminal(store) {
-  const lim = new RateLimiter(10); // free tier is 30 rpm per IP; stay well below
+  // Free tier: 30 requests/min per IP. Trending + new pools use ~2.5 of these; the rest goes to
+  // candles. The browser build stays lower so a second tab or phone on the same IP fits too.
+  const lim = new RateLimiter(IS_BROWSER ? 14 : 24);
+  let strikes = 0;
   let okCount = 0;
 
   async function fetchPools(path, rankName) {
@@ -54,11 +80,19 @@ export function startGeckoTerminal(store) {
     if (rankName) store.setRanking(rankName, mints);
   }
 
+  // A 429 carries no CORS header, so in the browser it surfaces as a bare TypeError without a
+  // status (as does a dropped connection). Back off on those too: 20 s, then doubling while they
+  // keep coming, so a real rate limit still gets a full minute's rest.
+  const blind = (err) => IS_BROWSER && err instanceof TypeError && err.status == null;
   const fail = (err) => {
     if (err?.status === 429) lim.pause(90_000);
+    else if (blind(err)) lim.pause(Math.min(20_000 * 2 ** strikes++, 8 * MIN));
     store.setSource(NAME, 'error', errMsg(err));
   };
-  const ok = () => store.setSource(NAME, 'ok', `OK · ${++okCount} odświeżeń`);
+  const ok = () => {
+    strikes = 0;
+    store.setSource(NAME, 'ok', `OK · ${++okCount} odświeżeń`);
+  };
 
   every(
     90_000,
@@ -76,5 +110,36 @@ export function startGeckoTerminal(store) {
       ok();
     },
     fail,
+  );
+
+  // 24 h of 15-minute candles per token, from the same pool DexScreener prices it by (tokens can
+  // have several pools at very different prices). The top 100 refresh every ~5 minutes.
+  every(
+    2_500,
+    async () => {
+      const now = Date.now();
+      const [t] = store.pickForRefresh('ohlcv', 1, now, {
+        intervals: { top: 5 * MIN, hot: 15 * MIN, young: 20 * MIN, rest: 6 * 60 * MIN },
+        filter: (tok) => !!tok.pairAddress && ((store.rank.get(tok.mint) || Infinity) <= 150 || tok.pinnedUntil > now),
+      });
+      if (!t) return;
+      const pool = t.pairAddress;
+      let json;
+      try {
+        json = await lim.run(() =>
+          getJSON(`${BASE}/pools/${pool}/ohlcv/minute?aggregate=15&limit=97&currency=usd&token=${t.mint}`, { headers: HEADERS }),
+        );
+      } catch (err) {
+        // Put the token back in the queue so it is retried soon after the pause.
+        if (err?.status !== 404) t.enriched.ohlcv = 0;
+        throw err;
+      }
+      if (t.pairAddress === pool) store.setCandles(t.mint, parseOhlcv(json), pool);
+      ok();
+    },
+    (err) => {
+      // A pool GeckoTerminal doesn't know (404) is not a source outage.
+      if (err?.status !== 404) fail(err);
+    },
   );
 }

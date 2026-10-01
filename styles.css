@@ -304,6 +304,8 @@ a { color: inherit; text-decoration: none; }
 .bs-bar .s { background: var(--down); transition: flex-grow 0.6s; }
 .bs-n { display: flex; justify-content: space-between; font: 600 11px/1 var(--mono); }
 .bs-n .lbl { color: var(--dim); font-family: var(--sans); font-weight: 500; }
+.bs-v { display: flex; justify-content: space-between; font: 600 11px/1 var(--mono); font-variant-numeric: tabular-nums; }
+.bs-v:empty, .bs-v span:empty { display: none; }
 
 .hold b { display: block; font-size: 13px; }
 .hold small { font: 600 10.5px/1.2 var(--mono); }
@@ -437,34 +439,35 @@ a { color: inherit; text-decoration: none; }
 
 /* ---------- responsive ---------- */
 /* Table columns collapse by the board's own width (container queries), so they always fit. */
+/* 5m / 1h / 4h stay visible longest; below 964px the quick line under each token takes over. */
 @container board (max-width: 1357px) {
-  .table { --cols: 36px minmax(200px, 1.6fr) 124px 96px 60px 60px 84px 84px 84px 116px 86px 60px 40px 28px; }
-  .c-24 { display: none; }
-}
-@container board (max-width: 1289px) {
-  .table { --cols: 36px minmax(200px, 1.6fr) 124px 96px 60px 60px 84px 84px 116px 86px 60px 40px 28px; }
+  .table { --cols: 36px minmax(200px, 1.6fr) 124px 96px 60px 60px 60px 84px 84px 116px 86px 60px 40px 28px; }
   .c-liq { display: none; }
 }
-@container board (max-width: 1197px) {
-  .table { --cols: 36px minmax(200px, 1.6fr) 124px 96px 60px 60px 84px 84px 116px 86px 40px 28px; }
+@container board (max-width: 1265px) {
+  .table { --cols: 36px minmax(200px, 1.6fr) 124px 96px 60px 60px 60px 84px 84px 116px 86px 40px 28px; }
   .c-x { display: none; }
 }
-@container board (max-width: 1129px) {
-  .table { --cols: 36px minmax(200px, 1.6fr) 124px 96px 60px 60px 84px 116px 28px; }
-  .c-vol, .c-hold, .c-risk { display: none; }
+@container board (max-width: 1197px) {
+  .table { --cols: 36px minmax(200px, 1.6fr) 124px 96px 60px 60px 60px 84px 84px 116px 40px 28px; }
+  .c-hold { display: none; }
 }
-@container board (max-width: 895px) {
+@container board (max-width: 1103px) {
+  .table { --cols: 36px minmax(200px, 1.6fr) 124px 96px 60px 60px 60px 84px 116px 28px; }
+  .c-vol, .c-risk { display: none; }
+}
+@container board (max-width: 963px) {
   .table { --cols: 32px minmax(160px, 1.6fr) 120px 92px 60px 84px 28px; }
-  .c-5m, .c-bs { display: none; }
+  .c-5m, .c-4h, .c-bs { display: none; }
 }
 @container board (max-width: 703px) {
   .table { --cols: 26px minmax(0, 1fr) 92px 84px; }
   .thead { display: none; }
   .row { column-gap: 8px; padding: 0 12px; min-height: 64px; grid-template-rows: minmax(60px, auto) auto; }
   .row .c-mc, .row .c-star { display: none; }
-  .row .c-1h { grid-column: 4; grid-row: 1; align-self: end; margin-bottom: 4px; }
-  .row .c-price { grid-column: 4; grid-row: 1; align-self: start; margin-top: 8px; }
-  .row .c-1h .pct { padding: 2px 5px; min-width: 0; font-size: 11.5px; }
+  /* 5m / 1h / 4h are in the quick line below, so the right column shows just the price. */
+  .row .c-1h { display: none; }
+  .row .c-price { grid-column: 4; grid-row: 1; align-self: center; }
   .hype-n { font-size: 15px; width: 30px; }
   .hype { gap: 6px; }
   .av { width: 32px; height: 32px; }
@@ -567,17 +570,21 @@ a { color: inherit; text-decoration: none; }
 
 /* ---------- quick stats line (narrow screens) ---------- */
 .c-quick { display: none; }
-@container board (max-width: 895px) {
+@container board (max-width: 963px) {
   .row { padding-block: 8px; }
   .row .c-quick {
     display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;
     grid-column: 2 / -1; grid-row: 2; margin-top: 2px;
     font: 600 11.5px/1.3 var(--mono); font-variant-numeric: tabular-nums; color: var(--muted);
   }
+  .q-g { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 3px 8px; }
+  .q-g > * { white-space: nowrap; }
+  .q-c i, .q-kv i { font-style: normal; color: var(--dim); font-family: var(--sans); font-weight: 500; margin-right: 3px; }
+  .q-c.up { color: var(--up); }
+  .q-c.down { color: var(--down); }
   .q-b { color: var(--up); }
-  .q-s { color: var(--down); margin-left: -4px; }
-  .q-l { color: var(--dim); font-family: var(--sans); font-weight: 500; margin-left: -6px; }
-  .q-kv i { font-style: normal; color: var(--dim); font-family: var(--sans); font-weight: 500; margin-right: 2px; }
+  .q-s { color: var(--down); }
+  .q-l { color: var(--dim); font-family: var(--sans); font-weight: 500; margin-left: -3px; }
   .q-x { padding: 2px 8px; border-radius: 6px; background: var(--panel3); color: var(--text); text-decoration: none; }
   .q-x:active { background: var(--line2); }
 }
@@ -588,12 +595,12 @@ a { color: inherit; text-decoration: none; }
 
 /* "since you first saw it" chip: in the sub-line on wide screens, in the quick line on phones */
 .chip.seen { font-weight: 700; }
-@container board (max-width: 895px) {
+@container board (max-width: 963px) {
   .tok-sub .chip.seen { display: none; }
   .c-quick .chip.seen { padding: 1px 7px; }
 }
 .c-quick > .chip.seen { display: none; }
-@container board (max-width: 895px) { .c-quick > .chip.seen { display: inline-flex; } }
+@container board (max-width: 963px) { .c-quick > .chip.seen { display: inline-flex; } }
 
 /* ---------- 2× since first seen: blinking gold frame ---------- */
 .row.x2 {
@@ -609,3 +616,19 @@ a { color: inherit; text-decoration: none; }
 @media (prefers-reduced-motion: reduce) {
   .row.x2 { box-shadow: inset 0 0 0 2px #ffc93c; }
 }
+
+/* ---------- quick copy of the contract address ---------- */
+.cp-btn {
+  flex: none; align-self: center; height: 18px; padding: 0 5px; border-radius: 5px;
+  border: 1px solid var(--line2); background: var(--panel2); color: var(--muted);
+  font: 600 11px/16px var(--mono); cursor: pointer;
+}
+.cp-btn:hover, .cp-btn:focus-visible { color: var(--text); border-color: var(--accent); }
+.q-cp {
+  padding: 2px 8px; border-radius: 6px; border: 0; background: var(--panel3); color: var(--text);
+  font: 600 11.5px/1.3 var(--mono); cursor: pointer;
+}
+.q-cp:active { background: var(--line2); }
+.cp-btn.ok, .q-cp.ok { color: var(--up); border-color: var(--up); }
+@container board (max-width: 963px) { .tok-name .cp-btn { display: none; } }
+@container board (max-width: 703px) { .q-cp { padding: 1px 6px; font-size: 11px; } }

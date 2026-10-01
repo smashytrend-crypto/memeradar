@@ -6,6 +6,8 @@ const BASE = 'https://lite-api.jup.ag';
 const NAME = 'jupiter';
 const SOL = 'So11111111111111111111111111111111111111112';
 
+const z = (v) => num(v) ?? 0;
+
 export function jupToPatch(j) {
   const s1 = j.stats1h || {};
   const s5 = j.stats5m || {};
@@ -30,6 +32,12 @@ export function jupToPatch(j) {
     organicScore: num(j.organicScore),
     organicLabel: j.organicScoreLabel,
     traders1h: num(s1.numTraders),
+    // Buy / sell volume in USD and trade counts across all pools — DexScreener only reports the
+    // total volume, and counts for one pair. Jupiter leaves out zero fields (and quiet windows),
+    // so a missing value means 0, not "unknown".
+    buyVol: { m5: z(s5.buyVolume), h1: z(s1.buyVolume), h6: z(s6.buyVolume), h24: z(s24.buyVolume) },
+    sellVol: { m5: z(s5.sellVolume), h1: z(s1.sellVolume), h6: z(s6.sellVolume), h24: z(s24.sellVolume) },
+    jupTx: { b5: z(s5.numBuys), s5: z(s5.numSells), b1: z(s1.numBuys), s1: z(s1.numSells) },
     verified: !!j.isVerified,
     tags: Array.isArray(j.tags) ? j.tags : undefined,
     launchpad: lp.includes('pump') ? 'pump' : lp.includes('bonk') || lp.includes('letsbonk') ? 'bonk' : lp ? lp : undefined,
@@ -112,12 +120,13 @@ export function startJupiter(store) {
     fail,
   );
 
-  // Holder counts / audit for whatever currently ranks: up to 100 mints per call.
+  // Holder counts, audit and buy/sell volume for whatever currently ranks: up to 100 mints per
+  // call, so the top 100 refresh every ~15 s for ~6 requests a minute.
   every(
-    10_000,
+    5_000,
     async () => {
       const batch = store.pickForRefresh('jup', 100, Date.now(), {
-        intervals: { top: 40_000, hot: 90_000, young: 180_000, rest: 30 * 60_000 },
+        intervals: { top: 15_000, hot: 60_000, young: 180_000, rest: 30 * 60_000 },
         filter: (t) => t.hype.score > 3 || t.pinnedUntil > Date.now() || (t.launchpad && !t.graduated && t.bondingProgress >= 20),
       });
       if (!batch.length) return;

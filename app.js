@@ -138,29 +138,42 @@ function sparkPath(values, w, h, pad = 2) {
 const MIN_MS = 60e3;
 
 /**
- * Price points for a token's mini chart, oldest first, as [ageMs, price]. DexScreener's % changes
- * give where the price was 24 h / 6 h / 1 h / 5 min ago (so a full chart shows immediately), and
- * our own samples (every ~15 s) fill in the last minutes. For a market younger than a window, that
- * window's change is taken as "since the pool opened".
+ * Price points for a token's mini chart, oldest first, as [ageMs, price]. Preferably real
+ * 15-minute candles for the last 24 h (GeckoTerminal, `d.cd`); otherwise DexScreener's % changes
+ * give where the price was 24 h / 6 h / 1 h / 5 min ago (for a market younger than a window, that
+ * window's change is taken as "since the pool opened"). Our own samples (every ~15 s) fill in the
+ * minutes after the last candle, and the live price ends the line.
  */
 function priceSeries(d) {
   if (!(d.p > 0)) return [];
   const now = nowTs();
-  const age = Math.max(MIN_MS, now - (d.ma || d.ca || now - 86400e3));
   const pts = [];
-  let origin = false;
-  for (const [win, ch] of [[86400e3, d.c24], [6 * 3600e3, d.c6], [3600e3, d.c1], [300e3, d.c5]]) {
-    if (ch == null || !Number.isFinite(ch) || ch <= -100) continue;
-    const p = d.p / (1 + ch / 100);
-    if (!(p > 0)) continue;
-    if (age >= win) pts.push([win, p]);
-    else if (!origin) {
-      pts.push([age, p]);
-      origin = true;
+  let newestAge = Infinity; // age of the newest candle point: live samples only fill in after it
+  if (d.cd?.length >= 3) {
+    for (const [ts, p] of d.cd) {
+      const a = Math.max(0, now - ts * 1000);
+      pts.push([a, p]);
+      newestAge = Math.min(newestAge, a);
+    }
+  } else {
+    const age = Math.max(MIN_MS, now - (d.ma || d.ca || now - 86400e3));
+    let origin = false;
+    for (const [win, ch] of [[86400e3, d.c24], [6 * 3600e3, d.c6], [3600e3, d.c1], [300e3, d.c5]]) {
+      if (ch == null || !Number.isFinite(ch) || ch <= -100) continue;
+      const p = d.p / (1 + ch / 100);
+      if (!(p > 0)) continue;
+      if (age >= win) pts.push([win, p]);
+      else if (!origin) {
+        pts.push([age, p]);
+        origin = true;
+      }
     }
   }
   const ph = (d.ph || []).filter((v) => v > 0);
-  ph.forEach((v, i) => pts.push([(ph.length - 1 - i) * 15e3 + 1000, v]));
+  ph.forEach((v, i) => {
+    const a = (ph.length - 1 - i) * 15e3 + 1000;
+    if (a < newestAge) pts.push([a, v]);
+  });
   pts.push([0, d.p]);
   return pts.sort((a, b) => b[0] - a[0]);
 }
@@ -392,17 +405,17 @@ function rowTemplate() {
   el.innerHTML = `
     <div class="c-rank"><span class="rank-n"></span><span class="rank-d"></span></div>
     <div class="c-token"><div class="tok"><span class="av-slot"></span><div class="tok-t">
-      <div class="tok-name"><b></b><small></small></div><div class="tok-sub"></div></div></div></div>
+      <div class="tok-name"><b></b><small></small><button class="cp-btn" data-copy aria-label="Kopiuj adres kontraktu" title="Kopiuj adres kontraktu">⧉</button></div><div class="tok-sub"></div></div></div></div>
     <div class="c-hype"><div class="hype"><span class="hype-n"></span><div class="hype-v"><div class="hype-bar"><i></i></div>
       <svg class="spark" viewBox="0 0 100 30" preserveAspectRatio="none" aria-label="Cena: ostatnie 24 h"><path class="sp-a"/><path class="sp-l" fill="none" stroke-width="1.8" stroke-linejoin="round" vector-effect="non-scaling-stroke"/><path class="sp-d" fill="none" stroke-width="5" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg></div></div></div>
     <div class="c-price num"></div>
     <div class="c-ch c-5m num"><span class="pct"></span></div>
     <div class="c-ch c-1h num"><span class="pct"></span></div>
-    <div class="c-ch c-24 num"><span class="pct"></span></div>
+    <div class="c-ch c-4h num"><span class="pct"></span></div>
     <div class="c-mc num"></div>
     <div class="c-liq num"></div>
     <div class="c-vol num"></div>
-    <div class="c-bs"><div class="bs"><div class="bs-bar"><span class="b"></span><span class="s"></span></div><div class="bs-n"><span class="up"></span><span class="lbl"></span><span class="down"></span></div></div></div>
+    <div class="c-bs"><div class="bs"><div class="bs-bar"><span class="b"></span><span class="s"></span></div><div class="bs-n"><span class="up"></span><span class="lbl"></span><span class="down"></span></div><div class="bs-v"><span class="up"></span><span class="down"></span></div></div></div>
     <div class="c-hold num hold"><b></b><small></small></div>
     <div class="c-x num"></div>
     <div class="c-risk"><div class="risk">${SHIELD}</div></div>
@@ -419,6 +432,11 @@ function flash(el, dir) {
   );
 }
 
+/** Assign a DOM property only when it changes, to avoid needless style / layout work. */
+function setIf(el, prop, v) {
+  if (el[prop] !== v) el[prop] = v;
+}
+
 function setText(el, text, dirVal, prevVal) {
   if (el.textContent === text) return;
   el.textContent = text;
@@ -432,9 +450,9 @@ function updateRow(entry, d, idx) {
   const q = entry.q || (entry.q = {
     rankN: $('.rank-n', el), rankD: $('.rank-d', el), av: $('.av-slot', el), name: $('.tok-name b', el), sym: $('.tok-name small', el),
     sub: $('.tok-sub', el), hs: $('.hype-n', el), hbar: $('.hype-bar i', el), sp: $('.sp-l', el), spA: $('.sp-a', el), spD: $('.sp-d', el), svg: $('.spark', el), price: $('.c-price', el),
-    c5: $('.c-5m .pct', el), c1: $('.c-1h .pct', el), c24: $('.c-24 .pct', el), mc: $('.c-mc', el), liq: $('.c-liq', el),
+    c5: $('.c-5m .pct', el), c1: $('.c-1h .pct', el), c4: $('.c-4h .pct', el), mc: $('.c-mc', el), liq: $('.c-liq', el),
     vol: $('.c-vol', el), bsB: $('.bs-bar .b', el), bsS: $('.bs-bar .s', el), bsNb: $('.bs-n .up', el), bsNs: $('.bs-n .down', el),
-    bsL: $('.bs-n .lbl', el), quick: $('.c-quick', el), holdB: $('.hold b', el), holdS: $('.hold small', el), x: $('.c-x', el), risk: $('.risk', el), star: $('.star', el),
+    bsL: $('.bs-n .lbl', el), bsVb: $('.bs-v .up', el), bsVs: $('.bs-v .down', el), bs: $('.bs', el), quick: $('.c-quick', el), holdB: $('.hold b', el), holdS: $('.hold small', el), x: $('.c-x', el), risk: $('.risk', el), star: $('.star', el),
   });
 
   const h = heat(d.hs);
@@ -483,8 +501,11 @@ function updateRow(entry, d, idx) {
 
   setText(q.hs, d.hs.toFixed(0), d.hs, p.hs);
   q.hbar.style.width = `${d.hs}%`;
-  const mc = miniChart(d, 100, 30);
-  const key = mc ? mc.line : '';
+  // Only rebuild the sparkline when its inputs change (or once a minute, as points age).
+  const sparkIn = `${d.p}|${d.cd?.length}|${d.cd?.at(-1)?.join()}|${d.ph?.length}|${d.ph?.at(-1)}|${d.c5}|${d.c1}|${d.c24}|${Math.floor(nowTs() / 60e3)}`;
+  const mc = entry.sparkIn === sparkIn ? undefined : miniChart(d, 100, 30);
+  entry.sparkIn = sparkIn;
+  const key = mc === undefined ? entry.spark : mc ? mc.line : '';
   if (entry.spark !== key) {
     entry.spark = key;
     q.svg.classList.toggle('down', !!mc && !mc.up);
@@ -494,7 +515,7 @@ function updateRow(entry, d, idx) {
   }
 
   setText(q.price, fmt.price(d.p), d.p, p.p);
-  for (const [node, v] of [[q.c5, d.c5], [q.c1, d.c1], [q.c24, d.c24]]) {
+  for (const [node, v] of [[q.c5, d.c5], [q.c1, d.c1], [q.c4, d.c4]]) {
     node.textContent = fmt.pct(v);
     node.className = `pct ${cls(v)}`;
   }
@@ -502,22 +523,42 @@ function updateRow(entry, d, idx) {
   setText(q.liq, fmt.usd(d.lq));
   setText(q.vol, fmt.usd(d.v1));
 
-  // buy / sell pressure (5m, falls back to 1h when quiet)
-  const use5 = d.b5 + d.s5 >= 6;
-  const b = use5 ? d.b5 : d.b1;
-  const s = use5 ? d.s5 : d.s1;
-  q.bsB.style.flexGrow = b || (s ? 0 : 1);
-  q.bsS.style.flexGrow = s || (b ? 0 : 1);
-  q.bsNb.textContent = fmt.n(b);
-  q.bsNs.textContent = fmt.n(s);
+  // Buy / sell, 5 min — 1 h when quiet. With fresh Jupiter data both the counts and the USD volume
+  // split come from it (all pools, so they agree); otherwise DexScreener's counts, without volume.
+  // The bar weighs by volume when known, by counts otherwise.
+  const jup = d.jb5 != null && d.bv5 != null;
+  const [b5, s5, b1, s1] = jup ? [d.jb5, d.js5, d.jb1, d.js1] : [d.b5, d.s5, d.b1, d.s1];
+  const use5 = b5 + s5 >= 6;
+  const b = use5 ? b5 : b1;
+  const s = use5 ? s5 : s1;
+  const bv = jup ? (use5 ? d.bv5 : d.bv1) : null;
+  const sv = jup ? (use5 ? d.sv5 : d.sv1) : null;
+  const hasVol = bv != null && sv != null;
+  const wb = hasVol ? bv : b;
+  const ws = hasVol ? sv : s;
+  q.bsB.style.flexGrow = wb || (ws ? 0 : 1);
+  q.bsS.style.flexGrow = ws || (wb ? 0 : 1);
+  q.bsNb.textContent = `▲ ${fmt.n(b)}`;
+  q.bsNs.textContent = `▼ ${fmt.n(s)}`;
   q.bsL.textContent = use5 ? '5m' : '1h';
+  setIf(q.bsVb, 'textContent', hasVol ? fmt.usd(bv) : '');
+  setIf(q.bsVs, 'textContent', hasVol ? fmt.usd(sv) : '');
+  setIf(q.bs, 'title', `${use5 ? 'Ostatnie 5 min' : 'Ostatnia godzina'}: ${fmt.n(b)} kupna${hasVol ? ` za ${fmt.usd(bv)}` : ''}, ${fmt.n(s)} sprzedaży${hasVol ? ` za ${fmt.usd(sv)}` : ''}`);
 
   // Compact line under the token for narrow screens, where these columns don't fit.
   const xPart = d.x != null
     ? `<a class="q-x" href="https://x.com/search?q=${encodeURIComponent(d.m)}&f=live" target="_blank" rel="noopener">𝕏 ${d.x}${d.xc ? '+' : ''} postów/h</a>`
     : `<a class="q-x" href="https://x.com/search?q=${encodeURIComponent(d.m)}&f=live" target="_blank" rel="noopener" title="Najnowsze posty z tym kontraktem na X">𝕏 ↗</a>`;
-  const quick = sinceChip + `<span class="q-b" title="Kupna (${use5 ? '5 min' : '1 h'})">▲ ${fmt.n(b)}</span><span class="q-s" title="Sprzedaże (${use5 ? '5 min' : '1 h'})">▼ ${fmt.n(s)}</span><span class="q-l">${use5 ? '5m' : '1h'}</span>`
-    + `<span class="q-kv"><i>MC</i> ${fmt.usd(d.mc)}</span><span class="q-kv"><i>Vol</i> ${fmt.usd(d.v1)}</span>${xPart}`;
+  const chg = (label, v) => `<span class="q-c ${cls(v)}"><i>${label}</i>${fmt.pct(v)}</span>`;
+  const win = use5 ? '5 min' : '1 h';
+  // Groups wrap as whole units: price changes · buys/sells (count · volume) · market cap, volume, X.
+  const quick =
+    sinceChip +
+    `<span class="q-g">${chg('5m', d.c5)}${chg('1h', d.c1)}${chg('4h', d.c4)}</span>` +
+    `<span class="q-g"><span class="q-b" title="Kupna (${win})">▲ ${fmt.n(b)}${hasVol ? ` · ${fmt.usd(bv)}` : ''}</span>` +
+    `<span class="q-s" title="Sprzedaże (${win})">▼ ${fmt.n(s)}${hasVol ? ` · ${fmt.usd(sv)}` : ''}</span><span class="q-l">${use5 ? '5m' : '1h'}</span></span>` +
+    `<span class="q-g"><span class="q-kv"><i>MC</i> ${fmt.usd(d.mc)}</span><span class="q-kv"><i>Vol</i> ${fmt.usd(d.v1)}</span>${xPart}` +
+    `<button class="q-cp" data-copy aria-label="Kopiuj adres kontraktu">⧉ CA</button></span>`;
   if (entry.quick !== quick) {
     q.quick.innerHTML = quick;
     entry.quick = quick;
@@ -797,11 +838,48 @@ function toast(msg) {
   toastT = setTimeout(() => t.classList.remove('show'), 1800);
 }
 
-async function copy(text) {
+/** Copies text; falls back to a hidden textarea where the async clipboard API is missing or blocked. */
+async function copyText(text) {
   try {
-    await navigator.clipboard.writeText(text);
-    toast('Skopiowano adres kontraktu');
+    await navigator.clipboard.writeText(text); // must start inside the tap handler (iOS Safari)
+    return true;
   } catch {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none';
+      document.body.appendChild(ta);
+      ta.select();
+      ta.setSelectionRange(0, text.length);
+      const ok = document.execCommand('copy');
+      ta.remove();
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+}
+
+/** Quick copy from the list: tick on the button + toast; the drawer stays closed. */
+async function copyFromList(mint, btn) {
+  const sym = state.rows.get(mint)?.data?.s;
+  const ok = await copyText(mint);
+  toast(ok ? `Skopiowano adres${sym ? ` $${sym}` : ''}` : 'Nie udało się skopiować — otwórz token i skopiuj adres');
+  if (!ok || !btn) return;
+  const label = btn.textContent;
+  btn.classList.add('ok');
+  btn.textContent = btn.classList.contains('q-cp') ? '✓ CA' : '✓';
+  setTimeout(() => {
+    btn.classList.remove('ok');
+    btn.textContent = label;
+  }, 1200);
+}
+
+async function copy(text) {
+  if (await copyText(text)) {
+    toast('Skopiowano adres kontraktu');
+  } else {
     // Clipboard blocked (e.g. inside the preview frame): select the full address instead.
     const el = $('#caFull');
     if (el) {
@@ -947,6 +1025,10 @@ function renderDetail(d) {
     ['Traderzy 1h', fmt.n(d.tr)],
     ['Kupno/sprz. 5m', `<span class="up">${fmt.n(d.b5)}</span> / <span class="down">${fmt.n(d.s5)}</span>`],
     ['Kupno/sprz. 1h', `<span class="up">${fmt.n(d.b1)}</span> / <span class="down">${fmt.n(d.s1)}</span>`],
+    ['Wol. kupna 5m', `<span class="up">${fmt.usd(d.bv5)}</span>`],
+    ['Wol. sprzed. 5m', `<span class="down">${fmt.usd(d.sv5)}</span>`],
+    ['Wol. kupna 1h', `<span class="up">${fmt.usd(d.bv1)}</span>`],
+    ['Wol. sprzed. 1h', `<span class="down">${fmt.usd(d.sv1)}</span>`],
     ['Holderzy', `${fmt.n(d.h)} ${d.hg ? `<small class="${d.hg > 0 ? 'up' : 'down'}">${d.hg > 0 ? '+' : ''}${fmt.n(d.hg)}/h</small>` : ''}`],
     ['Wiek', d.ca ? fmt.ago(d.ca) : '—'],
     (() => {
@@ -955,6 +1037,7 @@ function renderDetail(d) {
     })(),
     ['Zmiana 5m', `<span class="${cls(d.c5)}">${fmt.pct(d.c5)}</span>`],
     ['Zmiana 1h', `<span class="${cls(d.c1)}">${fmt.pct(d.c1)}</span>`],
+    ['Zmiana 4h', `<span class="${cls(d.c4)}">${fmt.pct(d.c4)}</span>`],
     ['Zmiana 6h', `<span class="${cls(d.c6)}">${fmt.pct(d.c6)}</span>`],
     ['Zmiana 24h', `<span class="${cls(d.c24)}">${fmt.pct(d.c24)}</span>`],
     d.bp != null ? ['Bonding curve', `${d.bp.toFixed(1)}%`] : ['Status', d.gr ? '🎓 Na DEX' : d.dexId || '—'],
@@ -1228,6 +1311,11 @@ $('#rows').addEventListener('click', (e) => {
   const star = e.target.closest('.star');
   const row = e.target.closest('.row[data-m]');
   if (!row || e.target.closest('a')) return; // links (e.g. 𝕏 search) open on their own
+  if (e.target.closest('[data-copy]')) {
+    e.stopPropagation();
+    copyFromList(row.dataset.m, e.target.closest('[data-copy]'));
+    return;
+  }
   if (star) {
     e.stopPropagation();
     toggleWatch(row.dataset.m);
