@@ -1,4 +1,4 @@
-// MemeRadar frontend — vanilla JS, no build step. Server pushes snapshots over SSE every 2s;
+// DMN frontend — vanilla JS, no build step. Server pushes snapshots over SSE every 2s;
 // rows are keyed by mint and patched in place (with FLIP re-ordering) so updates stay smooth.
 
 // Static preview: a snapshot embedded by scripts/build-preview.mjs replaces the server.
