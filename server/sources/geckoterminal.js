@@ -1,16 +1,16 @@
 // GeckoTerminal public API (https://www.geckoterminal.com/dex-api): trending + new Solana pools,
-// and price candles (OHLCV, 1–15 min by pool age) for the top tokens — used for the 4h change and the
+// and 15-minute price candles (OHLCV) for the top tokens — used for the 4h change and the
 // mini charts, since DexScreener only reports 5m / 1h / 6h / 24h changes.
-import { candleSpec } from '../candles.js';
 import { IS_BROWSER, RateLimiter, errMsg, every, getJSON, isMint, num, toMs } from '../util.js';
 
 const BASE = 'https://api.geckoterminal.com/api/v2/networks/solana';
 const NAME = 'geckoterminal';
 const HEADERS = { accept: 'application/json;version=20230302' };
 const MIN = 60_000;
+export const CANDLE_MS = 15 * MIN;
 
 /**
- * OHLCV response → candles as [startMs, open, close, high, low], oldest first. GeckoTerminal lists newest
+ * OHLCV response → candles as [startMs, open, close], oldest first. GeckoTerminal lists newest
  * first and leaves out intervals without trades; rows with a non-positive price are dropped.
  */
 export function parseOhlcv(json) {
@@ -23,9 +23,7 @@ export function parseOhlcv(json) {
     const open = num(row[1]);
     const close = num(row[4]);
     if (!(ts > 0) || !(open > 0) || !(close > 0)) continue;
-    const high = num(row[2]);
-    const low = num(row[3]);
-    out.push([ts * 1000, open, close, high > 0 ? high : Math.max(open, close), low > 0 ? low : Math.min(open, close)]);
+    out.push([ts * 1000, open, close]);
   }
   return out.sort((a, b) => a[0] - b[0]);
 }
@@ -114,31 +112,29 @@ export function startGeckoTerminal(store) {
     fail,
   );
 
-  // The last 24 h of candles per token (1-minute for pools younger than 5 h, 5-minute up to a day,
-  // 15-minute after), from the same pool DexScreener prices it by (tokens can have several pools
-  // at very different prices). The top 100 refresh every ~5 minutes.
+  // 24 h of 15-minute candles per token, from the same pool DexScreener prices it by (tokens can
+  // have several pools at very different prices). The top 100 refresh every ~5 minutes.
   every(
     2_500,
     async () => {
       const now = Date.now();
       const [t] = store.pickForRefresh('ohlcv', 1, now, {
         intervals: { top: 5 * MIN, hot: 15 * MIN, young: 20 * MIN, rest: 6 * 60 * MIN },
-        filter: (tok) => !!tok.pairAddress && ((store.rank.get(tok.mint) || Infinity) <= 100 || tok.pinnedUntil > now),
+        filter: (tok) => !!tok.pairAddress && ((store.rank.get(tok.mint) || Infinity) <= 150 || tok.pinnedUntil > now),
       });
       if (!t) return;
       const pool = t.pairAddress;
-      const spec = candleSpec(now - (t.createdAt || 0));
       let json;
       try {
         json = await lim.run(() =>
-          getJSON(`${BASE}/pools/${pool}/ohlcv/minute?aggregate=${spec.minutes}&limit=${spec.limit}&currency=usd&token=${t.mint}`, { headers: HEADERS }),
+          getJSON(`${BASE}/pools/${pool}/ohlcv/minute?aggregate=15&limit=97&currency=usd&token=${t.mint}`, { headers: HEADERS }),
         );
       } catch (err) {
         // Put the token back in the queue so it is retried soon after the pause.
         if (err?.status !== 404) t.enriched.ohlcv = 0;
         throw err;
       }
-      if (t.pairAddress === pool) store.setCandles(t.mint, parseOhlcv(json), pool, spec.minutes * MIN);
+      if (t.pairAddress === pool) store.setCandles(t.mint, parseOhlcv(json), pool);
       ok();
     },
     (err) => {

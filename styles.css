@@ -298,10 +298,6 @@ a { color: inherit; text-decoration: none; }
 .spark .sp-d { stroke: var(--up); }
 .spark.down .sp-a { fill: url(#spark-down); }
 .spark.down .sp-l, .spark.down .sp-d { stroke: var(--down); }
-.spark .sp-b { stroke: var(--muted); stroke-dasharray: 2 3; opacity: 0.45; }
-/* Rough line (no candles yet): dashed and lighter so it doesn't pass for real data. */
-.spark.est .sp-l { stroke-dasharray: 3 2; opacity: 0.7; }
-.spark.est .sp-a { opacity: 0.4; }
 
 .pct { display: inline-block; font: 600 12.5px/1 var(--mono); padding: 4px 6px; border-radius: 6px; min-width: 54px; text-align: right; }
 .pct.up { background: var(--up-bg); }
