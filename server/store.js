@@ -1,8 +1,8 @@
-import { computeHype } from './scoring.js';
-import { CURVE_DEXES, NON_MEME, NON_MEME_TAGS, PUMP_INITIAL_VTOKENS, PUMP_K, PUMP_TOKENS_FOR_SALE } from './constants.js';
-import { Emitter, clamp } from './util.js';
-import { change4h, freshCandles, sparkPoints } from './candles.js';
-import { EVM_BASE_ASSETS, EVM_NON_MEME_SYMBOLS, evmEligible, getChain, isAddressOn, normAddr } from './chains.js';
+import { computeHype } from './scoring.js?v=murdi7b2';
+import { CURVE_DEXES, NON_MEME, NON_MEME_TAGS, PUMP_INITIAL_VTOKENS, PUMP_K, PUMP_TOKENS_FOR_SALE } from './constants.js?v=murdi7b2';
+import { Emitter, clamp } from './util.js?v=murdi7b2';
+import { change4h, freshCandles, sparkPoints } from './candles.js?v=murdi7b2';
+import { EVM_BASE_ASSETS, EVM_NON_MEME_SYMBOLS, evmEligible, getChain, isAddressOn, normAddr } from './chains.js?v=murdi7b2';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
