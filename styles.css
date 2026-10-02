@@ -490,14 +490,15 @@ a { color: inherit; text-decoration: none; }
   .c-5m, .c-4h, .c-bs { display: none; }
 }
 @container board (max-width: 703px) {
-  .table { --cols: 26px minmax(0, 1fr) 92px 84px; }
+  /* Narrower action column so token names get more room on phones. */
+  .table { --cols: 22px minmax(0, 1fr) 80px 58px; }
   .thead { display: none; }
   .row { column-gap: 8px; padding: 0 12px; min-height: 64px; grid-template-rows: minmax(60px, auto) auto; }
   .row .c-mc, .row .c-star { display: none; }
   /* 5m / 1h / 4h are in the quick block below; the right column holds the X / copy buttons. */
   .row .c-1h { display: none; }
   .row .c-act { grid-column: 4; grid-row: 1; align-self: center; flex-direction: column; align-items: stretch; gap: 5px; }
-  .act-x, .act-cp { height: 26px; font-size: 12px; }
+  .act-x, .act-cp { height: 26px; padding: 0 6px; font-size: 11.5px; }
   .hype-n { font-size: 15px; width: 30px; }
   .hype { gap: 6px; }
   .av { width: 32px; height: 32px; }
@@ -543,6 +544,13 @@ a { color: inherit; text-decoration: none; }
   .sel, .toggle, .btn-ghost { flex: none; height: 36px; }
   .search { flex-basis: 100%; max-width: none; }
   .search input { height: 42px; }
+  /* iOS Safari zooms into any field under 16px when it gets focus. */
+  .search input, .sel select { font-size: 16px; }
+  .thead { top: 0; }
+  /* Status tips anchor to the whole dots row (right edge), so the left dots' tips stay on screen. */
+  .sources { position: relative; }
+  .src { position: static; }
+  .src .tip { max-width: min(280px, calc(100vw - 32px)); }
   .search kbd { display: none; }
   .podium { grid-template-columns: 1fr; }
   .podium .pcard:nth-child(n + 2) { display: none; }
@@ -600,6 +608,15 @@ a { color: inherit; text-decoration: none; }
 .d-ca-btn:hover { border-color: var(--accent); }
 /* Narrower windows (incl. the app's preview pane): the drawer takes the whole width. */
 @media (max-width: 1100px) { .drawer { width: 100vw; border-left: 0; } }
+
+/* Smallest phones (320–360px): the hype column keeps only the score, so names stay readable. */
+@container board (max-width: 340px) {
+  .table { --cols: 20px minmax(0, 1fr) 28px 56px; }
+  .row .hype-v { display: none; }
+  .hype-n { width: auto; font-size: 14px; }
+  .row .av { width: 28px; height: 28px; }
+  .tok { gap: 7px; }
+}
 
 /* ---------- quick stats block (narrow screens) ---------- */
 .c-quick { display: none; }

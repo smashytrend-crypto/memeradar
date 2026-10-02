@@ -1,8 +1,8 @@
-import { computeHype } from './scoring.js?v=murdi7b2';
-import { CURVE_DEXES, NON_MEME, NON_MEME_TAGS, PUMP_INITIAL_VTOKENS, PUMP_K, PUMP_TOKENS_FOR_SALE } from './constants.js?v=murdi7b2';
-import { Emitter, clamp } from './util.js?v=murdi7b2';
-import { change4h, freshCandles, sparkPoints } from './candles.js?v=murdi7b2';
-import { EVM_BASE_ASSETS, EVM_NON_MEME_SYMBOLS, evmEligible, getChain, isAddressOn, normAddr } from './chains.js?v=murdi7b2';
+import { computeHype } from './scoring.js?v=murf2dkr';
+import { CURVE_DEXES, NON_MEME, NON_MEME_TAGS, PUMP_INITIAL_VTOKENS, PUMP_K, PUMP_TOKENS_FOR_SALE } from './constants.js?v=murf2dkr';
+import { Emitter, clamp } from './util.js?v=murf2dkr';
+import { change4h, freshCandles, sparkPoints } from './candles.js?v=murf2dkr';
+import { EVM_BASE_ASSETS, EVM_NON_MEME_SYMBOLS, evmEligible, getChain, isAddressOn, normAddr } from './chains.js?v=murf2dkr';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -398,7 +398,8 @@ export class Store extends Emitter {
     for (const t of this.tokens.values()) {
       if (t.pinnedUntil > now) continue;
       const age = now - (t.createdAt || t.firstSeen);
-      const idle = now - Math.max(t.lastActivity, t.enriched.dexAt || 0, t.firstSeen);
+      // Fetching a token is not activity: a dead token refreshed every few seconds is still dead.
+      const idle = now - Math.max(t.lastActivity, t.firstSeen);
       const small = (t.mcap || 0) < 8000 && (t.liquidity || 0) < 3000;
       if ((age > 30 * MIN && idle > 20 * MIN && small && t.hype.score < 5) || (idle > 6 * HOUR && t.hype.score < 2)) {
         dead.push(t.mint);
@@ -447,6 +448,13 @@ export class Store extends Emitter {
           .sort((a, b) => b.bondingProgress - a.bondingProgress || b.hype.score - a.hype.score);
         break;
       case 'graduated':
+        if (this.chain.evm) {
+          // EVM: few launchpads report graduation, so this lists tokens new on a DEX in the last
+          // 24 h (graduation time when known, otherwise the first DEX pool) from the radar.
+          const since = (t) => t.migratedAt || t.createdAt || 0;
+          list = this.ranked.filter((t) => now - since(t) < 24 * HOUR && pass(t)).sort((a, b) => since(b) - since(a));
+          break;
+        }
         list = [...this.tokens.values()]
           .filter((t) => t.graduated && t.migratedAt && now - t.migratedAt < 24 * HOUR && (t.mcap > 0 || t.liquidity > 0) && pass(t))
           .sort((a, b) => b.migratedAt - a.migratedAt);
@@ -522,6 +530,8 @@ export class Store extends Emitter {
       hp: Object.fromEntries(Object.entries(t.hype.parts).map(([k, v]) => [k, Math.round(v * 100)])),
       hh: t.hist.slice(-40).map((p) => p[1]),
       ph: t.hist.slice(-40).map((p) => p[2]),
+      pt: t.hist.length ? Math.round((now - t.hist[t.hist.length - 1][0]) / 1000) : 0, // age of the newest sample, s
+      pi: t.hist.length > 1 ? Math.round((t.hist[t.hist.length - 1][0] - t.hist[Math.max(0, t.hist.length - 40)][0]) / Math.min(39, t.hist.length - 1) / 1000) : 15, // mean spacing, s
       bp: t.launchpad && !t.graduated ? r1(t.bondingProgress) : null,
       gr: t.graduated,
       ma: t.migratedAt || null,
@@ -536,7 +546,7 @@ export class Store extends Emitter {
       vs: m.surge || null,
       fr: now - (t.enriched.dexAt || 0) < 120_000, // price freshly confirmed by DexScreener
       ai: t.ai?.result?.headline || null,
-      live: now - t.lastActivity < 60_000,
+      live: now - t.lastActivity < 2 * 60_000,
     };
   }
 

@@ -1,8 +1,8 @@
 // GeckoTerminal public API (https://www.geckoterminal.com/dex-api): trending + new pools per network,
 // and 15-minute price candles (OHLCV) for the top tokens — used for the 4h change and the
 // mini charts, since DexScreener only reports 5m / 1h / 6h / 24h changes.
-import { IS_BROWSER, RateLimiter, errMsg, every, getJSON, num, toMs } from '../util.js?v=murdi7b2';
-import { GT_CURVES, isAddressOn, normAddr } from '../chains.js?v=murdi7b2';
+import { IS_BROWSER, RateLimiter, errMsg, every, getJSON, num, toMs } from '../util.js?v=murf2dkr';
+import { gtCurve, isAddressOn, normAddr } from '../chains.js?v=murf2dkr';
 
 const API = 'https://api.geckoterminal.com/api/v2/networks';
 const NAME = 'geckoterminal';
@@ -51,7 +51,7 @@ export function poolToPatch(pool, tokensById, network = 'solana') {
       mcap: num(a.market_cap_usd) ?? num(a.fdv_usd),
       fdv: num(a.fdv_usd),
       liquidity: num(a.reserve_in_usd),
-      change: { m5: num(pc.m5), h1: num(pc.h1), h6: num(pc.h6), h24: num(pc.h24) },
+      change: { m5: num(pc.m5) ?? 0, h1: num(pc.h1) ?? 0, h6: num(pc.h6) ?? 0, h24: num(pc.h24) ?? 0 },
       volume: { m5: num(vol.m5), h1: num(vol.h1), h6: num(vol.h6), h24: num(vol.h24) },
       txns: { m5: txn('m5'), h1: txn('h1'), h6: txn('h6'), h24: txn('h24') },
       createdAt: toMs(a.pool_created_at),
@@ -82,7 +82,7 @@ export function startGeckoTerminal(store) {
       const mint = normAddr(chain, raw);
       if (!isAddressOn(chain, mint)) continue;
       // A launchpad's bonding-curve pool: the token hasn't graduated to a real DEX yet.
-      const curve = GT_CURVES[dex];
+      const curve = gtCurve(dex, chain.gt);
       if (curve) patch.launchpad = curve;
       const existing = store.get(mint);
       // DexScreener aggregates across all pairs; prefer it when fresh.
@@ -91,7 +91,19 @@ export function startGeckoTerminal(store) {
       }
       const t = store.upsert(mint, patch, NAME);
       if (!t) continue;
-      if (curve && poolAddr) (t.curvePools ??= new Set()).add(String(poolAddr).toLowerCase());
+      if (curve && poolAddr) {
+        const key = String(poolAddr).toLowerCase();
+        if (!t.curvePools?.has(key)) {
+          (t.curvePools ??= new Set()).add(key);
+          // DexScreener may have counted the curve (or a dust pool) as graduation before the
+          // curve was known: undo it; its next refresh re-decides with the curve in mind.
+          if (t.graduated && (t.liquidity || 0) < 1000) {
+            t.graduated = false;
+            t.migratedAt = 0;
+            t.bondingProgress = null;
+          }
+        }
+      }
       mints.push(mint);
     }
     if (rankName) store.setRanking(rankName, mints);

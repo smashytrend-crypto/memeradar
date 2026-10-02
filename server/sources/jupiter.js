@@ -1,6 +1,6 @@
 // Jupiter Tokens API v2 (https://dev.jup.ag/docs/tokens): trending / organic lists, holder counts,
 // organic score, audit (mint/freeze authority, top holders) and bonding-curve progress. Also SOL price.
-import { RateLimiter, errMsg, every, getJSON, isMint, num, toMs } from '../util.js?v=murdi7b2';
+import { RateLimiter, errMsg, every, getJSON, isMint, num, toMs } from '../util.js?v=murf2dkr';
 
 const BASE = 'https://lite-api.jup.ag';
 const NAME = 'jupiter';
@@ -24,14 +24,14 @@ export function jupToPatch(j) {
     symbol: j.symbol,
     image: j.icon,
     holders: num(j.holderCount),
-    holderChange1h: num(s1.holderChange),
+    holderChange1h: z(s1.holderChange),
     priceUsd: num(j.usdPrice),
     mcap: num(j.mcap),
     fdv: num(j.fdv),
     liquidity: num(j.liquidity),
     organicScore: num(j.organicScore),
     organicLabel: j.organicScoreLabel,
-    traders1h: num(s1.numTraders),
+    traders1h: z(s1.numTraders),
     // Buy / sell volume in USD and trade counts across all pools — DexScreener only reports the
     // total volume, and counts for one pair. Jupiter leaves out zero fields (and quiet windows),
     // so a missing value means 0, not "unknown".
@@ -55,7 +55,7 @@ export function jupToPatch(j) {
         devBalancePercentage: num(a.devBalancePercentage),
       },
     // Jupiter's % changes back-fill tokens DexScreener has not refreshed yet.
-    jupChange: { m5: num(s5.priceChange), h1: num(s1.priceChange), h6: num(s6.priceChange), h24: num(s24.priceChange) },
+    jupChange: { m5: z(s5.priceChange), h1: z(s1.priceChange), h6: z(s6.priceChange), h24: z(s24.priceChange) },
   };
 }
 

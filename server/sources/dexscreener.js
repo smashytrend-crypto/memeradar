@@ -1,9 +1,9 @@
 // DexScreener public API (https://docs.dexscreener.com/api/reference):
 // discovery (profiles / boosts) + batched market data for every tracked token.
-import { RateLimiter, errMsg, every, getJSON, num, sleep, toMs } from '../util.js?v=murdi7b2';
-import { Store } from '../store.js?v=murdi7b2';
-import { isCurvePair } from '../constants.js?v=murdi7b2';
-import { isAddressOn, normAddr } from '../chains.js?v=murdi7b2';
+import { RateLimiter, errMsg, every, getJSON, num, sleep, toMs } from '../util.js?v=murf2dkr';
+import { Store } from '../store.js?v=murf2dkr';
+import { isCurvePair } from '../constants.js?v=murf2dkr';
+import { isAddressOn, normAddr } from '../chains.js?v=murf2dkr';
 
 const BASE = 'https://api.dexscreener.com';
 const NAME = 'dexscreener';
@@ -40,7 +40,10 @@ export function pairsToPatch(pairs, curvePools) {
   const sum = (path) => pairs.reduce((acc, p) => acc + (path(p) || 0), 0);
   const created = Math.min(...pairs.map((p) => p.pairCreatedAt || Infinity));
   const onCurve = (p) => isCurvePair(p) || !!curvePools?.has(String(p.pairAddress).toLowerCase());
-  const dexPairs = pairs.filter((p) => !onCurve(p));
+  // A launchpad can create a near-empty DEX pool at launch (Pons on Robinhood): while another
+  // source knows the token's curve, only a pool with real liquidity counts as graduation.
+  const real = (p) => (p.liquidity?.usd || 0) >= 1000;
+  const dexPairs = pairs.filter((p) => !onCurve(p) && (!curvePools?.size || real(p)));
   const curvePair = pairs.find((p) => isCurvePair(p));
   const dexSince = Math.min(...dexPairs.map((p) => p.pairCreatedAt || Infinity));
   const info = top.info || {};
@@ -53,11 +56,12 @@ export function pairsToPatch(pairs, curvePools) {
     mcap: num(top.marketCap) ?? num(top.fdv),
     fdv: num(top.fdv),
     liquidity: sum((p) => p.liquidity?.usd),
+    // A window without trades has no entry: that is a 0% move, not "keep the old value".
     change: {
-      m5: num(top.priceChange?.m5),
-      h1: num(top.priceChange?.h1),
-      h6: num(top.priceChange?.h6),
-      h24: num(top.priceChange?.h24),
+      m5: num(top.priceChange?.m5) ?? 0,
+      h1: num(top.priceChange?.h1) ?? 0,
+      h6: num(top.priceChange?.h6) ?? 0,
+      h24: num(top.priceChange?.h24) ?? 0,
     },
     volume: {
       m5: sum((p) => p.volume?.m5),
@@ -72,7 +76,7 @@ export function pairsToPatch(pairs, curvePools) {
     dexId: top.dexId,
     dexUrl: top.url,
     createdAt: Number.isFinite(created) ? toMs(created) : undefined,
-    boosts: num(top.boosts?.active),
+    boosts: num(top.boosts?.active) ?? 0,
     socials: Object.keys(socials).length ? socials : undefined,
     // Trades on a real DEX pool (for launchpad tokens: the curve is finished).
     graduated: dexPairs.length > 0 || undefined,
@@ -107,9 +111,18 @@ export function startDexScreener(store, config) {
     }
     const now = Date.now();
     for (const [mint, group] of groups) {
-      const { hadCurve, curveDex, dexSince, ...patch } = pairsToPatch(group, store.get(mint)?.curvePools);
+      const curvePools = store.get(mint)?.curvePools;
+      const { hadCurve, curveDex, dexSince, ...patch } = pairsToPatch(group, curvePools);
+      // Still on a curve GeckoTerminal knows about and DexScreener only sees a dust pool: leave the
+      // market data to GeckoTerminal (and don't mark DexScreener's data as fresh, which would make
+      // GeckoTerminal skip its own update).
+      const curveOnly = curvePools?.size && !patch.graduated;
+      if (curveOnly) {
+        for (const k of ['priceUsd', 'mcap', 'fdv', 'liquidity', 'pairAddress', 'dexId', 'dexUrl', 'change', 'volume', 'txns']) delete patch[k];
+      }
       const t = store.upsert(mint, patch, NAME);
       if (!t) continue;
+      if (curveOnly) continue;
       // Where the token was launched (its curve pool's DEX), for the launchpad badge.
       if (curveDex && !t.launchpad) t.launchpad = curveDex === 'pumpfun' ? 'pump' : curveDex;
       t.enriched.dexAt = now;

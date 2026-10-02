@@ -3,15 +3,15 @@
 // cross-origin reads). One engine per network, created the first time the viewer opens it; only
 // the network on screen polls its sources, the others pause (and keep their data for a quick
 // switch back).
-import { Store } from './server/store.js?v=murdi7b2';
-import { every, getJSON, num } from './server/util.js?v=murdi7b2';
-import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=murdi7b2';
-import { startPumpPortal } from './server/sources/pumpportal.js?v=murdi7b2';
-import { startDexScreener } from './server/sources/dexscreener.js?v=murdi7b2';
-import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=murdi7b2';
-import { startJupiter } from './server/sources/jupiter.js?v=murdi7b2';
-import { startRugCheck } from './server/sources/rugcheck.js?v=murdi7b2';
-import { startGoPlus } from './server/sources/goplus.js?v=murdi7b2';
+import { Store } from './server/store.js?v=murf2dkr';
+import { every, getJSON, num } from './server/util.js?v=murf2dkr';
+import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=murf2dkr';
+import { startPumpPortal } from './server/sources/pumpportal.js?v=murf2dkr';
+import { startDexScreener } from './server/sources/dexscreener.js?v=murf2dkr';
+import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=murf2dkr';
+import { startJupiter } from './server/sources/jupiter.js?v=murf2dkr';
+import { startRugCheck } from './server/sources/rugcheck.js?v=murf2dkr';
+import { startGoPlus } from './server/sources/goplus.js?v=murf2dkr';
 
 const baseConfig = {
   demo: false,
@@ -61,10 +61,28 @@ function createEngine(chainId) {
   setInterval(() => store.active && store.rescore(), 2000);
   setInterval(() => store.prune(), 60_000);
 
+  // Watched tokens: load the ones this network doesn't hold yet (after a reload or a prune) and
+  // keep them from being pruned. Each missing one is fetched at most once a minute.
+  const tried = new Map();
+  function ensureWatched(mints) {
+    const now = Date.now();
+    for (const m of mints) {
+      if (!isAddressOn(chain, m)) continue;
+      if (store.get(m)) {
+        store.pin(m, 5 * 60_000);
+        continue;
+      }
+      if (now - (tried.get(m) || 0) < 60_000) continue;
+      tried.set(m, now);
+      refresh(m).then(() => store.pin(m, 5 * 60_000));
+    }
+  }
+
   return {
     chain,
     store,
     snapshot(view, filters, limit = 100, mints = []) {
+      if (view === 'watch') ensureWatched(mints);
       return { t: Date.now(), view, rows: store.list(view, filters, limit, mints), stats: store.stats(), sources: store.sources };
     },
     feed: () => store.feed.slice(0, 60),

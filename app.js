@@ -69,8 +69,16 @@ const fmt = {
     if (p >= 1000) return `$${p.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
     if (p >= 1) return `$${p.toFixed(3)}`;
     if (p >= 0.001) return `$${p.toFixed(5)}`;
-    const zeros = Math.floor(-Math.log10(p));
-    const digits = Math.round(p * 10 ** (zeros + 4)).toString().replace(/0+$/, '') || '0';
+    // Zeros right after the decimal point, then 4 significant digits (exact powers of ten and
+    // values that round up to the next decade included).
+    let zeros = Math.ceil(-Math.log10(p)) - 1;
+    let n = Math.round(p * 10 ** (zeros + 4));
+    if (n >= 1e4) {
+      zeros -= 1;
+      n = Math.round(n / 10);
+    }
+    if (zeros < 3) return `$${p.toFixed(5)}`;
+    const digits = String(n).replace(/0+$/, '') || '0';
     const z = String(zeros).split('').map((d) => SUB[d]).join(''); // 0.0₄12 = 0.000012
     return `$0.0${z}${digits}`;
   },
@@ -174,9 +182,14 @@ function priceSeries(d) {
       }
     }
   }
-  const ph = (d.ph || []).filter((v) => v > 0);
+  // Our samples, newest last: `pt` = age of the newest (s), `pi` = mean spacing (s) — real
+  // spacing can stretch when the network was off screen or the tab was throttled.
+  const ph = d.ph || [];
+  const step = (d.pi || 15) * 1000;
+  const last = (d.pt || 0) * 1000 + 1000;
   ph.forEach((v, i) => {
-    const a = (ph.length - 1 - i) * 15e3 + 1000;
+    if (!(v > 0)) return;
+    const a = (ph.length - 1 - i) * step + last;
     if (a < newestAge) pts.push([a, v]);
   });
   pts.push([0, d.p]);
@@ -677,7 +690,7 @@ function applyMode(s) {
   if (state.onlyGraduated === only) return;
   state.onlyGraduated = only;
   for (const v of ['new', 'graduating']) $(`#tabs [data-view="${v}"]`).hidden = only;
-  $('#tabs [data-view="graduated"]').lastChild.textContent = only ? 'Świeże graduacje' : 'Po graduacji';
+  markChain();
   $('#feedChips [data-f="launch"]').hidden = only;
   if (only && (state.view === 'new' || state.view === 'graduating')) setView('graduated');
 }
@@ -691,7 +704,8 @@ function applySnapshot(snap) {
   $('#liveBadge').className = `live-badge${state.paused ? ' paused' : ''}`;
   $('#liveBadge').lastChild.textContent = STATIC ? 'MIGAWKA' : state.paused ? 'PAUZA' : 'LIVE';
   if (snap.view === 'hype') $('#c-hype').textContent = fmt.n(snap.stats.ranked);
-  if (state.paused || snap.view !== state.view) return;
+  // Paused: keep the table frozen — but a new tab / network still gets its first render.
+  if ((state.paused && !state.firstSnapshot) || snap.view !== state.view) return;
   if (state.firstSnapshot) $('#rows').innerHTML = '';
   renderRows(snap.rows);
   state.firstSnapshot = false;
@@ -756,6 +770,7 @@ function connect() {
   if (f.maxAgeH) params.set('maxAgeH', f.maxAgeH);
   if (f.safe) params.set('safe', '1');
   if (state.view === 'watch') params.set('mints', [...state.watch].join(','));
+  if (state.view !== 'hype') state.hypeRows = null; // win rate needs the Hype list (not streamed here)
   const es = new EventSource(`/api/stream?${params}`);
   state.es = es;
   es.addEventListener('snapshot', (e) => {
@@ -831,8 +846,12 @@ function renderChains() {
 }
 
 function markChain() {
+  // EVM networks: "fresh graduations" lists tokens new on a DEX (see Store.list).
+  const grad = $('#tabs [data-view="graduated"]');
+  if (grad && chainCfg().evm) grad.lastChild.textContent = 'Nowe na DEX';
+  else if (grad) grad.lastChild.textContent = state.onlyGraduated ? 'Świeże graduacje' : 'Po graduacji';
   $$('#chains .chain-btn').forEach((b) => {
-    const on = b.dataset.chain === ENGINE.chain;
+    const on = b.dataset.chain === ENGINE?.chain;
     b.classList.toggle('on', on);
     b.setAttribute('aria-pressed', on);
   });
@@ -850,13 +869,24 @@ function setChain(id) {
   $('#search').value = '';
   $('#searchResults').hidden = true;
   $('#sources').dataset.html = '';
+  renderWatchCount();
   setView(state.view === 'watch' ? 'hype' : state.view);
+}
+
+/** Watchlist count for the network on screen (addresses are per network). */
+function renderWatchCount() {
+  const evm = chainCfg().evm;
+  const n = [...state.watch].filter((m) => (evm ? /^0x[0-9a-fA-F]{40}$/.test(m) : !m.startsWith('0x'))).length;
+  $('#c-watch').textContent = n || '';
 }
 
 function setView(view) {
   state.view = view;
   LS.set('view', view);
-  $$('#tabs button').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
+  $$('#tabs button').forEach((b) => {
+    b.classList.toggle('active', b.dataset.view === view);
+    b.setAttribute('aria-selected', String(b.dataset.view === view));
+  });
   for (const e of state.rows.values()) e.el.remove();
   state.rows.clear();
   state.prevRanks.clear();
@@ -895,10 +925,13 @@ function toggleWatch(mint) {
   if (state.watch.has(mint)) state.watch.delete(mint);
   else state.watch.add(mint);
   LS.set('watch', [...state.watch]);
-  $('#c-watch').textContent = state.watch.size || '';
+  renderWatchCount();
   toast(state.watch.has(mint) ? '★ Dodano do obserwowanych' : 'Usunięto z obserwowanych');
-  const e = state.rows.get(mint);
-  if (e) updateRow(e, e.data, 0);
+  const star = state.rows.get(mint)?.el.querySelector('.star');
+  if (star) {
+    star.classList.toggle('on', state.watch.has(mint));
+    star.textContent = state.watch.has(mint) ? '★' : '☆';
+  }
   if (state.view === 'watch') connect();
   if (state.selected === mint && state.detail) renderDetail(state.detail);
 }
@@ -942,7 +975,7 @@ async function copyFromList(mint, btn) {
   const ok = await copyText(mint);
   toast(ok ? `Skopiowano adres${sym ? ` $${sym}` : ''}` : 'Nie udało się skopiować — otwórz token i skopiuj adres');
   if (!ok || !btn) return;
-  const label = btn.textContent;
+  const label = '⧉ CA';
   btn.classList.add('ok');
   btn.textContent = '✓ CA';
   setTimeout(() => {
@@ -981,9 +1014,12 @@ async function openDetail(mint, push = true) {
   document.body.style.overflow = 'hidden';
   const known = state.rows.get(mint)?.data;
   $('#drawerBody').innerHTML = known ? detailSkeleton(known) : '<div class="empty"><b>Ładowanie…</b></div>';
-  if (push) history.replaceState(null, '', `#t=${mint}`);
+  if (push) history.replaceState(null, '', `#t=${ENGINE ? `${ENGINE.chain}:` : ''}${mint}`);
   clearInterval(detailTimer);
   await loadDetail(mint);
+  // Closed or switched to another token while loading: don't leave a poller behind.
+  if (state.selected !== mint) return;
+  clearInterval(detailTimer);
   detailTimer = setInterval(() => loadDetail(mint), 4000);
 }
 
@@ -1147,14 +1183,16 @@ function renderDetail(d) {
           <p>${esc(t.text)}</p><div class="tweet-m"><span>♥ ${fmt.n(t.likes)}</span><span>⟲ ${fmt.n(t.rts)}</span><span>💬 ${fmt.n(t.replies)}</span></div></a>`,
         )
         .join('')
-    : `<p class="note">${x ? 'Brak postów w ostatniej godzinie.' : 'Dane z X pojawią się, gdy token wejdzie do top 60 (wymaga X_BEARER_TOKEN).'}</p>`;
+    : `<p class="note">${x ? 'Brak postów w ostatniej godzinie.' : (ENGINE ? 'Posty z X są dostępne w wersji serwerowej (wymaga klucza X API).' : 'Dane z X pojawią się, gdy token wejdzie do top 60 (wymaga X_BEARER_TOKEN).')}</p>`;
 
   const trades = d.trades?.length
     ? `<table class="trades">${d.trades
         .slice(0, 25)
         .map((t) => `<tr><td class="side ${t.side === 'buy' ? 'up' : 'down'}">${t.side === 'buy' ? 'Kupno' : 'Sprzedaż'}</td><td class="mono">${fmt.sol(t.sol)}</td><td class="mono muted">${fmt.short(t.trader)}</td><td class="mono muted">${fmt.ago(t.t)}</td></tr>`)
         .join('')}</table>`
-    : '<p class="note">Lista pojedynczych transakcji wymaga klucza PumpPortal (PUMPPORTAL_API_KEY). Liczby kupna/sprzedaży powyżej pochodzą z DexScreenera i odświeżają się co 15–60 s.</p>';
+    : chainCfg().evm
+      ? '<p class="note">Lista pojedynczych transakcji jest niedostępna w tej wersji. Liczby kupna/sprzedaży powyżej pochodzą z DexScreenera i odświeżają się co kilka sekund.</p>'
+      : '<p class="note">Lista pojedynczych transakcji wymaga klucza PumpPortal (PUMPPORTAL_API_KEY). Liczby kupna/sprzedaży powyżej pochodzą z DexScreenera i odświeżają się co 15–60 s.</p>';
 
   const ranks = Object.entries(d.rankings || {});
   const hasPair = !!d.pair && !STATIC; // the preview frame cannot embed other sites
@@ -1334,7 +1372,7 @@ async function doSearch(q) {
     return;
   }
   box.hidden = false;
-  box.innerHTML = '<div class="sr-empty">Szukam na całej Solanie…</div>';
+  box.innerHTML = `<div class="sr-empty">Szukam w sieci ${esc(chainCfg().name || 'Solana')}…</div>`;
   try {
     let rows;
     if (ENGINE) {
@@ -1390,6 +1428,8 @@ function togglePause() {
   $('#pauseBtn').classList.toggle('on', state.paused);
   $('#pauseBtn .pi').textContent = state.paused ? '▶' : '❚❚';
   $('#pauseBtn .pl').textContent = state.paused ? 'Wznów' : 'Zamroź';
+  $('#liveBadge').className = `live-badge${state.paused ? ' paused' : ''}`;
+  $('#liveBadge').lastChild.textContent = state.paused ? 'PAUZA' : 'LIVE';
   toast(state.paused ? 'Tabela zamrożona — feed działa dalej' : 'Aktualizacje wznowione');
 }
 $('#pauseBtn').addEventListener('click', togglePause);
@@ -1486,12 +1526,15 @@ document.addEventListener('keydown', (e) => {
 
 // ---------- boot ----------
 renderChains();
+renderWatchCount();
 $('#chains').addEventListener('click', (e) => {
   const b = e.target.closest('.chain-btn');
   if (b) setChain(b.dataset.chain);
 });
-$('#c-watch').textContent = state.watch.size || '';
-$$('#tabs button').forEach((b) => b.classList.toggle('active', b.dataset.view === state.view));
+$$('#tabs button').forEach((b) => {
+  b.classList.toggle('active', b.dataset.view === state.view);
+  b.setAttribute('aria-selected', String(b.dataset.view === state.view));
+});
 skeleton();
 if (STATIC) {
   const when = new Date(STATIC.t).toLocaleString('pl-PL', { dateStyle: 'short', timeStyle: 'short' });
@@ -1501,5 +1544,10 @@ if (STATIC) {
   document.body.classList.add('static');
 }
 connect();
-const deep = location.hash.match(/^#t=([1-9A-HJ-NP-Za-km-z]{32,44})$/);
-if (deep) openDetail(deep[1], false);
+// Deep link: #t=<network>:<address> (older links: #t=<solana address>).
+const deep = location.hash.match(/^#t=(?:(\w+):)?([1-9A-HJ-NP-Za-km-z]{32,44}|0x[0-9a-fA-F]{40})$/);
+if (deep) {
+  const net = deep[1] || (deep[2].startsWith('0x') ? null : 'solana');
+  if (ENGINE && net && ENGINE.chains[net]) setChain(net);
+  openDetail(deep[2].startsWith('0x') ? deep[2].toLowerCase() : deep[2], false);
+}

@@ -1,7 +1,7 @@
 // Supported networks: ids used by each data source, native coin, address format, explorer links.
 // Solana keeps its own sources (PumpPortal, Jupiter, RugCheck); the EVM chains run on
 // DexScreener + GeckoTerminal for market data and GoPlus for safety checks and holder counts.
-import { isMint } from './util.js?v=murdi7b2';
+import { isMint } from './util.js?v=murf2dkr';
 
 const EVM_RE = /^0x[0-9a-fA-F]{40}$/;
 export const isEvmAddress = (s) => typeof s === 'string' && EVM_RE.test(s);
@@ -151,3 +151,6 @@ export const evmEligible = (chain, t, now) => (chain.memeOnly === false ? !isBas
 
 /** GeckoTerminal dex ids of launchpad bonding curves on EVM networks → launchpad key. */
 export const GT_CURVES = { 'four-meme': 'fourmeme', 'pons-v2': 'pons', 'o1-launchpad': 'o1' };
+
+/** Launchpad key for a GeckoTerminal dex id (ids may carry a network suffix, e.g. o1-launchpad-robinhood). */
+export const gtCurve = (dexId, network) => GT_CURVES[dexId] || GT_CURVES[String(dexId || '').replace(`-${network}`, '')];

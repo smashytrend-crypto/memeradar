@@ -1,6 +1,6 @@
 // On-chain stream of pump.fun / bonk.fun launches, trades and migrations via PumpPortal's
 // free WebSocket (https://pumpportal.fun/data-api/real-time). One connection only — their rule.
-import { num } from '../util.js?v=murdi7b2';
+import { num } from '../util.js?v=murf2dkr';
 
 const WS_URL = 'wss://pumpportal.fun/api/data';
 const NAME = 'pumpportal';
@@ -72,6 +72,8 @@ export function startPumpPortal(store, config) {
     }
   }
 
+  let pausedOff = false; // closed because the network went off screen
+
   function connect() {
     store.setSource(NAME, 'connecting', 'łączenie…');
     const url = config.pumpPortalKey ? `${WS_URL}?api-key=${encodeURIComponent(config.pumpPortalKey)}` : WS_URL;
@@ -107,6 +109,12 @@ export function startPumpPortal(store, config) {
     };
     ws.onclose = () => {
       clearTimeout(connectTimer);
+      // Network not on screen: stay disconnected until it is (the 30 s check reconnects).
+      if (store.active === false) {
+        pausedOff = true;
+        store.setSource(NAME, 'connecting', 'wstrzymane (inna sieć)');
+        return;
+      }
       store.setSource(NAME, 'error', `rozłączono — ponawiam za ${Math.round(backoff / 1000)}s`);
       setTimeout(connect, backoff);
       backoff = Math.min(backoff * 2, 60_000);
@@ -134,6 +142,15 @@ export function startPumpPortal(store, config) {
 
   // Keep trade subscriptions on tokens that matter: fresh launches + anything ranking high.
   setInterval(() => {
+    if (store.active === false) {
+      if (ws && ws.readyState <= 1) ws.close();
+      return;
+    }
+    if (pausedOff) {
+      pausedOff = false;
+      connect();
+      return;
+    }
     const now = Date.now();
     const top = store.topMints(300);
     const topSet = new Set(top);
