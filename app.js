@@ -379,7 +379,8 @@ function renderSources(src) {
   // Rebuild only when a source's state or message changes (not on every snapshot).
   const keys = CHAIN_SOURCES[chainCfg().evm ? 'evm' : 'solana'];
   const html = Object.entries(SRC_LABEL)
-    .filter(([k]) => keys.includes(k))
+    // Sources switched off in this build (X and AI without keys) are left out entirely.
+    .filter(([k]) => keys.includes(k) && src[k]?.state !== 'off')
     .map(([k, label]) => {
       const s = src[k] || { state: 'connecting', msg: 'oczekiwanie…' };
       return `<span class="src ${s.state}" tabindex="0"><i></i><span class="lbl">${label}</span>
