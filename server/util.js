@@ -88,11 +88,18 @@ export class RateLimiter {
   }
 }
 
-/** Runs fn every `ms`, never overlapping, swallowing (and reporting) errors. */
-export function every(ms, fn, onError) {
+/**
+ * Runs fn every `ms`, never overlapping, swallowing (and reporting) errors. With `gate`, the loop
+ * idles while gate() is false (e.g. the engine of a network the viewer isn't looking at).
+ */
+export function every(ms, fn, onError, gate) {
   let stopped = false;
   (async () => {
     while (!stopped) {
+      if (gate && !gate()) {
+        await sleep(500);
+        continue;
+      }
       try {
         await fn();
       } catch (err) {

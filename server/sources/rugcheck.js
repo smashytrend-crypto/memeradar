@@ -40,6 +40,7 @@ export function startRugCheck(store) {
       for (const t of batch) await check(t).catch(fail);
     },
     fail,
+    () => store.active,
   );
 
   return { check: (t) => check(t).catch(fail) };

@@ -1,7 +1,8 @@
 import { computeHype } from './scoring.js';
 import { CURVE_DEXES, NON_MEME, NON_MEME_TAGS, PUMP_INITIAL_VTOKENS, PUMP_K, PUMP_TOKENS_FOR_SALE } from './constants.js';
-import { Emitter, clamp, isMint } from './util.js';
+import { Emitter, clamp } from './util.js';
 import { change4h, freshCandles, sparkPoints } from './candles.js';
+import { EVM_BASE_ASSETS, EVM_NON_MEME_SYMBOLS, evmEligible, getChain, isAddressOn, normAddr } from './chains.js';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -99,6 +100,9 @@ export class Store extends Emitter {
   constructor(config) {
     super();
     this.config = config;
+    this.chain = getChain(config.chain);
+    // The engine of a network the viewer isn't looking at pauses its source loops.
+    this.active = true;
     this.tokens = new Map();
     this.rankings = {}; // name -> Map(mint -> rank)
     this.sources = {}; // name -> { state, msg, at, count }
@@ -124,13 +128,16 @@ export class Store extends Emitter {
   // ---------- writes ----------
 
   get(mint) {
-    return this.tokens.get(mint);
+    return this.tokens.get(normAddr(this.chain, mint));
   }
 
   /** Create-or-update a token. Returns the token, or null if rejected (not a memecoin / invalid). */
   upsert(mint, patch = {}, source) {
-    if (!isMint(mint) || NON_MEME.has(mint)) return null;
-    if (patch.tags?.some?.((tag) => NON_MEME_TAGS.has(tag))) {
+    mint = normAddr(this.chain, mint);
+    if (!isAddressOn(this.chain, mint) || NON_MEME.has(mint)) return null;
+    const sym = this.chain.evm && patch.symbol ? String(patch.symbol).toUpperCase() : '';
+    const nonMemeSymbol = sym && (EVM_BASE_ASSETS.has(sym) || (this.chain.memeOnly !== false && EVM_NON_MEME_SYMBOLS.has(sym)));
+    if (nonMemeSymbol || patch.tags?.some?.((tag) => NON_MEME_TAGS.has(tag))) {
       // Tags (from Jupiter) can arrive after another source already added the token.
       this.tokens.delete(mint);
       return null;
@@ -273,7 +280,10 @@ export class Store extends Emitter {
   setRanking(name, mints) {
     const map = new Map();
     let i = 1;
-    for (const m of mints) if (this.tokens.has(m) && !map.has(m)) map.set(m, i++);
+    for (let m of mints) {
+      m = normAddr(this.chain, m);
+      if (this.tokens.has(m) && !map.has(m)) map.set(m, i++);
+    }
     this.rankings[name] = map;
   }
 
@@ -339,7 +349,8 @@ export class Store extends Emitter {
         });
       }
       const hasMarket = t.mcap > 0 || t.liquidity > 0;
-      if (t.hype.score > 0 && hasMarket && (!this.config.onlyGraduated || isOnDex(t))) arr.push(t);
+      const eligible = !this.chain.evm || evmEligible(this.chain, t, now);
+      if (t.hype.score > 0 && hasMarket && eligible && (!this.config.onlyGraduated || isOnDex(t))) arr.push(t);
     }
     arr.sort((a, b) => b.hype.score - a.hype.score);
     this.ranked = arr;
@@ -456,7 +467,7 @@ export class Store extends Emitter {
           );
         break;
       case 'watch':
-        list = mints.map((m) => this.tokens.get(m)).filter(Boolean);
+        list = mints.map((m) => this.get(m)).filter(Boolean);
         break;
       default:
         list = this.ranked.filter(pass);
@@ -597,6 +608,8 @@ export class Store extends Emitter {
       onlyGraduated: !!this.config.onlyGraduated,
       aiEnabled: !!this.aiEnabled,
       solPrice: this.solPrice,
+      chain: this.chain.id,
+      native: this.chain.native,
       hasX: this.hasX,
       demo: !!this.config.demo,
       uptime: now - this.startedAt,

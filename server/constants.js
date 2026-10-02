@@ -28,7 +28,7 @@ export const NON_MEME = new Set([
 export const NON_MEME_TAGS = new Set(['lst', 'stable', 'stablecoin', 'defi', 'rwa']);
 
 /** DexScreener dexIds of launchpad bonding-curve pools (not a real DEX market yet). */
-export const CURVE_DEXES = new Set(['pumpfun', 'meteoradbc', 'launchlab', 'moonshot', 'boop']);
+export const CURVE_DEXES = new Set(['pumpfun', 'meteoradbc', 'launchlab', 'moonshot', 'boop', 'fourmeme']);
 export const isCurvePair = (p) =>
   CURVE_DEXES.has(p?.dexId) || (p?.labels || []).some((l) => /launch ?lab|dbc|bonding/i.test(l));
 

@@ -1,8 +1,9 @@
 // DexScreener public API (https://docs.dexscreener.com/api/reference):
 // discovery (profiles / boosts) + batched market data for every tracked token.
-import { RateLimiter, errMsg, every, getJSON, isMint, num, sleep, toMs } from '../util.js';
+import { RateLimiter, errMsg, every, getJSON, num, sleep, toMs } from '../util.js';
 import { Store } from '../store.js';
 import { isCurvePair } from '../constants.js';
+import { isAddressOn, normAddr } from '../chains.js';
 
 const BASE = 'https://api.dexscreener.com';
 const NAME = 'dexscreener';
@@ -28,13 +29,19 @@ export function linksToSocials(links = []) {
   return out;
 }
 
-/** Merges all pairs of one base token into a single token patch. */
-export function pairsToPatch(pairs) {
+/**
+ * Merges all pairs of one base token into a single token patch. `curvePools` (lowercased pool
+ * addresses) marks pools another source knows to be a launchpad curve although DexScreener lists
+ * them under a regular DEX (e.g. Pons on Robinhood Chain runs as a Uniswap v4 hook).
+ */
+export function pairsToPatch(pairs, curvePools) {
   const sorted = [...pairs].sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0));
   const top = sorted[0];
   const sum = (path) => pairs.reduce((acc, p) => acc + (path(p) || 0), 0);
   const created = Math.min(...pairs.map((p) => p.pairCreatedAt || Infinity));
-  const dexPairs = pairs.filter((p) => !isCurvePair(p));
+  const onCurve = (p) => isCurvePair(p) || !!curvePools?.has(String(p.pairAddress).toLowerCase());
+  const dexPairs = pairs.filter((p) => !onCurve(p));
+  const curvePair = pairs.find((p) => isCurvePair(p));
   const dexSince = Math.min(...dexPairs.map((p) => p.pairCreatedAt || Infinity));
   const info = top.info || {};
   const socials = linksToSocials([...(info.socials || []), ...(info.websites || []).map((w) => ({ type: 'website', url: w.url }))]);
@@ -70,11 +77,16 @@ export function pairsToPatch(pairs) {
     // Trades on a real DEX pool (for launchpad tokens: the curve is finished).
     graduated: dexPairs.length > 0 || undefined,
     hadCurve: dexPairs.length < pairs.length,
+    curveDex: curvePair?.dexId,
     dexSince: Number.isFinite(dexSince) ? toMs(dexSince) : undefined,
   };
 }
 
 export function startDexScreener(store, config) {
+  const chain = store.chain;
+  const isAddr = (a) => isAddressOn(chain, a);
+  const norm = (a) => normAddr(chain, a);
+  const active = () => store.active;
   const slow = new RateLimiter(50); // profiles / boosts: 60 rpm
   const fast = new RateLimiter(config.dexscreenerRpm); // pairs: 300 rpm
   let okCount = 0;
@@ -87,20 +99,22 @@ export function startDexScreener(store, config) {
   function applyPairs(pairs, onlyMints) {
     const groups = new Map();
     for (const p of pairs || []) {
-      if (p?.chainId !== 'solana') continue;
-      const mint = p.baseToken?.address;
-      if (!isMint(mint) || (onlyMints && !onlyMints.has(mint))) continue;
+      if (p?.chainId !== chain.dex) continue;
+      const mint = norm(p.baseToken?.address);
+      if (!isAddr(mint) || (onlyMints && !onlyMints.has(mint))) continue;
       if (!groups.has(mint)) groups.set(mint, []);
       groups.get(mint).push(p);
     }
     const now = Date.now();
     for (const [mint, group] of groups) {
-      const { hadCurve, dexSince, ...patch } = pairsToPatch(group);
+      const { hadCurve, curveDex, dexSince, ...patch } = pairsToPatch(group, store.get(mint)?.curvePools);
       const t = store.upsert(mint, patch, NAME);
       if (!t) continue;
+      // Where the token was launched (its curve pool's DEX), for the launchpad badge.
+      if (curveDex && !t.launchpad) t.launchpad = curveDex === 'pumpfun' ? 'pump' : curveDex;
       t.enriched.dexAt = now;
       // The first DEX pool of a launchpad token is created at graduation.
-      const fromLaunchpad = hadCurve || t.launchpad || /(pump|bonk)$/.test(mint);
+      const fromLaunchpad = hadCurve || t.launchpad || (!chain.evm && /(pump|bonk)$/.test(mint));
       if (patch.graduated && fromLaunchpad && !t.migratedAt && dexSince) t.migratedAt = dexSince;
       if ((patch.volume.m5 || 0) > 0) t.lastActivity = Math.max(t.lastActivity, now - 60_000);
       // Still on the pump.fun curve: derive progress from the curve pair's SOL price.
@@ -123,7 +137,7 @@ export function startDexScreener(store, config) {
     ];
     for (const [path, rankName] of endpoints) {
       const data = await slow.run(() => getJSON(`${BASE}/${path}`));
-      const list = (Array.isArray(data) ? data : []).filter((x) => x.chainId === 'solana' && isMint(x.tokenAddress));
+      const list = (Array.isArray(data) ? data : []).filter((x) => x.chainId === chain.dex && isAddr(x.tokenAddress));
       for (const item of list) {
         const socials = linksToSocials(item.links);
         store.upsert(
@@ -138,13 +152,17 @@ export function startDexScreener(store, config) {
           NAME,
         );
       }
-      if (rankName) store.setRanking(rankName, list.map((x) => x.tokenAddress));
+      if (rankName) store.setRanking(rankName, list.map((x) => norm(x.tokenAddress)));
     }
     store.setSource(NAME, 'ok', `OK · ${++okCount} odświeżeń`);
   }
 
   async function enrichLoop() {
     for (;;) {
+      if (!active()) {
+        await sleep(500);
+        continue;
+      }
       const batch = store.pickForRefresh('dex', 30, Date.now(), {
         // Fresh launches get refreshed every minute: without a paid PumpPortal key this is
         // where their live activity (txns / volume / curve progress) comes from.
@@ -157,7 +175,7 @@ export function startDexScreener(store, config) {
       }
       try {
         const mints = batch.map((t) => t.mint);
-        const data = await fast.run(() => getJSON(`${BASE}/tokens/v1/solana/${mints.join(',')}`));
+        const data = await fast.run(() => getJSON(`${BASE}/tokens/v1/${chain.dex}/${mints.join(',')}`));
         applyPairs(Array.isArray(data) ? data : data?.pairs, new Set(mints));
         store.setSource(NAME, 'ok', `OK · ${++okCount} odświeżeń`);
       } catch (err) {
@@ -167,17 +185,18 @@ export function startDexScreener(store, config) {
     }
   }
 
-  every(30_000, discovery, fail(slow));
+  every(30_000, discovery, fail(slow), active);
   enrichLoop();
 
   return {
-    /** Free-text / CA search across all of Solana — adds results to the radar. */
+    /** Free-text / CA search across the whole network — adds results to the radar. */
     async search(q) {
       const data = await fast.run(() => getJSON(`${BASE}/latest/dex/search?q=${encodeURIComponent(q)}`));
       return applyPairs(data?.pairs);
     },
     async refresh(mint) {
-      const data = await fast.run(() => getJSON(`${BASE}/tokens/v1/solana/${mint}`));
+      mint = norm(mint);
+      const data = await fast.run(() => getJSON(`${BASE}/tokens/v1/${chain.dex}/${mint}`));
       return applyPairs(Array.isArray(data) ? data : data?.pairs, new Set([mint]));
     },
   };

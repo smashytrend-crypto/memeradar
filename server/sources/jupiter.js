@@ -108,6 +108,7 @@ export function startJupiter(store) {
       ok();
     },
     fail,
+    () => store.active,
   );
 
   every(
@@ -118,6 +119,7 @@ export function startJupiter(store) {
       if (p) store.solPrice = p;
     },
     fail,
+    () => store.active,
   );
 
   // Holder counts, audit and buy/sell volume for whatever currently ranks: up to 100 mints per
@@ -134,6 +136,7 @@ export function startJupiter(store) {
       ok();
     },
     fail,
+    () => store.active,
   );
 
   return {

@@ -78,6 +78,22 @@ a { color: inherit; text-decoration: none; }
 .live-badge.paused { color: var(--warn); background: var(--warn-bg); }
 @keyframes ping { 0% { box-shadow: 0 0 0 0 rgba(31, 214, 143, 0.6); } 80%, 100% { box-shadow: 0 0 0 6px rgba(31, 214, 143, 0); } }
 
+/* ---------- network switcher ---------- */
+.chains { display: flex; gap: 6px; flex: none; }
+.chain-btn {
+  display: grid; place-items: center; width: 40px; height: 40px; padding: 0; border-radius: 50%;
+  border: 1px solid transparent; background: transparent; color: #8b93a1; cursor: pointer;
+  transition: background 0.2s, color 0.2s, border-color 0.2s, box-shadow 0.2s;
+}
+.chain-btn svg { width: 24px; height: 24px; fill: currentColor; }
+.chain-btn:hover { background: var(--panel2); color: var(--text); }
+.chain-btn.on {
+  color: var(--cc); border-color: color-mix(in srgb, var(--cc) 55%, transparent);
+  background: color-mix(in srgb, var(--cc) 14%, transparent);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--cc) 35%, transparent);
+}
+.chain-btn.on[data-chain="solana"] svg { fill: url(#sol-grad); }
+
 .stats { display: flex; gap: 8px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .stats::-webkit-scrollbar { display: none; }
 .stat {
@@ -271,6 +287,9 @@ a { color: inherit; text-decoration: none; }
 .row.live .av-live { display: block; }
 .tok-t { min-width: 0; flex: 1; }
 .tok-name { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.src-slot { flex: none; align-self: center; display: inline-flex; }
+.tok-src { width: 15px; height: 15px; display: block; fill: currentColor; }
+.tok-src.sol { fill: url(#sol-grad); }
 .tok-name b { flex: 0 1 auto; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .tok-name small { flex: 0 100 auto; color: var(--muted); font-weight: 600; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .tok-sub { display: flex; align-items: center; gap: 6px; margin-top: 3px; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; }
@@ -504,6 +523,9 @@ a { color: inherit; text-decoration: none; }
 @media (max-width: 760px) {
   body { font-size: 13.5px; }
   .top { position: relative; padding: 10px 16px; gap: 10px; flex-wrap: wrap; }
+  .chains { order: 2; flex-basis: 100%; justify-content: space-between; gap: 4px; }
+  .chain-btn { width: 44px; height: 44px; }
+  .chain-btn svg { width: 26px; height: 26px; }
   .stats { order: 3; flex-basis: 100%; margin: 0 -16px; padding: 0 16px; }
   .stat { padding: 4px 10px; }
   .sources { margin-left: auto; gap: 4px; }

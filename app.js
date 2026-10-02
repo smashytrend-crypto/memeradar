@@ -29,6 +29,11 @@ const LS = {
   },
 };
 
+// Network on screen (the in-browser engine runs one radar per network).
+const CHAIN_LIST = ENGINE?.chains ? Object.values(ENGINE.chains) : null;
+const chainCfg = () => (ENGINE?.chains && ENGINE.chains[ENGINE.chain]) || { id: 'solana', dex: 'solana', native: 'SOL', evm: false };
+if (ENGINE) ENGINE.setChain(LS.get('chain', 'solana'));
+
 const state = {
   view: LS.get('view', 'hype'),
   filters: LS.get('filters', { minMcap: 0, minLiq: 0, maxAgeH: 0, safe: false }),
@@ -337,7 +342,7 @@ function winTile(rows, target, label, goal) {
 function renderStats(s) {
   const hr = STATIC ? null : state.hypeRows;
   const items = [
-    ['SOL', s.solPrice ? `$${s.solPrice.toFixed(2)}` : '—'],
+    [s.native || 'SOL', s.solPrice ? `$${s.solPrice.toFixed(2)}` : '—'],
     ...(hr ? [winTile(hr, 2, 'Win rate 2×', '2×'), winTile(hr, 1.5, 'Win rate +50%', '+50%')] : []),
     ['Śledzone tokeny', fmt.n(s.tracked)],
     ['Aktywne (5 min)', fmt.n(s.active5m)],
@@ -366,11 +371,15 @@ function renderStats(s) {
   if (!STATIC) $('#demoBanner').hidden = !s.demo;
 }
 
-const SRC_LABEL = { pumpportal: 'pump.fun', dexscreener: 'DexScreener', jupiter: 'Jupiter', geckoterminal: 'Gecko', rugcheck: 'RugCheck', x: 'X', ai: 'AI' };
+const SRC_LABEL = { pumpportal: 'pump.fun', dexscreener: 'DexScreener', jupiter: 'Jupiter', geckoterminal: 'Gecko', rugcheck: 'RugCheck', goplus: 'GoPlus', x: 'X', ai: 'AI' };
+// Sources each network uses (the others are left out of the status row).
+const CHAIN_SOURCES = { solana: ['pumpportal', 'dexscreener', 'jupiter', 'geckoterminal', 'rugcheck', 'x', 'ai'], evm: ['dexscreener', 'geckoterminal', 'goplus', 'x', 'ai'] };
 function renderSources(src) {
   const el = $('#sources');
   // Rebuild only when a source's state or message changes (not on every snapshot).
+  const keys = CHAIN_SOURCES[chainCfg().evm ? 'evm' : 'solana'];
   const html = Object.entries(SRC_LABEL)
+    .filter(([k]) => keys.includes(k))
     .map(([k, label]) => {
       const s = src[k] || { state: 'connecting', msg: 'oczekiwanie…' };
       return `<span class="src ${s.state}" tabindex="0"><i></i><span class="lbl">${label}</span>
@@ -390,7 +399,7 @@ function rowTemplate() {
   el.innerHTML = `
     <div class="c-rank"><span class="rank-n"></span><span class="rank-d"></span></div>
     <div class="c-token"><div class="tok"><span class="av-slot"></span><div class="tok-t">
-      <div class="tok-name"><b></b><small></small></div><div class="tok-sub"></div></div></div></div>
+      <div class="tok-name"><span class="src-slot"></span><b></b><small></small></div><div class="tok-sub"></div></div></div></div>
     <div class="c-hype"><div class="hype"><span class="hype-n"></span><div class="hype-v"><div class="hype-bar"><i></i></div>
       <svg class="spark" viewBox="0 0 100 30" preserveAspectRatio="none" aria-label="Cena: ostatnie 24 h"><path class="sp-a"/><path class="sp-l" fill="none" stroke-width="1.8" stroke-linejoin="round" vector-effect="non-scaling-stroke"/><path class="sp-d" fill="none" stroke-width="5" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg></div></div></div>
     <div class="c-act"><a class="act-x" target="_blank" rel="noopener" title="Posty z tym kontraktem na X">𝕏</a><button class="act-cp" data-copy aria-label="Kopiuj adres kontraktu" title="Kopiuj adres kontraktu">⧉ CA</button></div>
@@ -433,7 +442,7 @@ function updateRow(entry, d, idx) {
   const p = entry.data || {};
   const now = nowTs();
   const q = entry.q || (entry.q = {
-    rankN: $('.rank-n', el), rankD: $('.rank-d', el), av: $('.av-slot', el), name: $('.tok-name b', el), sym: $('.tok-name small', el),
+    rankN: $('.rank-n', el), rankD: $('.rank-d', el), av: $('.av-slot', el), name: $('.tok-name b', el), src: $('.src-slot', el), sym: $('.tok-name small', el),
     sub: $('.tok-sub', el), hs: $('.hype-n', el), hbar: $('.hype-bar i', el), sp: $('.sp-l', el), spA: $('.sp-a', el), spD: $('.sp-d', el), svg: $('.spark', el), actX: $('.act-x', el),
     c5: $('.c-5m .pct', el), c1: $('.c-1h .pct', el), c4: $('.c-4h .pct', el), mc: $('.c-mc b', el), mcV: $('.c-mc small span', el), liq: $('.c-liq', el),
     vol: $('.c-vol', el), bsB: $('.bs-bar .b', el), bsS: $('.bs-bar .s', el), bsNb: $('.bs-r.up .n', el), bsNs: $('.bs-r.down .n', el),
@@ -462,6 +471,11 @@ function updateRow(entry, d, idx) {
 
   if (p.i !== d.i || !q.av.firstChild) q.av.innerHTML = avatar(d);
   setText(q.name, d.n || d.s || fmt.short(d.m));
+  const badge = srcBadge(d);
+  if (entry.badge !== badge) {
+    q.src.innerHTML = badge;
+    entry.badge = badge;
+  }
   setText(q.sym, d.s ? `$${d.s}` : '');
 
   // sub line: age, launchpad / bonding curve, socials
@@ -763,6 +777,81 @@ setInterval(() => {
   if (stale) $('#liveBadge').lastChild.textContent = 'OFFLINE';
 }, 2000);
 
+// ---------- network / launchpad badges ----------
+// Small marks before a token's name: the network on EVM chains, the launchpad on Solana.
+// Simplified badges in each platform's colours (not the official artwork).
+const LAUNCHPADS = [
+  [/pump/, 'pump.fun', '<rect x="3" y="8" width="18" height="8" rx="4" fill="#fff"/><path d="M12 8h5a4 4 0 0 1 0 8h-5z" fill="#5FCB86"/>', '#1b2a22'],
+  [/bonk/, 'bonk.fun', '<circle cx="12" cy="12" r="9" fill="#F7931A"/><path d="M8.5 9.5h4.2a2 2 0 0 1 0 4H8.5zM8.5 13.5h4.8a2 2 0 0 1 0 4H8.5z" fill="none" stroke="#fff" stroke-width="1.6"/>'],
+  [/launchlab|raydium/, 'Raydium LaunchLab', '<circle cx="12" cy="12" r="9" fill="#6A3CE0"/><path d="M12 5.5 17.6 8.7v6.6L12 18.5 6.4 15.3V8.7z" fill="none" stroke="#5CE1E6" stroke-width="1.6"/>'],
+  [/met|dbc|meteora/, 'Meteora', '<circle cx="12" cy="12" r="9" fill="#1d1430"/><path d="M6 16 10 7l3 6 2-3 3 6" fill="none" stroke="#FF6B2C" stroke-width="2" stroke-linejoin="round"/>'],
+  [/bags/, 'Bags', '<circle cx="12" cy="12" r="9" fill="#02C076"/><path d="M8 10h8l-1 7H9zM10 10a2 2 0 0 1 4 0" fill="none" stroke="#fff" stroke-width="1.6"/>'],
+  [/believe/, 'Believe', '<circle cx="12" cy="12" r="9" fill="#fff"/><path d="M9 7v10h4a2.5 2.5 0 0 0 0-5H9m0 0h3.5a2.5 2.5 0 0 0 0-5H9" fill="none" stroke="#111" stroke-width="1.8"/>'],
+  [/moon/, 'Moonshot', '<circle cx="12" cy="12" r="9" fill="#2a2140"/><path d="M14.5 6.5a6 6 0 1 0 3 8.5 5 5 0 0 1-3-8.5z" fill="#FFD84D"/>'],
+  [/jup|studio/, 'Jupiter Studio', '<circle cx="12" cy="12" r="9" fill="#0e1a20"/><path d="M6 10c4-3 9-3 12 0M5.5 13.5c4.5-2.5 9.5-2.5 13 0M7 17c3-1.8 7-1.8 10 0" fill="none" stroke="#C7F284" stroke-width="1.6" stroke-linecap="round"/>'],
+  [/heaven/, 'Heaven', '<circle cx="12" cy="12" r="9" fill="#f4f1e8"/><ellipse cx="12" cy="8" rx="5" ry="1.8" fill="none" stroke="#E0B341" stroke-width="1.5"/><path d="M12 11v7" stroke="#E0B341" stroke-width="1.8"/>'],
+  [/boop/, 'boop.fun', '<circle cx="12" cy="12" r="9" fill="#FF5FA2"/><circle cx="12" cy="13" r="3.2" fill="#fff"/>'],
+  [/stonk/, 'Stonk.fun', '<circle cx="12" cy="12" r="9" fill="#0f2a1a"/><path d="M6 16l4-4 3 2 5-6" fill="none" stroke="#3CF07A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'],
+  [/metadao/, 'MetaDAO', '<circle cx="12" cy="12" r="9" fill="#111"/><path d="M7 16V8l5 5 5-5v8" fill="none" stroke="#fff" stroke-width="1.8"/>'],
+  [/ember/, 'Ember', '<circle cx="12" cy="12" r="9" fill="#2a1208"/><path d="M12 5.5c3 3.5 4.5 5.5 4.5 8a4.5 4.5 0 0 1-9 0c0-1.6.8-3 2-4 0 1.5.7 2.4 1.5 2.8 0-2.6.4-4.6 1-6.8z" fill="#FF6A2B"/>'],
+];
+
+function srcBadge(d) {
+  const ch = chainCfg();
+  if (ch.evm) {
+    return `<svg class="tok-src" viewBox="0 0 24 24" style="color:${ch.color}" aria-label="${ch.name}"><title>${ch.name}</title>${CHAIN_ICONS[ch.id] || ''}</svg>`;
+  }
+  const lp = String(d.lp || (d.m.endsWith('pump') ? 'pump' : d.m.endsWith('bonk') ? 'bonk' : '')).toLowerCase();
+  const hit = lp && LAUNCHPADS.find(([re]) => re.test(lp));
+  if (hit) return `<svg class="tok-src" viewBox="0 0 24 24" aria-label="${hit[1]}"><title>${hit[1]}</title>${hit[3] ? `<circle cx="12" cy="12" r="10" fill="${hit[3]}"/>` : ''}${hit[2]}</svg>`;
+  return `<svg class="tok-src sol" viewBox="0 0 24 24" aria-label="Solana"><title>Solana</title>${CHAIN_ICONS.solana}</svg>`;
+}
+
+// ---------- network switcher ----------
+const CHAIN_ICONS = {
+  solana: '<path d="M6.2 15.6a.7.7 0 0 1 .5-.2h13.9c.3 0 .5.4.3.6l-2.8 2.8a.7.7 0 0 1-.5.2H3.7c-.3 0-.5-.4-.3-.6zM6.2 4.8a.7.7 0 0 1 .5-.2h13.9c.3 0 .5.4.3.6l-2.8 2.8a.7.7 0 0 1-.5.2H3.7c-.3 0-.5-.4-.3-.6zM17.8 10.2a.7.7 0 0 0-.5-.2H3.4c-.3 0-.5.4-.3.6l2.8 2.8c.1.1.3.2.5.2h13.9c.3 0 .5-.4.3-.6z"/>',
+  bsc: '<path d="M12 9.6 14.4 12 12 14.4 9.6 12zM5.6 9.6 8 12l-2.4 2.4L3.2 12zM18.4 9.6 20.8 12l-2.4 2.4L16 12zM12 3.2l5.2 5.2-1.4 1.4L12 6 8.2 9.8 6.8 8.4zM12 20.8l-5.2-5.2 1.4-1.4L12 18l3.8-3.8 1.4 1.4z"/>',
+  base: '<rect x="3.5" y="3.5" width="17" height="17" rx="4"/>',
+  ethereum: '<path d="M12 2 5.5 12.3 12 16l6.5-3.7z" opacity=".9"/><path d="M12 17.3 5.5 13.6 12 22l6.5-8.4z"/>',
+  robinhood: '<path d="M18.9 2.6c-4.6.6-8.6 3.6-10.6 8l-3.3 7.2c-.2.4.2.8.6.6l2.3-1.2-1.6 4.5c-.1.4.4.6.6.3l2.9-4.6c.9.1 1.8-.1 2.5-.6l.3-1.7.9 1.2c2.5-1.8 4.6-6.3 5.3-12.9.1-.5-.4-.9-.9-.8z"/>',
+};
+
+function renderChains() {
+  const el = $('#chains');
+  if (!CHAIN_LIST) {
+    el.hidden = true;
+    return;
+  }
+  el.innerHTML = CHAIN_LIST.map(
+    (c) =>
+      `<button class="chain-btn" data-chain="${c.id}" style="--cc:${c.color}" title="${c.name}" aria-label="${c.name}"><svg viewBox="0 0 24 24" aria-hidden="true">${CHAIN_ICONS[c.id] || ''}</svg></button>`,
+  ).join('');
+  markChain();
+}
+
+function markChain() {
+  $$('#chains .chain-btn').forEach((b) => {
+    const on = b.dataset.chain === ENGINE.chain;
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', on);
+  });
+}
+
+function setChain(id) {
+  if (!ENGINE || id === ENGINE.chain) return;
+  ENGINE.setChain(id);
+  LS.set('chain', ENGINE.chain);
+  markChain();
+  if (state.selected) closeDetail();
+  state.hypeRows = null;
+  state.feed = ENGINE.feed();
+  renderFeed();
+  $('#search').value = '';
+  $('#searchResults').hidden = true;
+  $('#sources').dataset.html = '';
+  setView(state.view === 'watch' ? 'hype' : state.view);
+}
+
 function setView(view) {
   state.view = view;
   LS.set('view', view);
@@ -980,14 +1069,26 @@ function renderDetail(d) {
   const h = heat(d.hs);
   const m = d.market || {};
   const watched = state.watch.has(d.m);
+  const ch = chainCfg();
+  const dexLink = ['DexScreener', d.dexUrl || `https://dexscreener.com/${ch.dex}/${d.pair || d.m}`, true];
+  const chainLinks = ch.evm
+    ? [
+        ch.buy ? [ch.buyName, ch.buy(d.m)] : null,
+        ch.gmgn ? ['GMGN', `https://gmgn.ai/${ch.gmgn}/token/${d.m}`] : null,
+        ch.explorerName ? [ch.explorerName, ch.explorer(d.m)] : null,
+        ['GoPlus', `https://gopluslabs.io/token-security/${ch.goplus}/${d.m}`],
+      ]
+    : [
+        ['Jupiter (kup)', `https://jup.ag/swap/SOL-${d.m}`],
+        d.lp === 'pump' || d.m.endsWith('pump') ? ['pump.fun', `https://pump.fun/coin/${d.m}`] : null,
+        ['Birdeye', `https://birdeye.so/token/${d.m}?chain=solana`],
+        ['GMGN', `https://gmgn.ai/sol/token/${d.m}`],
+        ['Solscan', `https://solscan.io/token/${d.m}`],
+        ['RugCheck', `https://rugcheck.xyz/tokens/${d.m}`],
+      ];
   const links = [
-    d.dexUrl || d.pair ? ['DexScreener', d.dexUrl || `https://dexscreener.com/solana/${d.pair}`, true] : ['DexScreener', `https://dexscreener.com/solana/${d.m}`, true],
-    ['Jupiter (kup)', `https://jup.ag/swap/SOL-${d.m}`],
-    d.lp === 'pump' || d.m.endsWith('pump') ? ['pump.fun', `https://pump.fun/coin/${d.m}`] : null,
-    ['Birdeye', `https://birdeye.so/token/${d.m}?chain=solana`],
-    ['GMGN', `https://gmgn.ai/sol/token/${d.m}`],
-    ['Solscan', `https://solscan.io/token/${d.m}`],
-    ['RugCheck', `https://rugcheck.xyz/tokens/${d.m}`],
+    dexLink,
+    ...chainLinks,
     ['Szukaj na 𝕏', `https://x.com/search?q=${encodeURIComponent(d.m)}&f=live`],
     d.socials?.twitter ? ['𝕏 projektu', d.socials.twitter] : null,
     d.socials?.telegram ? ['Telegram', d.socials.telegram] : null,
@@ -1034,7 +1135,7 @@ function renderDetail(d) {
 
   const flags = d.risk?.flags?.length
     ? d.risk.flags.map((f) => `<div class="flag ${f.level}"><span>${f.level === 'danger' ? '⛔' : '⚠️'}</span><div><b>${esc(f.name)} ${f.value ? `<small>${esc(f.value)}</small>` : ''}</b>${f.desc ? `<small>${esc(f.desc)}</small>` : ''}</div></div>`).join('')
-    : `<div class="flag ${d.risk?.level === 'ok' ? 'ok' : ''}"><span>${d.risk?.level === 'ok' ? '✅' : '❔'}</span><div><b>${RISK_TXT[d.risk?.level] || 'Nie sprawdzono'}</b><small>${d.risk?.level === 'ok' ? 'RugCheck / audyt Jupitera nie zgłaszają problemów.' : 'Raport bezpieczeństwa pojawi się, gdy token wejdzie do czołówki.'}</small></div></div>`;
+    : `<div class="flag ${d.risk?.level === 'ok' ? 'ok' : ''}"><span>${d.risk?.level === 'ok' ? '✅' : '❔'}</span><div><b>${RISK_TXT[d.risk?.level] || 'Nie sprawdzono'}</b><small>${d.risk?.level === 'ok' ? (chainCfg().evm ? 'GoPlus nie zgłasza problemów.' : 'RugCheck / audyt Jupitera nie zgłaszają problemów.') : 'Raport bezpieczeństwa pojawi się, gdy token wejdzie do czołówki.'}</small></div></div>`;
 
   const x = d.x;
   const tweets = x?.tweets?.length
@@ -1182,7 +1283,7 @@ function renderChart(d, tab) {
   const box = $('#chartBox');
   if (!box) return;
   if (tab === 'dex' && d.pair) {
-    const src = `https://dexscreener.com/solana/${d.pair}?embed=1&loadChartSettings=0&trades=0&tabs=0&info=0&chartLeftToolbar=0&chartTheme=dark&theme=dark&chartStyle=1&chartType=usd&interval=5`;
+    const src = `https://dexscreener.com/${chainCfg().dex}/${d.pair}?embed=1&loadChartSettings=0&trades=0&tabs=0&info=0&chartLeftToolbar=0&chartTheme=dark&theme=dark&chartStyle=1&chartType=usd&interval=5`;
     // Keep the iframe alive across detail refreshes.
     const existing = state.chartFrame;
     if (existing && existing.dataset.src === src) box.appendChild(existing);
@@ -1383,6 +1484,11 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ---------- boot ----------
+renderChains();
+$('#chains').addEventListener('click', (e) => {
+  const b = e.target.closest('.chain-btn');
+  if (b) setChain(b.dataset.chain);
+});
 $('#c-watch').textContent = state.watch.size || '';
 $$('#tabs button').forEach((b) => b.classList.toggle('active', b.dataset.view === state.view));
 skeleton();

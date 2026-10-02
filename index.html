@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>DMN — hype memecoinów Solany na żywo</title>
-  <meta name="description" content="Najbardziej hypowane memecoiny Solany w czasie rzeczywistym: dane on-chain, DEX i X w jednym rankingu." />
+  <title>DMN — hype memecoinów na żywo</title>
+  <meta name="description" content="Najbardziej hypowane memecoiny na Solanie, BNB Chain, Base, Ethereum i Robinhood Chain w czasie rzeczywistym." />
   <meta name="theme-color" content="#07090d" />
   <link rel="icon" href="favicon.svg" type="image/svg+xml" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -16,6 +16,7 @@
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
     <defs>
       <linearGradient id="spark-up" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1fd68f" stop-opacity=".38"/><stop offset="1" stop-color="#1fd68f" stop-opacity="0"/></linearGradient>
+      <linearGradient id="sol-grad" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#9945FF"/><stop offset=".5" stop-color="#5497D5"/><stop offset="1" stop-color="#14F195"/></linearGradient>
       <linearGradient id="spark-down" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff4d6a" stop-opacity=".32"/><stop offset="1" stop-color="#ff4d6a" stop-opacity="0"/></linearGradient>
     </defs>
   </svg>
@@ -35,6 +36,7 @@
       <span class="brand-name"><span>DMN</span></span>
       <span class="live-badge" id="liveBadge"><i></i>LIVE</span>
     </a>
+    <nav class="chains" id="chains" aria-label="Sieć"></nav>
     <div class="stats" id="stats"></div>
     <div class="sources" id="sources" aria-label="Status źródeł danych"></div>
   </header>
@@ -136,7 +138,7 @@
   <div class="toast" id="toast" role="status"></div>
 
   <footer class="foot">
-    Dane: PumpPortal (on-chain), DexScreener, GeckoTerminal, Jupiter, RugCheck, X API. To nie jest porada inwestycyjna — memecoiny są skrajnie ryzykowne.
+    Dane: PumpPortal (on-chain), DexScreener, GeckoTerminal, Jupiter, RugCheck, GoPlus, X API. To nie jest porada inwestycyjna — memecoiny są skrajnie ryzykowne.
   </footer>
 
   <script type="module" src="boot.js"></script>
