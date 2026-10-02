@@ -1,8 +1,8 @@
 // GeckoTerminal public API (https://www.geckoterminal.com/dex-api): trending + new pools per network,
 // and 15-minute price candles (OHLCV) for the top tokens — used for the 4h change and the
 // mini charts, since DexScreener only reports 5m / 1h / 6h / 24h changes.
-import { IS_BROWSER, RateLimiter, errMsg, every, getJSON, num, toMs } from '../util.js?v=murf2dkr';
-import { gtCurve, isAddressOn, normAddr } from '../chains.js?v=murf2dkr';
+import { IS_BROWSER, RateLimiter, errMsg, every, getJSON, num, toMs } from '../util.js?v=muri0lr0';
+import { gtCurve, isAddressOn, normAddr } from '../chains.js?v=muri0lr0';
 
 const API = 'https://api.geckoterminal.com/api/v2/networks';
 const NAME = 'geckoterminal';
@@ -59,18 +59,19 @@ export function poolToPatch(pool, tokensById, network = 'solana') {
   };
 }
 
-// One budget for every network's engine: the free tier's 30 requests/min is per IP.
+// One budget for every network's engine: the free tier's limit is per IP.
 const shared = { lim: null };
 
 export function startGeckoTerminal(store) {
   const chain = store.chain;
   const BASE = `${API}/${chain.gt}`;
   const active = () => store.active;
-  // Free tier: 30 requests/min per IP. Trending + new pools use ~2.5 of these; the rest goes to
-  // candles. The browser build stays lower so a second tab or phone on the same IP fits too.
-  const lim = (shared.lim ??= new RateLimiter(IS_BROWSER ? 14 : 24));
+  // Free (keyless) tier: about 10 requests/min per IP, and it varies with their traffic. Stay
+  // under it: pool lists take ~2–3 of these, candles the rest.
+  const lim = (shared.lim ??= new RateLimiter(6));
   let strikes = 0;
   let okCount = 0;
+  let lastOk = 0;
 
   async function fetchPools(path, rankName) {
     const json = await lim.run(() => getJSON(`${BASE}/${path}`, { headers: HEADERS }));
@@ -110,21 +111,28 @@ export function startGeckoTerminal(store) {
   }
 
   // A 429 carries no CORS header, so in the browser it surfaces as a bare TypeError without a
-  // status (as does a dropped connection). Back off on those too: 20 s, then doubling while they
-  // keep coming, so a real rate limit still gets a full minute's rest.
+  // status (as does a dropped connection). Treat both as the rate limit: pause 30 s, doubling
+  // while they keep coming (max 2 min). That is a short wait, not an outage — shown in yellow.
   const blind = (err) => IS_BROWSER && err instanceof TypeError && err.status == null;
   const fail = (err) => {
-    if (err?.status === 429) lim.pause(90_000);
-    else if (blind(err)) lim.pause(Math.min(20_000 * 2 ** strikes++, 8 * MIN));
+    if (err?.status === 429 || blind(err)) {
+      const ms = Math.min(30_000 * 2 ** strikes++, 2 * MIN);
+      lim.pause(ms);
+      // Data arrived recently: a short enforced pause is routine, keep the dot green.
+      const recent = Date.now() - lastOk < 4 * MIN;
+      store.setSource(NAME, recent ? 'ok' : 'connecting', `${recent ? `OK · ${okCount} odświeżeń · ` : ''}krótka przerwa (limit darmowego API) — wznawiam za ${Math.round(ms / 1000)} s`);
+      return;
+    }
     store.setSource(NAME, 'error', errMsg(err));
   };
   const ok = () => {
     strikes = 0;
+    lastOk = Date.now();
     store.setSource(NAME, 'ok', `OK · ${++okCount} odświeżeń`);
   };
 
   every(
-    90_000,
+    120_000,
     async () => {
       await fetchPools('trending_pools?include=base_token&duration=5m', 'gecko:trending5m');
       await fetchPools('trending_pools?include=base_token&duration=1h', 'gecko:trending1h');
@@ -134,7 +142,7 @@ export function startGeckoTerminal(store) {
     active,
   );
   every(
-    60_000,
+    90_000,
     async () => {
       await fetchPools('new_pools?include=base_token&page=1', null);
       ok();
@@ -145,10 +153,9 @@ export function startGeckoTerminal(store) {
   // EVM networks have few DexScreener profiles / boosts: the busiest pools fill the radar instead.
   if (chain.evm) {
     every(
-      120_000,
+      180_000,
       async () => {
         await fetchPools('pools?include=base_token&sort=h24_tx_count_desc&page=1', 'gecko:busy');
-        await fetchPools('pools?include=base_token&sort=h24_tx_count_desc&page=2', null);
         await fetchPools('pools?include=base_token&sort=h24_volume_usd_desc&page=1', 'gecko:volume');
         await fetchPools('trending_pools?include=base_token&duration=6h&page=1', 'gecko:trending6h');
         await fetchPools('new_pools?include=base_token&page=2', null);
