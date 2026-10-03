@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=mus88ptc" />
+  <link rel="stylesheet" href="styles.css?v=musxemzc" />
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -53,6 +53,7 @@
     <button role="tab" data-view="graduated"><span class="ti">🎓</span>Po graduacji</button>
     <button role="tab" data-view="social"><span class="ti">𝕏</span>Social</button>
     <button role="tab" data-view="watch"><span class="ti">★</span>Obserwowane<span class="tc" id="c-watch"></span></button>
+    <button role="tab" data-view="pos"><span class="ti">💼</span>Pozycje<span class="tc" id="c-pos"></span></button>
   </nav>
 
   <section class="toolbar">
@@ -82,7 +83,22 @@
           <option value="24">24 h</option><option value="72">3 dni</option><option value="168">7 dni</option>
         </select>
       </label>
+      <label class="sel"><span>Dev do</span>
+        <select id="fDev">
+          <option value="0">dowolnie</option><option value="5">5%</option><option value="10">10%</option><option value="20">20%</option>
+        </select>
+      </label>
+      <label class="sel"><span>LP spalone</span>
+        <select id="fLp">
+          <option value="0">dowolnie</option><option value="50">od 50%</option><option value="90">od 90%</option>
+        </select>
+      </label>
+      <label class="toggle"><input type="checkbox" id="fPaid" /><i></i><span>Tylko DEX Paid</span></label>
       <label class="toggle"><input type="checkbox" id="fSafe" /><i></i><span>Ukryj ryzykowne</span></label>
+      <label class="sel preset"><span>Presety</span>
+        <select id="fPreset"></select>
+      </label>
+      <button class="btn-ghost" id="hiddenBtn" title="Ukryte tokeny i zablokowani twórcy" hidden>🙈 <span id="hiddenN"></span></button>
       <button class="btn-ghost" id="pauseBtn" title="Zamroź tabelę (P)"><span class="pi">❚❚</span><span class="pl">Zamroź</span></button>
     </div>
   </section>
@@ -102,7 +118,7 @@
           <div class="c-liq num">Płynność</div>
           <div class="c-vol num">Wol. 1h</div>
           <div class="c-bs" title="Liczba transakcji i wolumen kupna / sprzedaży (5 min, przy małym ruchu 1 h)">Kup / Sprzedaj</div>
-          <div class="c-hold num">Holderzy</div>
+          <div class="c-hold num" title="Top 10, dev, insiderzy, LP spalone, DEX paid, holderzy">Holderzy · struktura</div>
           <div class="c-x num">𝕏 / 1h</div>
           <div class="c-risk">Bezp.</div>
           <div class="c-star"></div>
@@ -141,6 +157,6 @@
     Dane: PumpPortal (on-chain), DexScreener, GeckoTerminal, Jupiter, RugCheck, GoPlus, X API. To nie jest porada inwestycyjna — memecoiny są skrajnie ryzykowne.
   </footer>
 
-  <script type="module" src="boot.js?v=mus88ptc"></script>
+  <script type="module" src="boot.js?v=musxemzc"></script>
 </body>
 </html>

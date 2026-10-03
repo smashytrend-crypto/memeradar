@@ -1,8 +1,8 @@
-import { computeHype } from './scoring.js?v=mus88ptc';
-import { CURVE_DEXES, NON_MEME, NON_MEME_TAGS, PUMP_INITIAL_VTOKENS, PUMP_K, PUMP_TOKENS_FOR_SALE } from './constants.js?v=mus88ptc';
-import { Emitter, clamp } from './util.js?v=mus88ptc';
-import { change4h, freshCandles, sparkPoints } from './candles.js?v=mus88ptc';
-import { EVM_BASE_ASSETS, EVM_NON_MEME_SYMBOLS, evmEligible, getChain, isAddressOn, normAddr } from './chains.js?v=mus88ptc';
+import { computeHype } from './scoring.js?v=musxemzc';
+import { CURVE_DEXES, NON_MEME, NON_MEME_TAGS, PUMP_INITIAL_VTOKENS, PUMP_K, PUMP_TOKENS_FOR_SALE } from './constants.js?v=musxemzc';
+import { Emitter, clamp } from './util.js?v=musxemzc';
+import { change4h, freshCandles, sparkPoints } from './candles.js?v=musxemzc';
+import { EVM_BASE_ASSETS, EVM_NON_MEME_SYMBOLS, evmEligible, getChain, isAddressOn, normAddr } from './chains.js?v=musxemzc';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -12,6 +12,25 @@ const MAX_TRADES = 400;
 const HIST_EVERY = 15_000;
 const HIST_LEN = 180; // 45 minutes of samples
 const EMA = 0.35; // smoothing per rescore tick (~2s) so ranks don't jitter
+
+/**
+ * Is the hype building or fading? Compares the trading pace (volume per minute) of the last
+ * 5 minutes with the last hour, and the last hour with the last 6 hours.
+ * hot = accelerating hard, up = speeding up, flat = steady, cool = slowing, dead = fading out.
+ */
+export function freshness(vol5, vol1h, vol6h) {
+  if (!(vol1h >= 1000)) return null;
+  const r5 = (vol5 || 0) / 5;
+  const r60 = vol1h / 60;
+  const r360 = vol6h > 0 ? vol6h / 360 : r60;
+  const accel = r5 / r60;
+  const trend = r360 > 0 ? r60 / r360 : 1;
+  if (accel >= 1.6 && trend >= 1.1) return 'hot';
+  if (accel >= 1.2) return 'up';
+  if (accel < 0.35 && trend < 0.9) return 'dead';
+  if (accel < 0.6) return 'cool';
+  return 'flat';
+}
 
 function blank(mint, now) {
   return {
@@ -529,6 +548,11 @@ export class Store extends Emitter {
       ins: r1(t.rug?.insidersPct ?? null),
       lpb: r1(t.rug?.lpBurnPct ?? null),
       dp: t.dexPaid ?? null,
+      cr: t.creator || null,
+      dm: t.audit?.devMints ?? null, // tokens the creator launched
+      dmg: t.audit?.devMigrations ?? null, // …of which graduated
+      dhp: t.audit?.honeypotSameCreator ?? null, // EVM: other honeypots by the creator
+      fz: freshness(m.vol5, m.vol1h, t.volume?.h6),
       hg: m.holderGrowth1h || null,
       x: t.x?.mentions1h ?? null,
       xc: t.x?.capped || false,

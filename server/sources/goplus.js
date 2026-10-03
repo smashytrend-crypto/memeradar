@@ -2,7 +2,7 @@
 // honeypot, sell / buy tax, mint and owner powers — plus holder count and top-holder share.
 // Results go into the same shapes RugCheck / Jupiter fill on Solana (t.rug risks, t.audit,
 // holders), so scoring and the UI treat every network alike.
-import { RateLimiter, errMsg, every, getJSON, num } from '../util.js?v=mus88ptc';
+import { RateLimiter, errMsg, every, getJSON, num } from '../util.js?v=musxemzc';
 
 const BASE = 'https://api.gopluslabs.io/api/v1/token_security';
 const NAME = 'goplus';
@@ -49,7 +49,10 @@ export function goplusToReport(r) {
     audit: {
       topHoldersPercentage: holders.length ? top10 : undefined,
       devBalancePercentage: creator != null ? creator * 100 : undefined,
+      // Creator history on EVM: other honeypots deployed by the same address.
+      honeypotSameCreator: num(r.honeypot_with_same_creator),
     },
+    creator: typeof r.creator_address === 'string' ? r.creator_address.toLowerCase() : undefined,
     holders: num(r.holder_count) || undefined,
   };
 }
@@ -64,10 +67,10 @@ export function startGoPlus(store) {
     const json = await lim.run(() => getJSON(`${BASE}/${chainId}?contract_addresses=${t.mint}`));
     const r = json?.result?.[t.mint] || json?.result?.[t.mint.toLowerCase()];
     if (!r) return;
-    const { rug, audit, holders } = goplusToReport(r);
+    const { rug, audit, holders, creator } = goplusToReport(r);
     t.rug = rug;
     t.audit = audit;
-    if (holders) store.upsert(t.mint, { holders }, NAME);
+    store.upsert(t.mint, { holders, creator: t.creator || creator }, NAME);
     store.setSource(NAME, 'ok', `OK · ${++okCount} raportów`);
   }
 

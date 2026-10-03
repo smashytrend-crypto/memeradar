@@ -38,6 +38,10 @@ const state = {
   view: LS.get('view', 'hype'),
   filters: LS.get('filters', { minMcap: 0, minLiq: 0, maxAgeH: 0, safe: false }),
   watch: new Set(LS.get('watch', [])),
+  hidden: new Set(LS.get('hidden', [])), // tokens the viewer hid from the lists
+  blocked: new Set(LS.get('blocked', [])), // creators whose tokens are hidden
+  positions: LS.get('positions', {}), // mint -> { p: entry price, usd, t, chain }
+  presets: LS.get('presets', []), // saved filter sets [{ name, f }]
   feedFilter: 'all',
   paused: false,
   rows: new Map(), // mint -> { el, data }
@@ -424,7 +428,7 @@ function rowTemplate() {
     <div class="c-liq num"></div>
     <div class="c-vol num"></div>
     <div class="c-bs"><div class="bs"><div class="bs-bar"><span class="b"></span><span class="s"></span></div><div class="bs-r up"><span class="n"></span><span class="v"></span></div><div class="bs-r down"><span class="n"></span><span class="v"></span></div></div></div>
-    <div class="c-hold num hold"><b></b><small></small></div>
+    <div class="c-hold hold-ic"></div>
     <div class="c-x num"></div>
     <div class="c-risk"><div class="risk">${SHIELD}</div></div>
     <div class="c-star"><button class="star" aria-label="Obserwuj">☆</button></div>
@@ -460,7 +464,7 @@ function updateRow(entry, d, idx) {
     sub: $('.tok-sub', el), hs: $('.hype-n', el), hbar: $('.hype-bar i', el), sp: $('.sp-l', el), spA: $('.sp-a', el), spD: $('.sp-d', el), svg: $('.spark', el), actX: $('.act-x', el),
     c5: $('.c-5m .pct', el), c1: $('.c-1h .pct', el), c4: $('.c-4h .pct', el), mc: $('.c-mc b', el), mcV: $('.c-mc small span', el), liq: $('.c-liq', el),
     vol: $('.c-vol', el), bsB: $('.bs-bar .b', el), bsS: $('.bs-bar .s', el), bsNb: $('.bs-r.up .n', el), bsNs: $('.bs-r.down .n', el),
-    bsVb: $('.bs-r.up .v', el), bsVs: $('.bs-r.down .v', el), bs: $('.bs', el), quick: $('.c-quick', el), holdB: $('.hold b', el), holdS: $('.hold small', el), x: $('.c-x', el), risk: $('.risk', el), star: $('.star', el),
+    bsVb: $('.bs-r.up .v', el), bsVs: $('.bs-r.down .v', el), bs: $('.bs', el), quick: $('.c-quick', el), holdIc: $('.hold-ic', el), x: $('.c-x', el), risk: $('.risk', el), star: $('.star', el),
   });
 
   const h = heat(d.hs);
@@ -502,6 +506,11 @@ function updateRow(entry, d, idx) {
   if (sinceChip) chips.push(sinceChip);
   if (d.bp != null) chips.push(`<span class="chip ${d.lp === 'bonk' ? 'bonk' : 'pump'}">${d.lp === 'bonk' ? 'bonk' : 'pump'}</span><span class="bc"><span class="bc-bar"><i style="width:${d.bp}%"></i></span>${d.bp.toFixed(0)}%</span>`);
   else if (d.gr) chips.push('<span class="chip grad">🎓 DEX</span>');
+  const pos = posPnl(d);
+  if (pos) chips.push(`<span class="chip pos ${pos.cls}" title="Twoja pozycja: ${fmt.pct(pos.pct)}${pos.usd != null ? ` (${pos.usd >= 0 ? '+' : ''}${fmt.usd(pos.usd)})` : ''}">💼 ${fmt.pct(pos.pct)}</span>`);
+  if (d.fz && FRESH[d.fz]) chips.push(`<span class="chip fz ${FRESH[d.fz][2]}" title="Hype teraz: ${FRESH[d.fz][1]}">${FRESH[d.fz][0]} ${FRESH[d.fz][1]}</span>`);
+  const serial = creatorWarning(d);
+  if (serial) chips.push(`<span class="chip warnc" title="${esc(serial.tip)}">${serial.short}</span>`);
   if (d.vs >= 2) chips.push(`<span class="chip surge" title="Wolumen 5 min względem własnej średniej">🚀 ${d.vs.toFixed(1)}×</span>`);
   if (d.ai) chips.push(`<span class="chip ai" title="${esc(d.ai)}">🤖</span>`);
   if (d.bo) chips.push(`<span class="chip boost">⚡${d.bo}</span>`);
@@ -578,9 +587,12 @@ function updateRow(entry, d, idx) {
     entry.quick = quick;
   }
 
-  setText(q.holdB, fmt.n(d.h));
-  q.holdS.textContent = d.hg ? `${d.hg > 0 ? '+' : ''}${fmt.n(d.hg)}/h` : '';
-  q.holdS.className = d.hg > 0 ? 'up' : d.hg < 0 ? 'down' : '';
+  // Desktop: holder structure icons in their own column (phones show them in the quick block).
+  const icons = holderIcons(d, true);
+  if (entry.holdIc !== icons) {
+    q.holdIc.innerHTML = icons;
+    entry.holdIc = icons;
+  }
   setText(q.x, d.x == null ? '—' : `${d.x}${d.xc ? '+' : ''}`, d.x, p.x);
 
   q.risk.className = `risk ${d.rk}`;
@@ -668,6 +680,7 @@ function renderRows(rows) {
 }
 
 function emptyText() {
+  if (state.view === 'pos') return '<b>Brak pozycji</b>Otwórz token i w sekcji „Moja pozycja” zapisz, za ile kupiłeś — tu zobaczysz zysk lub stratę na żywo.';
   if (state.view === 'watch') return '<b>Brak obserwowanych tokenów</b>Kliknij ☆ przy tokenie, aby dodać go do listy.';
   if (state.view === 'surge' && !state.firstSnapshot)
     return '<b>Brak wybić wolumenu w tej chwili</b>Pojawią się tu tokeny, których wolumen z 5 min jest co najmniej 2× wyższy niż ich średnia.';
@@ -697,9 +710,29 @@ function applyMode(s) {
   if (only && (state.view === 'new' || state.view === 'graduating')) setView('graduated');
 }
 
+/**
+ * Viewer-side filters on top of the engine's: hidden tokens, blocked creators and the holder
+ * filters (dev %, LP burned, DEX paid). Watch / positions lists always show everything.
+ */
+function viewerFilter(rows, view) {
+  if (view === 'watch' || view === 'pos') return rows;
+  const f = state.filters;
+  return rows.filter(
+    (r) =>
+      !state.hidden.has(r.m) &&
+      !(r.cr && state.blocked.has(r.cr)) &&
+      !(f.maxDev && r.dv != null && r.dv > f.maxDev) &&
+      !(f.minLp && r.lpb != null && r.lpb < f.minLp) &&
+      !(f.paid && r.dp !== true),
+  );
+}
+
 function applySnapshot(snap) {
   applyMode(snap.stats);
   $('#feedChips [data-f="whale"]').hidden = !snap.stats.liveTrades;
+  // Positions use the watchlist path of the engine / server.
+  if (state.view === 'pos' && snap.view === 'watch') snap.view = 'pos';
+  snap.rows = viewerFilter(snap.rows, snap.view);
   if (snap.view === 'hype') state.hypeRows = snap.rows;
   renderStats(snap.stats);
   renderSources(snap.sources);
@@ -742,8 +775,9 @@ function connect() {
     const run = () => {
       state.lastSnapshot = Date.now();
       // The win rate always counts the main Hype list, whichever tab is open.
-      if (state.view !== 'hype') state.hypeRows = ENGINE.snapshot('hype', filters, 100).rows;
-      applySnapshot(ENGINE.snapshot(state.view, filters, 100, state.view === 'watch' ? [...state.watch] : []));
+      if (state.view !== 'hype') state.hypeRows = viewerFilter(ENGINE.snapshot('hype', filters, 100).rows, 'hype');
+      const list = state.view === 'watch' ? [...state.watch] : state.view === 'pos' ? Object.keys(state.positions) : [];
+      applySnapshot(ENGINE.snapshot(state.view === 'pos' ? 'watch' : state.view, filters, 100, list));
     };
     run();
     state.tick = setInterval(run, 2000);
@@ -766,12 +800,13 @@ function connect() {
   }
   state.es?.close();
   const f = state.filters;
-  const params = new URLSearchParams({ view: state.view, limit: '100' });
+  const params = new URLSearchParams({ view: state.view === 'pos' ? 'watch' : state.view, limit: '100' });
   if (f.minMcap) params.set('minMcap', f.minMcap);
   if (f.minLiq) params.set('minLiq', f.minLiq);
   if (f.maxAgeH) params.set('maxAgeH', f.maxAgeH);
   if (f.safe) params.set('safe', '1');
   if (state.view === 'watch') params.set('mints', [...state.watch].join(','));
+  if (state.view === 'pos') params.set('mints', Object.keys(state.positions).join(','));
   if (state.view !== 'hype') state.hypeRows = null; // win rate needs the Hype list (not streamed here)
   const es = new EventSource(`/api/stream?${params}`);
   state.es = es;
@@ -795,6 +830,52 @@ setInterval(() => {
   if (stale) $('#liveBadge').lastChild.textContent = 'OFFLINE';
 }, 2000);
 
+// ---------- hype freshness / creator history / positions ----------
+const FRESH = {
+  hot: ['🚀', 'Rozkręca się', 'up'],
+  up: ['📈', 'Przyspiesza', 'up'],
+  flat: ['➡️', 'Stabilnie', ''],
+  cool: ['😴', 'Słabnie', 'warn'],
+  dead: ['📉', 'Wygasa', 'down'],
+};
+
+/** Polish plural: 1 token, 2–4 tokeny, 5+ tokenów (12–14 tokenów). */
+const plTokens = (n) => (n === 1 ? 'token' : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? 'tokeny' : 'tokenów');
+
+/** Warning for a creator with a bad track record (serial launcher / honeypot deployer), or null. */
+function creatorWarning(d) {
+  if (d.dhp > 0) return { short: '☠️ twórca honeypotów', tip: `Ten twórca wdrożył już ${d.dhp} honeypot(y) (GoPlus)` };
+  if (d.dm >= 20 && (d.dmg || 0) / d.dm < 0.05)
+    return { short: '🧑‍🍳 seryjny twórca', tip: `Twórca stworzył ${fmt.n(d.dm)} tokenów, graduację przeszło ${fmt.n(d.dmg || 0)}` };
+  return null;
+}
+
+/** The viewer's position in a token: P&L vs. the saved entry price, or null. */
+function posPnl(d) {
+  const p = state.positions[d.m];
+  if (!p || !(p.p > 0) || !(d.p > 0)) return null;
+  const pct = (d.p / p.p - 1) * 100;
+  return { pct, usd: p.usd > 0 ? p.usd * (d.p / p.p - 1) : null, value: p.usd > 0 ? p.usd * (d.p / p.p) : null, cls: pct >= 0 ? 'up' : 'down', entry: p };
+}
+
+function renderPosCount() {
+  const evm = chainCfg().evm;
+  const n = Object.keys(state.positions).filter((m) => (evm ? m.startsWith('0x') : !m.startsWith('0x'))).length;
+  $('#c-pos').textContent = n || '';
+}
+
+function savePosition(mint, price, usd) {
+  state.positions[mint] = { p: price, usd: usd > 0 ? usd : 0, t: Date.now(), chain: ENGINE?.chain || 'solana' };
+  LS.set('positions', state.positions);
+  renderPosCount();
+}
+
+function closePosition(mint) {
+  delete state.positions[mint];
+  LS.set('positions', state.positions);
+  renderPosCount();
+}
+
 // ---------- holder structure icons (Axiom-style) ----------
 const HICON = {
   top10: '<path d="M8 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM16 11a2.5 2.5 0 1 0 0-5M2.5 19c.6-3 2.8-4.8 5.5-4.8s4.9 1.8 5.5 4.8M15.5 14.4c2.3.2 4.1 1.9 4.6 4.6"/>',
@@ -811,14 +892,14 @@ const tone = (v, warn, bad, goodHigh = false) =>
 const shortPct = (v) => (v == null ? '—' : v > 0 && v < 1 ? `${v.toFixed(1)}%` : `${Math.round(v)}%`);
 
 /** Small icon + value cells: top 10, dev, insiders, LP burned, DEX paid, holders. */
-function holderIcons(d) {
+function holderIcons(d, compact = false) {
   const evm = chainCfg().evm;
   const cells = [
     ['top10', tone(d.t10, 30, 50), shortPct(d.t10), `Top 10 holderów: ${shortPct(d.t10)}`],
     ['dev', tone(d.dv, 5, 15), shortPct(d.dv), `Dev trzyma: ${shortPct(d.dv)}`],
     evm ? null : ['insiders', tone(d.ins, 5, 15), shortPct(d.ins), `Insiderzy: ${shortPct(d.ins)}`],
     ['lp', tone(d.lpb, 50, 90, true), shortPct(d.lpb), `LP spalone: ${shortPct(d.lpb)}`],
-    ['paid', d.dp == null ? 'na' : d.dp ? 'up' : 'down', d.dp == null ? '—' : d.dp ? 'Paid' : 'Unpaid', `DEX paid: ${d.dp == null ? 'nie sprawdzono' : d.dp ? 'tak' : 'nie'}`],
+    ['paid', d.dp == null ? 'na' : d.dp ? 'up' : 'down', d.dp == null ? '—' : d.dp ? (compact ? '✓' : 'Paid') : compact ? '✗' : 'Unpaid', `DEX paid: ${d.dp == null ? 'nie sprawdzono' : d.dp ? 'tak' : 'nie'}`],
     ['holders', 'plain', fmt.n(d.h), `Holderzy: ${fmt.n(d.h)}`],
   ].filter(Boolean);
   return `<div class="q-sec">${cells.map(([k, t, v, tip]) => `<span class="hs ${t}" title="${tip}">${hico(k)}${v}</span>`).join('')}</div>`;
@@ -901,6 +982,7 @@ function setChain(id) {
   $('#searchResults').hidden = true;
   $('#sources').dataset.html = '';
   renderWatchCount();
+  renderPosCount();
   setView(state.view === 'watch' ? 'hype' : state.view);
 }
 
@@ -1198,6 +1280,7 @@ function renderDetail(d) {
     ['Organic score', d.organicScore != null ? `${Math.round(d.organicScore)} ${d.organicLabel ? `<small class="muted">${esc(d.organicLabel)}</small>` : ''}` : '—'],
     ['Wybicie wolumenu 5m', d.vs ? `<span class="${d.vs >= 2 ? 'up' : ''}">${d.vs.toFixed(1)}×</span> <small class="muted">średniej</small>` : '—'],
     ['Pozycja w rankingu', d.rank ? `#${d.rank}` : '—'],
+    ['Hype teraz', d.fz && FRESH[d.fz] ? `<span class="${FRESH[d.fz][2]}">${FRESH[d.fz][0]} ${FRESH[d.fz][1]}</span>` : '—'],
     ['DEX', esc(d.dexId || (d.bp != null ? 'bonding curve' : '—'))],
   ];
 
@@ -1245,12 +1328,47 @@ function renderDetail(d) {
     ['DEX Paid', d.dexPaid == null ? '<b class="muted">—</b>' : d.dexPaid ? '<b class="up">Tak</b>' : '<b class="down">Nie</b>', 'Opłacony profil na DexScreenerze'],
     ['Holderzy', `<b>${fmt.n(d.h)}</b>`, 'Liczba portfeli z tym tokenem'],
   ];
+  // Creator history: how many tokens they launched and how many graduated (Jupiter), or other
+  // honeypots by the same deployer (GoPlus, EVM).
+  const cw = creatorWarning(d);
+  const creatorLink = d.creator ? `<a href="${esc(ch.evm ? (ch.explorerName ? ch.explorer(d.creator).replace('/token/', '/address/') : '#') : `https://solscan.io/account/${d.creator}`)}" target="_blank" rel="noopener">${esc(fmt.short(d.creator))}</a>` : '—';
+  const history =
+    d.dm != null
+      ? `stworzył <b>${fmt.n(d.dm)}</b> ${plTokens(d.dm)}, graduację przeszło <b>${fmt.n(d.dmg || 0)}</b>${d.dm > 1 ? ` (${Math.round(((d.dmg || 0) / d.dm) * 100)}%)` : ''}`
+      : d.dhp != null
+        ? d.dhp > 0 ? `<b class="down">wdrożył już ${d.dhp} honeypot(y)</b>` : 'brak znanych honeypotów tego twórcy'
+        : 'historia jeszcze się nie pobrała';
   const holdersCard = `<div class="card"><h3>Struktura holderów <small>jak w Axiom</small></h3>
     <div class="hstats">${hstats.map(([k, v, tip]) => `<div title="${esc(tip)}"><span>${k}</span>${v}</div>`).join('')}</div>
+    <div class="creator ${cw ? 'bad' : ''}">🧑‍🍳 Twórca ${creatorLink} · ${history}${cw ? ` <span class="chip warnc">${cw.short}</span>` : ''}</div>
+    <div class="d-acts">
+      <button data-act="hide">🙈 Ukryj token</button>
+      ${d.creator ? '<button data-act="block">⛔ Blokuj twórcę</button>' : ''}
+    </div>
     <p class="note">Snajperzy, bundle i pro traderzy nie mają darmowego źródła danych — Axiom liczy je własnym, płatnym indeksowaniem.</p></div>`;
+
+  // Trade journal: the viewer's own entry and live P&L.
+  const pp = posPnl(d);
+  const posCard = pp
+    ? `<div class="card"><h3>💼 Moja pozycja <small>od ${fmt.ago(pp.entry.t)}</small></h3>
+      <div class="hstats">
+        <div><span>Cena wejścia</span><b>${fmt.price(pp.entry.p)}</b></div>
+        <div><span>Teraz</span><b>${fmt.price(d.p)}</b></div>
+        <div><span>Wynik</span><b class="${pp.cls}">${fmt.pct(pp.pct)} · ${fmtX(d.p / pp.entry.p)}</b></div>
+        ${pp.usd != null ? `<div><span>Włożone</span><b>${fmt.usd(pp.entry.usd)}</b></div><div><span>Wartość</span><b>${fmt.usd(pp.value)}</b></div><div><span>Zysk / strata</span><b class="${pp.cls}">${pp.usd >= 0 ? '+' : '−'}${fmt.usd(Math.abs(pp.usd))}</b></div>` : ''}
+      </div>
+      <div class="d-acts"><button data-act="pos-close">✖ Zamknij pozycję</button></div></div>`
+    : `<div class="card"><h3>💼 Moja pozycja</h3>
+      <p class="note" style="margin:0 0 8px">Zapisz zakup, a aplikacja policzy zysk lub stratę na żywo (zakładka „Pozycje”).</p>
+      <div class="pos-form">
+        <input id="posUsd" type="number" inputmode="decimal" min="0" step="any" placeholder="Kwota w $ (opcjonalnie)" />
+        <input id="posEntry" type="number" inputmode="decimal" min="0" step="any" placeholder="Cena wejścia (puste = obecna)" />
+        <button data-act="pos-add">💼 Zapisz pozycję</button>
+      </div></div>`;
 
   const sections = {
     holders: holdersCard,
+    pos: posCard,
     head: `<div class="d-head">${avatar(d, 'xl')}
       <div class="d-id"><h2>${esc(d.n || fmt.short(d.m))} <small>$${esc(d.s)}</small></h2>
         ${d.lp ? `<span class="chip ${d.lp === 'bonk' ? 'bonk' : 'pump'}" style="margin-left:6px">${esc(d.lp)}</span>` : ''}
@@ -1293,7 +1411,7 @@ function renderDetail(d) {
     state.detailHtml = { ...sections };
     state.chartHist = null;
     const sec = (k) => `<div data-sec="${k}">${sections[k]}</div>`;
-    body.innerHTML = `${sec('head')}${sec('holders')}${sec('ai')}${sec('grid')}
+    body.innerHTML = `${sec('head')}${sec('pos')}${sec('holders')}${sec('ai')}${sec('grid')}
     <div class="d-stack">
       <div class="card"><h3>Wykres <span class="chart-tabs">
           ${hasPair ? `<button data-chart="dex" class="${chartTab === 'dex' ? 'active' : ''}">Cena (DexScreener)</button>` : ''}
@@ -1472,6 +1590,106 @@ bindFilter('#fMcap', 'minMcap');
 bindFilter('#fLiq', 'minLiq');
 bindFilter('#fAge', 'maxAgeH');
 bindFilter('#fSafe', 'safe');
+bindFilter('#fDev', 'maxDev');
+bindFilter('#fLp', 'minLp');
+bindFilter('#fPaid', 'paid');
+
+// ---------- filter presets ----------
+const BUILTIN_PRESETS = [
+  { name: '🛡 Bezpieczne', f: { maxDev: 5, minLp: 90, paid: true, safe: true } },
+  { name: '🌱 Świeże (do 6 h)', f: { maxAgeH: 6, minMcap: 10000 } },
+  { name: '🐳 Duże (MC od $1M)', f: { minMcap: 1000000, minLiq: 50000 } },
+];
+const EMPTY_FILTERS = { minMcap: 0, minLiq: 0, maxAgeH: 0, safe: false, maxDev: 0, minLp: 0, paid: false };
+
+function renderPresets() {
+  const opts = [
+    '<option value="">wybierz…</option>',
+    '<option value="reset">✖ Bez filtrów</option>',
+    ...BUILTIN_PRESETS.map((p, i) => `<option value="b${i}">${esc(p.name)}</option>`),
+    ...state.presets.map((p, i) => `<option value="u${i}">⭐ ${esc(p.name)}</option>`),
+    '<option value="save">➕ Zapisz obecne filtry…</option>',
+    state.presets.length ? '<option value="del">🗑 Usuń zapisany preset…</option>' : '',
+  ];
+  $('#fPreset').innerHTML = opts.join('');
+}
+
+function applyFilters(f) {
+  state.filters = { ...EMPTY_FILTERS, ...f };
+  LS.set('filters', state.filters);
+  for (const [id, key] of [['#fMcap', 'minMcap'], ['#fLiq', 'minLiq'], ['#fAge', 'maxAgeH'], ['#fDev', 'maxDev'], ['#fLp', 'minLp']]) $(id).value = String(state.filters[key] || 0);
+  $('#fSafe').checked = !!state.filters.safe;
+  $('#fPaid').checked = !!state.filters.paid;
+  connect();
+}
+
+$('#fPreset').addEventListener('change', (e) => {
+  const v = e.target.value;
+  e.target.value = '';
+  if (!v) return;
+  if (v === 'reset') {
+    applyFilters({});
+    toast('Filtry wyczyszczone');
+  } else if (v[0] === 'b' || v[0] === 'u') {
+    const p = (v[0] === 'b' ? BUILTIN_PRESETS : state.presets)[Number(v.slice(1))];
+    if (p) {
+      applyFilters(p.f);
+      toast(`Preset: ${p.name}`);
+    }
+  } else if (v === 'save') {
+    const name = (prompt('Nazwa presetu (np. „Moje gemy”):') || '').trim().slice(0, 30);
+    if (!name) return;
+    state.presets = [...state.presets.filter((p) => p.name !== name), { name, f: { ...state.filters } }];
+    LS.set('presets', state.presets);
+    renderPresets();
+    toast(`Zapisano preset „${name}”`);
+  } else if (v === 'del') {
+    const list = state.presets.map((p, i) => `${i + 1}. ${p.name}`).join('\n');
+    const n = Number(prompt(`Który preset usunąć? Podaj numer:\n${list}`));
+    if (n >= 1 && n <= state.presets.length) {
+      const [gone] = state.presets.splice(n - 1, 1);
+      LS.set('presets', state.presets);
+      renderPresets();
+      toast(`Usunięto preset „${gone.name}”`);
+    }
+  }
+});
+renderPresets();
+
+// ---------- hidden tokens / blocked creators ----------
+function renderHiddenBtn() {
+  const n = state.hidden.size + state.blocked.size;
+  $('#hiddenBtn').hidden = !n;
+  $('#hiddenN').textContent = n;
+}
+function hideToken(mint) {
+  state.hidden.add(mint);
+  LS.set('hidden', [...state.hidden]);
+  renderHiddenBtn();
+  closeDetail();
+  toast('🙈 Token ukryty — przywrócisz go przyciskiem 🙈 przy filtrach');
+  connect();
+}
+function blockCreator(creator) {
+  if (!creator) return;
+  state.blocked.add(creator);
+  LS.set('blocked', [...state.blocked]);
+  renderHiddenBtn();
+  closeDetail();
+  toast('⛔ Twórca zablokowany — jego tokeny nie będą się pokazywać');
+  connect();
+}
+$('#hiddenBtn').addEventListener('click', () => {
+  if (!confirm(`Przywrócić ${state.hidden.size} ukrytych tokenów i ${state.blocked.size} zablokowanych twórców?`)) return;
+  state.hidden.clear();
+  state.blocked.clear();
+  LS.set('hidden', []);
+  LS.set('blocked', []);
+  renderHiddenBtn();
+  toast('Przywrócono wszystkie');
+  connect();
+});
+renderHiddenBtn();
 
 function togglePause() {
   state.paused = !state.paused;
@@ -1520,6 +1738,21 @@ $('#drawer').addEventListener('click', (e) => {
   else if (act === 'copy' && state.selected) copy(state.selected);
   else if (act === 'watch' && state.selected) toggleWatch(state.selected);
   else if (act === 'analyze' && state.selected) requestAnalysis(state.selected);
+  else if (act === 'hide' && state.selected) hideToken(state.selected);
+  else if (act === 'block' && state.detail?.creator) blockCreator(state.detail.creator);
+  else if (act === 'pos-add' && state.selected && state.detail) {
+    const usd = Number($('#posUsd')?.value) || 0;
+    const entry = Number($('#posEntry')?.value) || state.detail.p;
+    if (!(entry > 0)) return toast('Brak ceny — spróbuj za chwilę');
+    savePosition(state.selected, entry, usd);
+    toast(`💼 Zapisano pozycję po ${fmt.price(entry)}`);
+    renderDetail(state.detail);
+  } else if (act === 'pos-close' && state.selected) {
+    if (!confirm('Zamknąć (usunąć) tę pozycję?')) return;
+    closePosition(state.selected);
+    toast('Pozycja zamknięta');
+    if (state.detail) renderDetail(state.detail);
+  }
   const chart = e.target.closest('[data-chart]');
   if (chart && state.detail) {
     state.chartTab = chart.dataset.chart;
@@ -1577,6 +1810,7 @@ document.addEventListener('keydown', (e) => {
 // ---------- boot ----------
 renderChains();
 renderWatchCount();
+renderPosCount();
 $('#chains').addEventListener('click', (e) => {
   const b = e.target.closest('.chain-btn');
   if (b) setChain(b.dataset.chain);

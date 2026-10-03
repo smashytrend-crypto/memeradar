@@ -201,7 +201,7 @@ a { color: inherit; text-decoration: none; }
 .layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; padding: 0 20px 20px; align-items: start; }
 .board { min-width: 0; container-type: inline-size; container-name: board; }
 .table {
-  --cols: 36px minmax(200px, 1.6fr) 124px 96px 60px 60px 60px 104px 84px 128px 86px 60px 40px 28px;
+  --cols: 36px minmax(200px, 1.6fr) 124px 96px 60px 60px 60px 104px 84px 128px 140px 60px 40px 28px;
 }
 
 /* ---------- podium ---------- */
@@ -469,21 +469,23 @@ a { color: inherit; text-decoration: none; }
 /* ---------- responsive ---------- */
 /* Table columns collapse by the board's own width (container queries), so they always fit. */
 /* 5m / 1h / 4h stay visible longest; below 964px the quick line under each token takes over. */
-@container board (max-width: 1357px) {
-  .table { --cols: 36px minmax(200px, 1.6fr) 124px 96px 60px 60px 60px 104px 128px 86px 60px 40px 28px; }
+@container board (max-width: 1407px) {
+  .table { --cols: 36px minmax(200px, 1.6fr) 124px 96px 60px 60px 60px 104px 128px 140px 60px 40px 28px; }
   .c-liq { display: none; }
 }
-@container board (max-width: 1265px) {
-  .table { --cols: 36px minmax(200px, 1.6fr) 124px 96px 60px 60px 60px 104px 128px 86px 40px 28px; }
+@container board (max-width: 1315px) {
+  .table { --cols: 36px minmax(200px, 1.6fr) 124px 96px 60px 60px 60px 104px 128px 140px 40px 28px; }
   .c-x { display: none; }
 }
-@container board (max-width: 1197px) {
-  .table { --cols: 36px minmax(200px, 1.6fr) 124px 96px 60px 60px 60px 104px 128px 40px 28px; }
-  .c-hold { display: none; }
-}
-@container board (max-width: 1103px) {
-  .table { --cols: 36px minmax(180px, 1.6fr) 124px 96px 60px 60px 60px 104px 128px 28px; }
+/* Laptops: the holder-structure column stays; the shield goes (its info is in the icons). */
+@container board (max-width: 1247px) {
+  .table { --cols: 36px minmax(160px, 1.6fr) 108px 84px 60px 60px 60px 104px 128px 140px 28px; }
   .c-risk { display: none; }
+  .row .act-x, .row .act-cp { padding: 0 6px; }
+}
+@container board (max-width: 1050px) {
+  .table { --cols: 36px minmax(160px, 1.6fr) 108px 84px 60px 60px 60px 104px 128px 28px; }
+  .c-hold { display: none; }
 }
 @container board (max-width: 963px) {
   .table { --cols: 32px minmax(140px, 1.6fr) 120px 92px 60px 104px 28px; }
@@ -648,15 +650,7 @@ a { color: inherit; text-decoration: none; }
   .q-l { flex: 1; }
   .q-bsx { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 4px 10px; }
   .q-bs { display: flex; flex-direction: column; gap: 3px; }
-  /* Holder structure icons (Axiom-style): 2 columns × 3 rows next to buys / sells. */
-  .q-sec { display: grid; grid-template-columns: repeat(2, auto); gap: 3px 8px; font-size: 11px; }
-  .hs { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
-  .hs svg { width: 12px; height: 12px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-  .hs.up { color: var(--up); }
-  .hs.warn { color: var(--warn); }
-  .hs.down { color: var(--down); }
-  .hs.na { color: var(--dim); }
-  .hs.plain { color: var(--text); }
+
   .q-b { color: var(--up); }
   .q-s { color: var(--down); }
   .q-b i, .q-s i { font-style: normal; color: var(--dim); font-family: var(--sans); font-weight: 500; margin-left: 6px; }
@@ -720,3 +714,42 @@ a { color: inherit; text-decoration: none; }
 .hstats b { display: block; margin-top: 2px; font: 700 15px/1.3 var(--mono); }
 .hstats b.warn { color: var(--warn); }
 .hstats + .note { margin-top: 10px; }
+
+/* ---------- holder structure icons (Axiom-style) ---------- */
+.q-sec { display: grid; grid-template-columns: repeat(2, auto); gap: 3px 8px; font: 600 11px/1.3 var(--mono); font-variant-numeric: tabular-nums; }
+.hs { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+.hs svg { width: 12px; height: 12px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.hs.up { color: var(--up); }
+.hs.warn { color: var(--warn); }
+.hs.down { color: var(--down); }
+.hs.na { color: var(--dim); }
+.hs.plain { color: var(--text); }
+/* Desktop column: 3 × 2 grid. */
+.hold-ic .q-sec { grid-template-columns: repeat(3, auto); justify-content: end; gap: 3px 6px; font-size: 10.5px; }
+
+/* ---------- row chips: hype freshness, creator warning, position ---------- */
+.chip.fz.up { color: var(--up); background: var(--up-bg); }
+.chip.fz.warn { color: var(--warn); background: var(--warn-bg); }
+.chip.fz.down { color: var(--down); background: var(--down-bg); }
+.chip.warnc { color: #ffb4b4; background: rgba(255, 77, 106, 0.16); }
+.chip.pos { font-weight: 700; }
+.chip.pos.up { color: var(--up); background: var(--up-bg); }
+.chip.pos.down { color: var(--down); background: var(--down-bg); }
+
+/* ---------- token window: creator, actions, position form ---------- */
+.creator { margin-top: 10px; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+.creator a { color: var(--text); }
+.creator.bad { color: #ffb4b4; }
+.d-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.d-acts button, .pos-form button {
+  height: 34px; padding: 0 12px; border-radius: 9px; border: 1px solid var(--line2); background: var(--panel2);
+  color: var(--text); font: 600 13px/1 var(--sans); cursor: pointer;
+}
+.d-acts button:active, .pos-form button:active { background: var(--line2); }
+.pos-form { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.pos-form input {
+  height: 38px; padding: 0 10px; border-radius: 9px; border: 1px solid var(--line2); background: var(--panel2);
+  color: var(--text); font: 500 16px/1 var(--mono); min-width: 0;
+}
+.pos-form button { grid-column: 1 / -1; height: 40px; background: var(--grad); border: 0; color: #fff; }
+.sel.preset select { max-width: 140px; }
