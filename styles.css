@@ -252,7 +252,7 @@ a { color: inherit; text-decoration: none; }
 .thead .num { text-align: right; font-family: var(--sans); }
 .tbody { position: relative; }
 .row {
-  position: relative; min-height: 62px; border-bottom: 1px solid var(--line); cursor: pointer;
+  position: relative; min-height: 62px; border-bottom: 1px solid #2a3547; cursor: pointer;
   transition: background 0.15s; will-change: transform;
 }
 .row:last-child { border-bottom: 0; }
@@ -608,6 +608,18 @@ a { color: inherit; text-decoration: none; }
 .d-ca-btn:hover { border-color: var(--accent); }
 /* Narrower windows (incl. the app's preview pane): the drawer takes the whole width. */
 @media (max-width: 1100px) { .drawer { width: 100vw; border-left: 0; } }
+
+/* Phones / narrow boards: every token is its own card with a clear border. */
+@container board (max-width: 963px) {
+  .table { background: transparent; border: 0; overflow: visible; }
+  .tbody { display: flex; flex-direction: column; gap: 10px; }
+  .tbody .row, .tbody .row:last-child {
+    border: 1px solid #34425a; border-radius: 14px; background: var(--panel);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  }
+  .tbody .row:hover { background: var(--panel2); border-color: #46577a; }
+  .tbody .row.x2 { border-radius: 14px; border-color: #ffd23f; }
+}
 
 /* Smallest phones (320–360px): the hype column keeps only the score, so names stay readable. */
 @container board (max-width: 340px) {

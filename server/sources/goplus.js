@@ -2,7 +2,7 @@
 // honeypot, sell / buy tax, mint and owner powers — plus holder count and top-holder share.
 // Results go into the same shapes RugCheck / Jupiter fill on Solana (t.rug risks, t.audit,
 // holders), so scoring and the UI treat every network alike.
-import { RateLimiter, errMsg, every, getJSON, num } from '../util.js?v=muri0lr0';
+import { RateLimiter, errMsg, every, getJSON, num } from '../util.js?v=mus7jq3m';
 
 const BASE = 'https://api.gopluslabs.io/api/v1/token_security';
 const NAME = 'goplus';
