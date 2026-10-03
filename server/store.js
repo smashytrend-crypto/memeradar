@@ -1,8 +1,8 @@
-import { computeHype } from './scoring.js?v=mus7ukpe';
-import { CURVE_DEXES, NON_MEME, NON_MEME_TAGS, PUMP_INITIAL_VTOKENS, PUMP_K, PUMP_TOKENS_FOR_SALE } from './constants.js?v=mus7ukpe';
-import { Emitter, clamp } from './util.js?v=mus7ukpe';
-import { change4h, freshCandles, sparkPoints } from './candles.js?v=mus7ukpe';
-import { EVM_BASE_ASSETS, EVM_NON_MEME_SYMBOLS, evmEligible, getChain, isAddressOn, normAddr } from './chains.js?v=mus7ukpe';
+import { computeHype } from './scoring.js?v=mus88ptc';
+import { CURVE_DEXES, NON_MEME, NON_MEME_TAGS, PUMP_INITIAL_VTOKENS, PUMP_K, PUMP_TOKENS_FOR_SALE } from './constants.js?v=mus88ptc';
+import { Emitter, clamp } from './util.js?v=mus88ptc';
+import { change4h, freshCandles, sparkPoints } from './candles.js?v=mus88ptc';
+import { EVM_BASE_ASSETS, EVM_NON_MEME_SYMBOLS, evmEligible, getChain, isAddressOn, normAddr } from './chains.js?v=mus88ptc';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -523,6 +523,12 @@ export class Store extends Emitter {
       s1: m.sells1h || 0,
       tr: m.traders1h || null,
       h: t.holders || null,
+      // Holder structure for the list's Axiom-style icons (null = not known yet).
+      dv: r1(t.audit?.devBalancePercentage ?? null),
+      t10: r1(t.audit?.topHoldersPercentage ?? null),
+      ins: r1(t.rug?.insidersPct ?? null),
+      lpb: r1(t.rug?.lpBurnPct ?? null),
+      dp: t.dexPaid ?? null,
       hg: m.holderGrowth1h || null,
       x: t.x?.mentions1h ?? null,
       xc: t.x?.capped || false,

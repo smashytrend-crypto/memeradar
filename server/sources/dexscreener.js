@@ -1,9 +1,9 @@
 // DexScreener public API (https://docs.dexscreener.com/api/reference):
 // discovery (profiles / boosts) + batched market data for every tracked token.
-import { RateLimiter, errMsg, every, getJSON, num, sleep, toMs } from '../util.js?v=mus7ukpe';
-import { Store } from '../store.js?v=mus7ukpe';
-import { isCurvePair } from '../constants.js?v=mus7ukpe';
-import { isAddressOn, normAddr } from '../chains.js?v=mus7ukpe';
+import { RateLimiter, errMsg, every, getJSON, num, sleep, toMs } from '../util.js?v=mus88ptc';
+import { Store } from '../store.js?v=mus88ptc';
+import { isCurvePair } from '../constants.js?v=mus88ptc';
+import { isAddressOn, normAddr } from '../chains.js?v=mus88ptc';
 
 const BASE = 'https://api.dexscreener.com';
 const NAME = 'dexscreener';
@@ -199,13 +199,14 @@ export function startDexScreener(store, config) {
   }
 
   every(30_000, discovery, fail(slow), active);
+
   enrichLoop();
 
-  return {
+  const api = {
     /** Whether the token's DexScreener profile is paid for ("DEX paid"), cached for 10 minutes. */
-    async paid(mint) {
+    async paid(mint, force = false) {
       const t = store.get(mint);
-      if (!t || Date.now() - (t.dexPaidAt || 0) < 10 * 60_000) return t?.dexPaid;
+      if (!t || (!force && Date.now() - (t.dexPaidAt || 0) < 10 * 60_000)) return t?.dexPaid;
       const data = await slow.run(() => getJSON(`${BASE}/orders/v1/${chain.dex}/${t.mint}`));
       const orders = Array.isArray(data) ? data : data?.orders || [];
       t.dexPaid = orders.some((o) => o.type === 'tokenProfile' && o.status === 'approved');
@@ -223,4 +224,20 @@ export function startDexScreener(store, config) {
       return applyPairs(Array.isArray(data) ? data : data?.pairs, new Set([mint]));
     },
   };
+
+  // "DEX paid" for the listed tokens: one orders lookup every 4 s (top 100 re-checked every 20 min).
+  every(
+    4000,
+    async () => {
+      const [t] = store.pickForRefresh('paid', 1, Date.now(), {
+        intervals: { top: 20 * 60_000, hot: 60 * 60_000, young: 60 * 60_000, rest: 24 * 3600_000 },
+        filter: (tok) => (store.rank.get(tok.mint) || Infinity) <= 100 || tok.pinnedUntil > Date.now(),
+      });
+      if (t) await api.paid(t.mint, true);
+    },
+    () => {},
+    active,
+  );
+
+  return api;
 }

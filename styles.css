@@ -645,6 +645,18 @@ a { color: inherit; text-decoration: none; }
   .q-top > * { white-space: nowrap; }
   .q-top:empty { display: none; }
   .q-b, .q-s { white-space: nowrap; }
+  .q-l { flex: 1; }
+  .q-bsx { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 4px 10px; }
+  .q-bs { display: flex; flex-direction: column; gap: 3px; }
+  /* Holder structure icons (Axiom-style): 2 columns × 3 rows next to buys / sells. */
+  .q-sec { display: grid; grid-template-columns: repeat(2, auto); gap: 3px 8px; font-size: 11px; }
+  .hs { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+  .hs svg { width: 12px; height: 12px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .hs.up { color: var(--up); }
+  .hs.warn { color: var(--warn); }
+  .hs.down { color: var(--down); }
+  .hs.na { color: var(--dim); }
+  .hs.plain { color: var(--text); }
   .q-b { color: var(--up); }
   .q-s { color: var(--down); }
   .q-b i, .q-s i { font-style: normal; color: var(--dim); font-family: var(--sans); font-weight: 500; margin-left: 6px; }

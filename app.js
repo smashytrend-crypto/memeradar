@@ -567,8 +567,10 @@ function updateRow(entry, d, idx) {
     `<div class="q-l">` +
     `<div class="q-mv"><span><i>MC</i>${fmt.usd(d.mc)}</span><span><i>Vol 24h</i>${fmt.usd(d.v24)}</span></div>` +
     `<div class="q-top">${sinceChip}${d.x != null ? `<span class="q-kv"><i>𝕏</i> ${d.x}${d.xc ? '+' : ''}/h</span>` : ''}</div>` +
+    `<div class="q-bsx"><div class="q-bs">` +
     `<div class="q-b" title="Kupno — ostatnie ${use5 ? '5 min' : '1 h'}">▲ ${fmt.n(b)}${hasVol ? ` · ${fmt.usd(bv)}` : ''}<i>${win}</i></div>` +
     `<div class="q-s" title="Sprzedaż — ostatnie ${use5 ? '5 min' : '1 h'}">▼ ${fmt.n(s)}${hasVol ? ` · ${fmt.usd(sv)}` : ''}<i>${win}</i></div>` +
+    `</div>${holderIcons(d)}</div>` +
     `</div>` +
     `<div class="q-r">${chg('5m', d.c5)}${chg('1h', d.c1)}${chg('4h', d.c4)}</div>`;
   if (entry.quick !== quick) {
@@ -792,6 +794,35 @@ setInterval(() => {
   $('#liveBadge').classList.toggle('off', stale);
   if (stale) $('#liveBadge').lastChild.textContent = 'OFFLINE';
 }, 2000);
+
+// ---------- holder structure icons (Axiom-style) ----------
+const HICON = {
+  top10: '<path d="M8 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM16 11a2.5 2.5 0 1 0 0-5M2.5 19c.6-3 2.8-4.8 5.5-4.8s4.9 1.8 5.5 4.8M15.5 14.4c2.3.2 4.1 1.9 4.6 4.6"/>',
+  dev: '<path d="M7 13.5V19h10v-5.5M7 13.5a4 4 0 1 1 1.9-7.4 4 4 0 0 1 6.2 0A4 4 0 1 1 17 13.5M7 16h10"/>',
+  insiders: '<path d="M6 20V11a6 6 0 0 1 12 0v9l-2-1.5-2 1.5-2-1.5-2 1.5-2-1.5zM9.5 11h.01M14.5 11h.01"/>',
+  lp: '<path d="M12 3c3 3.6 5 6.2 5 9.4A5 5 0 0 1 7 12.4c0-1.8.9-3.4 2.2-4.4 0 1.7.8 2.7 1.7 3.1 0-3 .4-5.4 1.1-8.1z"/>',
+  paid: '<path d="M12 3l2.4 1.6 2.9-.2 1 2.7 2.3 1.8-.9 2.8.9 2.8-2.3 1.8-1 2.7-2.9-.2L12 21l-2.4-1.6-2.9.2-1-2.7-2.3-1.8.9-2.8-.9-2.8 2.3-1.8 1-2.7 2.9.2z"/><path d="M8.8 12.2l2.2 2.2 4.3-4.6"/>',
+  holders: '<path d="M12 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM5 20c.8-3.6 3.6-5.8 7-5.8s6.2 2.2 7 5.8"/>',
+};
+const hico = (k) => `<svg viewBox="0 0 24 24" aria-hidden="true">${HICON[k]}</svg>`;
+// Colour by threshold: high share is bad (dev, top 10, insiders); for LP burned high is good.
+const tone = (v, warn, bad, goodHigh = false) =>
+  v == null ? 'na' : goodHigh ? (v >= bad ? 'up' : v >= warn ? 'warn' : 'down') : v >= bad ? 'down' : v >= warn ? 'warn' : 'up';
+const shortPct = (v) => (v == null ? '—' : v > 0 && v < 1 ? `${v.toFixed(1)}%` : `${Math.round(v)}%`);
+
+/** Small icon + value cells: top 10, dev, insiders, LP burned, DEX paid, holders. */
+function holderIcons(d) {
+  const evm = chainCfg().evm;
+  const cells = [
+    ['top10', tone(d.t10, 30, 50), shortPct(d.t10), `Top 10 holderów: ${shortPct(d.t10)}`],
+    ['dev', tone(d.dv, 5, 15), shortPct(d.dv), `Dev trzyma: ${shortPct(d.dv)}`],
+    evm ? null : ['insiders', tone(d.ins, 5, 15), shortPct(d.ins), `Insiderzy: ${shortPct(d.ins)}`],
+    ['lp', tone(d.lpb, 50, 90, true), shortPct(d.lpb), `LP spalone: ${shortPct(d.lpb)}`],
+    ['paid', d.dp == null ? 'na' : d.dp ? 'up' : 'down', d.dp == null ? '—' : d.dp ? 'Paid' : 'Unpaid', `DEX paid: ${d.dp == null ? 'nie sprawdzono' : d.dp ? 'tak' : 'nie'}`],
+    ['holders', 'plain', fmt.n(d.h), `Holderzy: ${fmt.n(d.h)}`],
+  ].filter(Boolean);
+  return `<div class="q-sec">${cells.map(([k, t, v, tip]) => `<span class="hs ${t}" title="${tip}">${hico(k)}${v}</span>`).join('')}</div>`;
+}
 
 // ---------- network / launchpad badges ----------
 // Small marks before a token's name: the network on EVM chains, the launchpad on Solana.
