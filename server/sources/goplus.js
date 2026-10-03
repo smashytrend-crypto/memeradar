@@ -2,7 +2,7 @@
 // honeypot, sell / buy tax, mint and owner powers — plus holder count and top-holder share.
 // Results go into the same shapes RugCheck / Jupiter fill on Solana (t.rug risks, t.audit,
 // holders), so scoring and the UI treat every network alike.
-import { RateLimiter, errMsg, every, getJSON, num } from '../util.js?v=mus7jq3m';
+import { RateLimiter, errMsg, every, getJSON, num } from '../util.js?v=mus7ukpe';
 
 const BASE = 'https://api.gopluslabs.io/api/v1/token_security';
 const NAME = 'goplus';
@@ -38,9 +38,14 @@ export function goplusToReport(r) {
   const people = holders.filter((h) => !on(h.is_contract) && !on(h.is_locked));
   const top10 = people.slice(0, 10).reduce((acc, h) => acc + (num(h.percent) || 0), 0) * 100;
   const creator = num(r.creator_percent);
+  // LP burned or locked: LP tokens held by the zero / dead address or in a lock (V2-style pools;
+  // concentrated-liquidity pools have no LP token, so this stays unknown there).
+  const lp = Array.isArray(r.lp_holders) ? r.lp_holders : [];
+  const dead = (a) => /^0x0{40}$|^0x0{36}dead$|^0x000000000000000000000000000000000000dead$/i.test(a || '');
+  const lpBurnPct = lp.length ? lp.filter((h) => on(h.is_locked) || dead(h.address)).reduce((a, h) => a + (num(h.percent) || 0), 0) * 100 : null;
   const danger = risks.filter((x) => x.level === 'danger').length;
   return {
-    rug: { score: danger ? 80 : risks.length ? 30 : 0, risks, at: Date.now(), source: 'GoPlus' },
+    rug: { score: danger ? 80 : risks.length ? 30 : 0, risks, at: Date.now(), source: 'GoPlus', lpBurnPct },
     audit: {
       topHoldersPercentage: holders.length ? top10 : undefined,
       devBalancePercentage: creator != null ? creator * 100 : undefined,

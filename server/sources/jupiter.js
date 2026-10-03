@@ -1,6 +1,6 @@
 // Jupiter Tokens API v2 (https://dev.jup.ag/docs/tokens): trending / organic lists, holder counts,
 // organic score, audit (mint/freeze authority, top holders) and bonding-curve progress. Also SOL price.
-import { RateLimiter, errMsg, every, getJSON, isMint, num, toMs } from '../util.js?v=mus7jq3m';
+import { RateLimiter, errMsg, every, getJSON, isMint, num, toMs } from '../util.js?v=mus7ukpe';
 
 const BASE = 'https://lite-api.jup.ag';
 const NAME = 'jupiter';
@@ -52,7 +52,8 @@ export function jupToPatch(j) {
         mintAuthorityDisabled: a.mintAuthorityDisabled,
         freezeAuthorityDisabled: a.freezeAuthorityDisabled,
         topHoldersPercentage: num(a.topHoldersPercentage),
-        devBalancePercentage: num(a.devBalancePercentage),
+        // Jupiter leaves out zero fields: no dev balance listed means the dev holds none.
+        devBalancePercentage: num(a.devBalancePercentage) ?? 0,
       },
     // Jupiter's % changes back-fill tokens DexScreener has not refreshed yet.
     jupChange: { m5: z(s5.priceChange), h1: z(s1.priceChange), h6: z(s6.priceChange), h24: z(s24.priceChange) },

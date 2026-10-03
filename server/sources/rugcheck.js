@@ -1,8 +1,22 @@
 // RugCheck (https://api.rugcheck.xyz/swagger/index.html): safety report for top tokens.
-import { RateLimiter, errMsg, every, getJSON } from '../util.js?v=mus7jq3m';
+import { RateLimiter, errMsg, every, getJSON } from '../util.js?v=mus7ukpe';
 
 const BASE = 'https://api.rugcheck.xyz/v1';
 const NAME = 'rugcheck';
+
+/** RugCheck full report → risks, LP burned % of the main pool, insider share of top holders. */
+export function rugToReport(r) {
+  const liq = (m) => (m.lp?.baseUSD || 0) + (m.lp?.quoteUSD || 0);
+  const main = [...(r.markets || [])].sort((a, b) => liq(b) - liq(a))[0];
+  const insiders = (r.topHolders || []).filter((h) => h.insider);
+  return {
+    score: r.score_normalised ?? r.score,
+    risks: (r.risks || []).map((x) => ({ name: x.name, description: x.description, value: x.value, level: x.level })),
+    lpBurnPct: main?.lp ? Number(main.lp.lpLockedPct) || 0 : null,
+    insidersPct: r.topHolders ? insiders.reduce((a, h) => a + (Number(h.pct) || 0), 0) : null,
+    insiders: r.graphInsidersDetected ?? insiders.length,
+  };
+}
 
 export function startRugCheck(store) {
   const lim = new RateLimiter(20);
@@ -10,18 +24,10 @@ export function startRugCheck(store) {
   store.setSource(NAME, 'connecting', 'czeka na tokeny w czołówce rankingu');
 
   async function check(t) {
-    const r = await lim.run(() => getJSON(`${BASE}/tokens/${t.mint}/report/summary`));
-    t.rug = {
-      score: r.score_normalised ?? r.score,
-      risks: (r.risks || []).map((x) => ({
-        name: x.name,
-        description: x.description,
-        value: x.value,
-        level: x.level,
-      })),
-      lpLockedPct: r.lpLockedPct,
-      at: Date.now(),
-    };
+    // Full report: besides the risks it carries the markets (LP burned / locked) and top holders
+    // flagged as insiders.
+    const r = await lim.run(() => getJSON(`${BASE}/tokens/${t.mint}/report`, { timeout: 20_000 }));
+    t.rug = { ...rugToReport(r), at: Date.now() };
     store.setSource(NAME, 'ok', `OK · ${++okCount} raportów`);
   }
 

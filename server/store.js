@@ -1,8 +1,8 @@
-import { computeHype } from './scoring.js?v=mus7jq3m';
-import { CURVE_DEXES, NON_MEME, NON_MEME_TAGS, PUMP_INITIAL_VTOKENS, PUMP_K, PUMP_TOKENS_FOR_SALE } from './constants.js?v=mus7jq3m';
-import { Emitter, clamp } from './util.js?v=mus7jq3m';
-import { change4h, freshCandles, sparkPoints } from './candles.js?v=mus7jq3m';
-import { EVM_BASE_ASSETS, EVM_NON_MEME_SYMBOLS, evmEligible, getChain, isAddressOn, normAddr } from './chains.js?v=mus7jq3m';
+import { computeHype } from './scoring.js?v=mus7ukpe';
+import { CURVE_DEXES, NON_MEME, NON_MEME_TAGS, PUMP_INITIAL_VTOKENS, PUMP_K, PUMP_TOKENS_FOR_SALE } from './constants.js?v=mus7ukpe';
+import { Emitter, clamp } from './util.js?v=mus7ukpe';
+import { change4h, freshCandles, sparkPoints } from './candles.js?v=mus7ukpe';
+import { EVM_BASE_ASSETS, EVM_NON_MEME_SYMBOLS, evmEligible, getChain, isAddressOn, normAddr } from './chains.js?v=mus7ukpe';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -565,6 +565,13 @@ export class Store extends Emitter {
       organicLabel: t.organicLabel,
       verified: t.verified,
       audit: t.audit,
+      // Holder structure (like Axiom's token panel), from whichever sources have it.
+      devPct: t.audit?.devBalancePercentage ?? null,
+      top10Pct: t.audit?.topHoldersPercentage ?? null,
+      insidersPct: t.rug?.insidersPct ?? null,
+      insiders: t.rug?.insiders ?? null,
+      lpBurnPct: t.rug?.lpBurnPct ?? null,
+      dexPaid: t.dexPaid ?? null,
       risk: t.hype.risk,
       market: t.hype.market,
       txns: t.txns,

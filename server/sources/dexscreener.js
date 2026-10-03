@@ -1,9 +1,9 @@
 // DexScreener public API (https://docs.dexscreener.com/api/reference):
 // discovery (profiles / boosts) + batched market data for every tracked token.
-import { RateLimiter, errMsg, every, getJSON, num, sleep, toMs } from '../util.js?v=mus7jq3m';
-import { Store } from '../store.js?v=mus7jq3m';
-import { isCurvePair } from '../constants.js?v=mus7jq3m';
-import { isAddressOn, normAddr } from '../chains.js?v=mus7jq3m';
+import { RateLimiter, errMsg, every, getJSON, num, sleep, toMs } from '../util.js?v=mus7ukpe';
+import { Store } from '../store.js?v=mus7ukpe';
+import { isCurvePair } from '../constants.js?v=mus7ukpe';
+import { isAddressOn, normAddr } from '../chains.js?v=mus7ukpe';
 
 const BASE = 'https://api.dexscreener.com';
 const NAME = 'dexscreener';
@@ -202,6 +202,16 @@ export function startDexScreener(store, config) {
   enrichLoop();
 
   return {
+    /** Whether the token's DexScreener profile is paid for ("DEX paid"), cached for 10 minutes. */
+    async paid(mint) {
+      const t = store.get(mint);
+      if (!t || Date.now() - (t.dexPaidAt || 0) < 10 * 60_000) return t?.dexPaid;
+      const data = await slow.run(() => getJSON(`${BASE}/orders/v1/${chain.dex}/${t.mint}`));
+      const orders = Array.isArray(data) ? data : data?.orders || [];
+      t.dexPaid = orders.some((o) => o.type === 'tokenProfile' && o.status === 'approved');
+      t.dexPaidAt = Date.now();
+      return t.dexPaid;
+    },
     /** Free-text / CA search across the whole network — adds results to the radar. */
     async search(q) {
       const data = await fast.run(() => getJSON(`${BASE}/latest/dex/search?q=${encodeURIComponent(q)}`));

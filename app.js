@@ -1200,7 +1200,26 @@ function renderDetail(d) {
 
   // Sections are rebuilt only when their HTML actually changes, and the chart card is never
   // rebuilt on refresh — re-inserting the DexScreener iframe would reload the chart.
+  // Holder structure, like Axiom's token panel. Green = healthy, red = a warning sign.
+  const pctCell = (v, warn, bad, invert = false) => {
+    if (v == null || !Number.isFinite(v)) return '<b class="muted">—</b>';
+    const c = invert ? (v >= bad ? 'up' : v >= warn ? 'warn' : 'down') : v >= bad ? 'down' : v >= warn ? 'warn' : 'up';
+    return `<b class="${c}">${v < 0.1 && v > 0 ? '<0.1' : v.toFixed(v >= 10 ? 0 : 1)}%</b>`;
+  };
+  const hstats = [
+    ['Dev', pctCell(d.devPct, 5, 15), 'Udział tokenów w portfelu twórcy'],
+    ['Top 10', pctCell(d.top10Pct, 30, 50), '10 największych portfeli (bez puli)'],
+    ['Insiderzy', chainCfg().evm ? '<b class="muted">—</b>' : pctCell(d.insidersPct, 5, 15), 'Portfele powiązane z twórcą wśród top holderów (RugCheck)'],
+    ['LP spalone', pctCell(d.lpBurnPct, 50, 90, true), 'Spalone lub zablokowane LP głównej puli'],
+    ['DEX Paid', d.dexPaid == null ? '<b class="muted">—</b>' : d.dexPaid ? '<b class="up">Tak</b>' : '<b class="down">Nie</b>', 'Opłacony profil na DexScreenerze'],
+    ['Holderzy', `<b>${fmt.n(d.h)}</b>`, 'Liczba portfeli z tym tokenem'],
+  ];
+  const holdersCard = `<div class="card"><h3>Struktura holderów <small>jak w Axiom</small></h3>
+    <div class="hstats">${hstats.map(([k, v, tip]) => `<div title="${esc(tip)}"><span>${k}</span>${v}</div>`).join('')}</div>
+    <p class="note">Snajperzy, bundle i pro traderzy nie mają darmowego źródła danych — Axiom liczy je własnym, płatnym indeksowaniem.</p></div>`;
+
   const sections = {
+    holders: holdersCard,
     head: `<div class="d-head">${avatar(d, 'xl')}
       <div class="d-id"><h2>${esc(d.n || fmt.short(d.m))} <small>$${esc(d.s)}</small></h2>
         ${d.lp ? `<span class="chip ${d.lp === 'bonk' ? 'bonk' : 'pump'}" style="margin-left:6px">${esc(d.lp)}</span>` : ''}
@@ -1243,7 +1262,7 @@ function renderDetail(d) {
     state.detailHtml = { ...sections };
     state.chartHist = null;
     const sec = (k) => `<div data-sec="${k}">${sections[k]}</div>`;
-    body.innerHTML = `${sec('head')}${sec('ai')}${sec('grid')}
+    body.innerHTML = `${sec('head')}${sec('holders')}${sec('ai')}${sec('grid')}
     <div class="d-stack">
       <div class="card"><h3>Wykres <span class="chart-tabs">
           ${hasPair ? `<button data-chart="dex" class="${chartTab === 'dex' ? 'active' : ''}">Cena (DexScreener)</button>` : ''}
