@@ -1,8 +1,8 @@
 // GeckoTerminal public API (https://www.geckoterminal.com/dex-api): trending + new pools per network,
 // and 15-minute price candles (OHLCV) for the top tokens — used for the 4h change and the
 // mini charts, since DexScreener only reports 5m / 1h / 6h / 24h changes.
-import { IS_BROWSER, RateLimiter, errMsg, every, getJSON, num, toMs } from '../util.js?v=muu7qgut';
-import { gtCurve, isAddressOn, normAddr } from '../chains.js?v=muu7qgut';
+import { IS_BROWSER, RateLimiter, errMsg, every, getJSON, num, toMs } from '../util.js?v=muu85t1w';
+import { gtCurve, isAddressOn, normAddr } from '../chains.js?v=muu85t1w';
 
 const API = 'https://api.geckoterminal.com/api/v2/networks';
 const NAME = 'geckoterminal';
@@ -271,14 +271,22 @@ export function startGeckoTerminal(store) {
       return parseTrades(json, t.mint);
     },
     /** Full candles for the chart: tf = 1m / 5m / 15m / 1h / 4h. */
-    async candles(t, tf = '5m', priority = false) {
-      if (!t?.pairAddress) return [];
+    async candles(t, tf = '5m', priority = false, pool = t?.pairAddress) {
+      if (!pool) return [];
       const [unit, agg] = TF[tf] || TF['5m'];
-      const pool = t.pairAddress;
       const json = await guard(
         lim.run(() => getJSON(`${BASE}/pools/${pool}/ohlcv/${unit}?aggregate=${agg}&limit=200&currency=usd&token=${t.mint}`, { headers: HEADERS }), priority),
       );
       return parseOhlcvFull(json);
+    },
+    /** The token's pools on GeckoTerminal, most liquid first (addresses). */
+    async tokenPools(t, priority = false) {
+      const json = await guard(lim.run(() => getJSON(`${BASE}/tokens/${t.mint}/pools?page=1`, { headers: HEADERS }), priority));
+      return (Array.isArray(json?.data) ? json.data : [])
+        .map((p) => ({ a: p?.attributes?.address, liq: num(p?.attributes?.reserve_in_usd) || 0 }))
+        .filter((p) => typeof p.a === 'string')
+        .sort((a, b) => b.liq - a.liq)
+        .map((p) => p.a);
     },
     /** Token info: developer address / holding (EVM dev check), holder distribution, categories. */
     async info(t, priority = false) {

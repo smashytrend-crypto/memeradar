@@ -1,9 +1,9 @@
 // DexScreener public API (https://docs.dexscreener.com/api/reference):
 // discovery (profiles / boosts) + batched market data for every tracked token.
-import { RateLimiter, errMsg, every, getJSON, num, sleep, toMs } from '../util.js?v=muu7qgut';
-import { Store } from '../store.js?v=muu7qgut';
-import { isCurvePair } from '../constants.js?v=muu7qgut';
-import { isAddressOn, normAddr } from '../chains.js?v=muu7qgut';
+import { RateLimiter, errMsg, every, getJSON, num, sleep, toMs } from '../util.js?v=muu85t1w';
+import { Store } from '../store.js?v=muu85t1w';
+import { isCurvePair } from '../constants.js?v=muu85t1w';
+import { isAddressOn, normAddr } from '../chains.js?v=muu85t1w';
 
 const BASE = 'https://api.dexscreener.com';
 const NAME = 'dexscreener';
@@ -97,6 +97,7 @@ export function startDexScreener(store, config) {
   const active = () => store.active;
   const slow = new RateLimiter(50); // profiles / boosts: 60 rpm
   const fast = new RateLimiter(config.dexscreenerRpm); // pairs: 300 rpm
+  const live = new RateLimiter(90); // the open token's live price (1 / s), its own budget
   let okCount = 0;
 
   const fail = (lim) => (err) => {
@@ -228,6 +229,14 @@ export function startDexScreener(store, config) {
     async search(q) {
       const data = await fast.run(() => getJSON(`${BASE}/latest/dex/search?q=${encodeURIComponent(q)}`));
       return applyPairs(data?.pairs);
+    },
+    /** Live price of one token (the open chart polls it every second): latest pairs, applied. */
+    async live(mint) {
+      mint = norm(mint);
+      const data = await live.run(() => getJSON(`${BASE}/tokens/v1/${chain.dex}/${mint}`, { timeout: 4000 }));
+      applyPairs(Array.isArray(data) ? data : data?.pairs, new Set([mint]));
+      const t = store.get(mint);
+      return t ? { p: t.priceUsd || null, mc: t.mcap || t.fdv || null, at: Date.now() } : null;
     },
     async refresh(mint) {
       mint = norm(mint);

@@ -1749,7 +1749,8 @@ let detailTimer;
 async function openDetail(mint, push = true) {
   state.selected = mint;
   state.detail = null;
-  state.chartTab = STATIC ? 'hype' : LS.get('chartTab', 'dex');
+  state.chartTab = STATIC ? 'hype' : LS.get('chartTab2', 'candles');
+  state.live = null;
   state.tr = null;
   state.candles = null;
   state.detailLayout = null;
@@ -1771,6 +1772,7 @@ async function openDetail(mint, push = true) {
 function closeDetail() {
   state.selected = null;
   clearInterval(detailTimer);
+  stopLive();
   // Stop the hidden DexScreener chart (it keeps streaming); after the slide-out animation.
   setTimeout(() => {
     if (state.selected) return;
@@ -2056,7 +2058,7 @@ function renderDetail(d) {
     desc: d.description ? `<div class="card"><h3>Opis</h3><p class="desc">${esc(d.description)}</p></div>` : '',
   };
 
-  const chartTabs = `${hasPair ? `<button data-chart="dex" class="${chartTab === 'dex' ? 'active' : ''}">DexScreener</button>` : ''}${hasPair && ENGINE?.candles ? `<button data-chart="candles" class="${chartTab === 'candles' ? 'active' : ''}">Świece DMN</button>` : ''}
+  const chartTabs = `${hasPair && ENGINE?.candles ? `<button data-chart="candles" class="${chartTab === 'candles' ? 'active' : ''}">Świece DMN</button>` : ''}${hasPair ? `<button data-chart="dex" class="${chartTab === 'dex' ? 'active' : ''}">DexScreener</button>` : ''}
         <button data-chart="hype" class="${chartTab === 'hype' ? 'active' : ''}">Hype i cena (radar)</button>`;
   const layoutKey = d.m;
   if (state.detailLayout !== layoutKey) {
@@ -2173,6 +2175,7 @@ function renderChart(d, tab) {
   if (tab === 'candles' && d.pair) {
     drawCandles(d);
     loadCandles(d);
+    startLive();
     return;
   }
   if (tab === 'dex' && d.pair) {
@@ -2487,7 +2490,8 @@ $('#drawer').addEventListener('click', (e) => {
   const chart = e.target.closest('[data-chart]');
   if (chart && state.detail) {
     state.chartTab = chart.dataset.chart;
-    LS.set('chartTab', state.chartTab);
+    LS.set('chartTab2', state.chartTab);
+    if (state.chartTab !== 'candles') stopLive();
     $$('[data-chart]').forEach((b) => b.classList.toggle('active', b === chart));
     $('#chartBox').innerHTML = '';
     renderChart(state.detail, state.chartTab);
@@ -2910,8 +2914,17 @@ async function loadCandles(d) {
   candlesBusy = key;
   const wanted = () => key === `${state.selected}|${state.candleTf}`;
   try {
-    const list = await ENGINE.candles(d.m, tf);
-    if (wanted()) state.candles = { key, list: list || [], at: Date.now() };
+    let list = await ENGINE.candles(d.m, tf);
+    let synth = null;
+    // No candles from GeckoTerminal: build them from the latest trades, else from the prices the
+    // radar has recorded (every 15 s); the live price keeps them moving either way.
+    if (!list?.length) {
+      const fromTrades = state.tr?.m === d.m ? candlesFrom(state.tr.list.filter((t) => t.price > 0).map((t) => [t.t, t.price, t.usd]), tf) : [];
+      const fromHist = candlesFrom((d.hist || []).filter((h) => h[2] > 0).map((h) => [h[0], h[2], 0]), tf);
+      list = fromTrades.length >= fromHist.length ? fromTrades : fromHist;
+      synth = list.length ? (list === fromTrades ? 'trades' : 'radar') : 'live';
+    }
+    if (wanted()) state.candles = { key, list: list || [], at: Date.now(), synth };
   } catch (e) {
     if (wanted())
       state.candles = e?.status === 404 ? { key, list: [], at: Date.now() } : { key, list: state.candles?.key === key ? state.candles.list : [], at: Date.now() - 35_000, err: true };
@@ -2922,6 +2935,23 @@ async function loadCandles(d) {
   // The timeframe or token changed while loading: load what is wanted now.
   if (!wanted()) return loadCandles(state.detail);
   drawCandles(state.detail);
+}
+
+/** Points [ms, price, volumeUsd] → candles [start, o, h, l, c, vol] for the timeframe. */
+function candlesFrom(points, tf) {
+  const ms = TF_MS[tf] || 300e3;
+  const out = [];
+  for (const [t, p, v] of [...points].sort((a, b) => a[0] - b[0])) {
+    const start = Math.floor(t / ms) * ms;
+    const last = out[out.length - 1];
+    if (last && last[0] === start) {
+      last[2] = Math.max(last[2], p);
+      last[3] = Math.min(last[3], p);
+      last[4] = p;
+      last[5] += v || 0;
+    } else out.push([start, last ? last[4] : p, Math.max(p, last ? last[4] : p), Math.min(p, last ? last[4] : p), p, v || 0]);
+  }
+  return out;
 }
 
 /** The viewer's demo buys / sells of this token: [{ t, side, p }]. */
@@ -2990,7 +3020,7 @@ function drawCandles(d) {
   const c = state.candles?.key === `${d.m}|${tf}` ? state.candles : null;
   const tfRow = `<div class="tf-row">${TF_LIST.map((x) => `<button data-tf="${x}" class="${x === tf ? 'active' : ''}">${x}</button>`).join('')}</div>`;
   if (!c || !c.list.length) {
-    const html = `${tfRow}<div class="empty"><b>${c ? (c.err ? 'Limit darmowego API — spróbuję za chwilę' : 'Brak świec dla tej puli') : 'Ładowanie świec…'}</b></div>`;
+    const html = `${tfRow}<div class="empty"><b>${c ? (c.err ? 'Limit darmowego API — spróbuję za chwilę' : 'Czekam na cenę na żywo…') : 'Ładowanie świec…'}</b></div>`;
     if (box.dataset.ck !== html || !box.querySelector('.tf-row')) {
       box.dataset.ck = html;
       box.innerHTML = html;
@@ -3001,19 +3031,25 @@ function drawCandles(d) {
   const mine = myTrades(d.m);
   const tr = state.tr?.m === d.m ? state.tr.list : [];
   const whale = WHALE_USD_UI[ENGINE?.chain] || 1000;
+  // The live price (polled every second) beats the 4-second detail refresh.
+  const live = state.live?.m === d.m && Date.now() - state.live.at < 10_000 ? state.live : null;
+  const nowP = live?.p || d.p;
+  // Market-cap axis: MC moves 1:1 with price (fixed supply), so prices are scaled to MC.
+  const mcK = (live?.mc || d.mc) > 0 && nowP > 0 ? (live?.mc || d.mc) / nowP : 0;
+  const money = (v) => (mcK ? fmt.usd(v * mcK) : fmt.price(v));
   // Drawn at the box's real pixel size, so labels keep their shape on any screen.
   const W = Math.max(300, Math.round(box.clientWidth || 660));
   const H = Math.max(220, Math.round((box.clientHeight || 360) - 24));
-  const key = `${W}x${H}|${(d.topHolders || []).length}|${c.key}|${c.at}|${c.list.length}|${pos ? `${pos.p}|${pos.sl}|${pos.tp}|${pos.safe}|${pos.be}` : ''}|${mine.length}|${tr.length}|${d.p}`;
+  const key = `${W}x${H}|${(d.topHolders || []).length}|${c.key}|${c.at}|${c.list.length}|${pos ? `${pos.p}|${pos.sl}|${pos.tp}|${pos.safe}|${pos.be}` : ''}|${mine.length}|${tr.length}|${nowP}`;
   if (box.dataset.ck === key && box.querySelector('svg.candles')) return;
   box.dataset.ck = key;
   const list = c.list.slice(-Math.max(30, Math.min(120, Math.floor(W / 6))));
   // Live last candle: extend with the current price.
   const last = [...list[list.length - 1]];
-  if (d.p > 0) {
-    last[4] = d.p;
-    last[2] = Math.max(last[2], d.p);
-    last[3] = Math.min(last[3], d.p);
+  if (nowP > 0) {
+    last[4] = nowP;
+    last[2] = Math.max(last[2], nowP);
+    last[3] = Math.min(last[3], nowP);
     list[list.length - 1] = last;
   }
   const PT = 44, PB = 64, PL = 4, PR = 64;
@@ -3054,7 +3090,7 @@ function drawCandles(d) {
   // Grid + price labels.
   for (let g = 0; g <= 4; g++) {
     const v = lo + ((hi - lo) * g) / 4;
-    svg += `<line x1="${PL}" x2="${W - PR}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" class="cg"/><text x="${W - PR + 6}" y="${(y(v) + 4).toFixed(1)}" class="cl">${fmt.price(v)}</text>`;
+    svg += `<line x1="${PL}" x2="${W - PR}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" class="cg"/><text x="${W - PR + 6}" y="${(y(v) + 4).toFixed(1)}" class="cl">${money(v)}</text>`;
   }
   // Volume.
   list.forEach((k, i) => {
@@ -3109,8 +3145,64 @@ function drawCandles(d) {
   // Time labels.
   const hhmm = (ts) => new Date(ts).toLocaleString('pl-PL', tf === '1h' || tf === '4h' ? { day: '2-digit', month: '2-digit', hour: '2-digit' } : { hour: '2-digit', minute: '2-digit' });
   for (const i of [0, Math.floor(n / 2), n - 1]) svg += `<text x="${Math.min(W - PR - 30, Math.max(PL, x(i) - 20)).toFixed(1)}" y="${H - 6}" class="cl">${hhmm(list[i][0])}</text>`;
-  const legend = `<div class="c-legend"><span><i class="lg-mb"></i>Twoje kupno</span><span><i class="lg-ms"></i>Twoja sprzedaż</span><span><i class="lg-w"></i>🐋 Wieloryb</span><span><i class="lg-th"></i>Top 10</span>${state.wallets.length ? '<span><i class="lg-tw"></i>Śledzony</span>' : ''}</div>`;
-  box.innerHTML = `${tfRow}<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" class="candles">${svg}</svg>${legend}`;
+  const SYN = { trades: 'świece z ostatnich transakcji', radar: 'świece z cen radaru', live: 'świece z ceny na żywo' };
+  const legend = `<div class="c-legend">${c.synth ? `<span class="muted">ⓘ ${SYN[c.synth]}</span>` : ''}<span><i class="lg-mb"></i>Twoje kupno</span><span><i class="lg-ms"></i>Twoja sprzedaż</span><span><i class="lg-w"></i>🐋 Wieloryb</span><span><i class="lg-th"></i>Top 10</span>${state.wallets.length ? '<span><i class="lg-tw"></i>Śledzony</span>' : ''}</div>`;
+  // Current market cap, big, next to the timeframes; the live dot shows the 1-second refresh.
+  const head = `<div class="c-now"><i class="${live ? 'on' : ''}"></i>${mcK ? `MC ${fmt.usd(nowP * mcK)}` : fmt.price(nowP)}</div>`;
+  box.innerHTML = `${tfRow}${head}<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" class="candles">${svg}</svg>${legend}`;
+}
+
+// ---------- live chart (every second) ----------
+let liveTimer = null;
+let liveBusy = false;
+const TF_MS = { '1m': 60e3, '5m': 300e3, '15m': 900e3, '1h': 3600e3, '4h': 14400e3 };
+function startLive() {
+  if (!liveTimer && ENGINE?.live) liveTimer = setInterval(liveTick, 1000);
+}
+function stopLive() {
+  clearInterval(liveTimer);
+  liveTimer = null;
+}
+/** Folds a live price into the loaded candles: updates the last one, opens a new one when its
+ *  interval has passed (the chart moves every second between candle downloads). */
+function applyLive(p, at) {
+  const c = state.candles;
+  if (!c?.list || !c.key.startsWith(`${state.selected}|`)) return;
+  const ms = TF_MS[state.candleTf] || 300e3;
+  if (!c.list.length) {
+    // Nothing to download for this pool: the chart starts from the live price.
+    c.list.push([Math.floor(at / ms) * ms, p, p, p, p, 0]);
+    return;
+  }
+  const last = c.list[c.list.length - 1];
+  if (at >= last[0] + ms) {
+    const start = Math.floor(at / ms) * ms;
+    c.list.push([start, last[4], Math.max(last[4], p), Math.min(last[4], p), p, 0]);
+    if (c.list.length > 400) c.list.shift();
+  } else {
+    last[4] = p;
+    last[2] = Math.max(last[2], p);
+    last[3] = Math.min(last[3], p);
+  }
+}
+async function liveTick() {
+  const d = state.detail;
+  if (!state.selected || state.chartTab !== 'candles' || !d || d.m !== state.selected) return stopLive();
+  if (liveBusy || document.hidden) return;
+  liveBusy = true;
+  try {
+    const r = await ENGINE.live(d.m);
+    if (r?.p > 0 && state.selected === d.m) {
+      state.live = { m: d.m, p: r.p, mc: r.mc, at: r.at };
+      applyLive(r.p, r.at);
+      // A finger on the drawer: skip this frame (a rebuild would swallow the tap on iOS).
+      if (state.chartTab === 'candles' && Date.now() >= drawerTouch) drawCandles(state.detail);
+    }
+  } catch {
+    /* rate limited / offline: the next tick tries again */
+  } finally {
+    liveBusy = false;
+  }
 }
 
 // ---------- PnL card (share) ----------

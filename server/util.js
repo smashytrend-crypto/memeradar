@@ -69,12 +69,13 @@ export class RateLimiter {
     this.pausedUntil = 0;
     this.queue = [];
     this.timer = null;
+    this.bursts = []; // times of priority jobs let through early
   }
 
   /** Runs fn in the next free slot; `priority` jumps the queue (something the viewer is waiting for). */
   run(fn, priority = false) {
     return new Promise((resolve, reject) => {
-      const job = { fn, resolve, reject };
+      const job = { fn, resolve, reject, priority };
       if (priority) this.queue.unshift(job);
       else this.queue.push(job);
       this.#pump();
@@ -82,8 +83,20 @@ export class RateLimiter {
   }
 
   #pump() {
-    if (this.timer || !this.queue.length) return;
+    if (!this.queue.length) return;
     const now = Date.now();
+    // Something the viewer waits for may jump the spacing (not a pause), at most twice a minute:
+    // the free tiers allow short bursts above the average rate we keep to.
+    if (this.queue[0].priority && this.pausedUntil <= now && this.next > now) {
+      this.bursts = this.bursts.filter((t) => now - t < 60_000);
+      if (this.bursts.length < 2) {
+        this.bursts.push(now);
+        const job = this.queue.shift();
+        Promise.resolve().then(job.fn).then(job.resolve, job.reject);
+        return this.#pump();
+      }
+    }
+    if (this.timer) return;
     const at = Math.max(this.next, this.pausedUntil, now);
     if (at > now) {
       this.timer = setTimeout(() => {

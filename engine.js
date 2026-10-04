@@ -3,15 +3,15 @@
 // cross-origin reads). One engine per network, created the first time the viewer opens it; only
 // the network on screen polls its sources, the others pause (and keep their data for a quick
 // switch back).
-import { Store } from './server/store.js?v=muu7qgut';
-import { every, getJSON, num } from './server/util.js?v=muu7qgut';
-import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=muu7qgut';
-import { startPumpPortal } from './server/sources/pumpportal.js?v=muu7qgut';
-import { startDexScreener } from './server/sources/dexscreener.js?v=muu7qgut';
-import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=muu7qgut';
-import { startJupiter } from './server/sources/jupiter.js?v=muu7qgut';
-import { startRugCheck } from './server/sources/rugcheck.js?v=muu7qgut';
-import { startGoPlus } from './server/sources/goplus.js?v=muu7qgut';
+import { Store } from './server/store.js?v=muu85t1w';
+import { every, getJSON, num } from './server/util.js?v=muu85t1w';
+import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=muu85t1w';
+import { startPumpPortal } from './server/sources/pumpportal.js?v=muu85t1w';
+import { startDexScreener } from './server/sources/dexscreener.js?v=muu85t1w';
+import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=muu85t1w';
+import { startJupiter } from './server/sources/jupiter.js?v=muu85t1w';
+import { startRugCheck } from './server/sources/rugcheck.js?v=muu85t1w';
+import { startGoPlus } from './server/sources/goplus.js?v=muu85t1w';
 
 const baseConfig = {
   demo: false,
@@ -182,6 +182,8 @@ function createEngine(chainId) {
       }
       return store.detail(t);
     },
+    /** Live price + market cap of the open token, straight from DexScreener (chart, every second). */
+    live: (mint) => (isAddressOn(chain, mint) ? src.dex.live(mint) : null),
     /** Latest trades of the token's main pool (cached 25 s), newest first; null without a pool. */
     trades: (mint) => trades(mint, true),
     /** Candles [ms, o, h, l, c, vol] for the chart (cached 50 s per timeframe). */
@@ -191,7 +193,23 @@ function createEngine(chainId) {
       const key = `${t.mint}|${t.pairAddress}|${tf}`;
       const c = candleCache.get(key);
       if (c && Date.now() - c.at < 50_000) return c.list;
-      const list = await src.gt.candles(t, tf, true);
+      // GeckoTerminal doesn't know every pool DexScreener prices by (fresh migrations, some
+      // DEXes): then the token's own most liquid pool on GeckoTerminal is used.
+      let list = [];
+      const alt = altPool.get(t.mint);
+      try {
+        list = await src.gt.candles(t, tf, true, alt || t.pairAddress);
+      } catch (e) {
+        if (e?.status !== 404) throw e;
+      }
+      if (!list.length && !alt) {
+        const pools = await src.gt.tokenPools(t, true).catch(() => []);
+        const other = pools.find((p) => p.toLowerCase() !== String(t.pairAddress).toLowerCase()) || null;
+        if (other) {
+          altPool.set(t.mint, other);
+          list = await src.gt.candles(t, tf, true, other).catch(() => []);
+        }
+      }
       candleCache.set(key, { at: Date.now(), list });
       if (candleCache.size > 30) candleCache.delete(candleCache.keys().next().value);
       return list;
@@ -213,6 +231,7 @@ const WHALE_USD = { solana: 1000, bsc: 1000, base: 1000, robinhood: 500, ethereu
 // Wallets the viewer tracks (address -> { name, emoji }), shared by every network's engine.
 const wallets = new Map();
 const candleCache = new Map();
+const altPool = new Map(); // mint -> GeckoTerminal pool used for candles when the main one isn't known there
 
 const engines = new Map();
 const feedHandlers = new Set();
@@ -266,6 +285,7 @@ export const engine = {
   },
   search: (q) => current.search(q),
   trades: (mint) => current.trades(mint),
+  live: (mint) => current.live(mint),
   candles: (mint, tf) => current.candles(mint, tf),
   /** The viewer's tracked wallets: [{ a, name, emoji }]. */
   setWallets(list) {
