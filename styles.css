@@ -895,3 +895,17 @@ body.sheet-open { overflow: hidden; }
 .sl-row button.be.on { border-color: #4da3ff; color: #fff; background: rgba(77, 163, 255, 0.35); }
 .sl-row .sl-est.be { margin: 6px 0 0; }
 .sl-row .sl-est.be b { color: #7cbcff; }
+
+/* ---------- audit fixes ---------- */
+/* Token window: the chart card (now at the top) and the position / holders cards are spaced
+   like the rest of the drawer. */
+.d-chart, [data-sec="pos"] > .card, [data-sec="holders"] > .card { margin-bottom: 14px; }
+/* Touch screens: iOS zooms into fields under 16px on focus (also in landscape, above 760px). */
+@media (pointer: coarse) { .search input, .sel select { font-size: 16px; } }
+/* Narrow phones: the position form's fields stacked so their hints aren't cut off. */
+@media (max-width: 480px) { .pos-form { grid-template-columns: 1fr; } }
+/* Landscape iPhone: keep content clear of the notch / Dynamic Island (0 in portrait). */
+html { padding-left: env(safe-area-inset-left, 0px); padding-right: env(safe-area-inset-right, 0px); }
+@media (orientation: landscape) and (max-height: 500px) {
+  .drawer-inner, .sheet { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+}

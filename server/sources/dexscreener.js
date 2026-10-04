@@ -1,9 +1,9 @@
 // DexScreener public API (https://docs.dexscreener.com/api/reference):
 // discovery (profiles / boosts) + batched market data for every tracked token.
-import { RateLimiter, errMsg, every, getJSON, num, sleep, toMs } from '../util.js?v=mutpbd0j';
-import { Store } from '../store.js?v=mutpbd0j';
-import { isCurvePair } from '../constants.js?v=mutpbd0j';
-import { isAddressOn, normAddr } from '../chains.js?v=mutpbd0j';
+import { RateLimiter, errMsg, every, getJSON, num, sleep, toMs } from '../util.js?v=mutxbptp';
+import { Store } from '../store.js?v=mutxbptp';
+import { isCurvePair } from '../constants.js?v=mutxbptp';
+import { isAddressOn, normAddr } from '../chains.js?v=mutxbptp';
 
 const BASE = 'https://api.dexscreener.com';
 const NAME = 'dexscreener';
@@ -19,12 +19,16 @@ export function linksToSocials(links = []) {
   const out = {};
   for (const l of links || []) {
     const type = String(l.type || l.label || '').toLowerCase();
-    const url = l.url;
-    if (!url) continue;
-    if (type === 'twitter' || type === 'x' || /(?:twitter|x)\.com\//.test(url)) out.twitter ??= url;
-    else if (type === 'telegram' || /t\.me\//.test(url)) out.telegram ??= url;
+    const url = typeof l.url === 'string' ? l.url.trim() : '';
+    if (!/^https?:\/\//i.test(url)) continue; // only web links (no javascript: / data: …)
+    // An explicit type wins; the host check only classifies untyped links.
+    const isX = /^https?:\/\/(?:www\.|mobile\.)?(?:twitter|x)\.com\//i.test(url);
+    const isTg = /^https?:\/\/(?:www\.)?(?:t|telegram)\.me\//i.test(url);
+    if (type === 'website') out.website ??= url;
+    else if (type === 'twitter' || type === 'x' || (!type && isX)) out.twitter ??= url;
+    else if (type === 'telegram' || (!type && isTg)) out.telegram ??= url;
     else if (type === 'discord') out.discord ??= url;
-    else if (type === 'website' || !type) out.website ??= url;
+    else if (!type) out.website ??= url;
   }
   return out;
 }

@@ -1,8 +1,8 @@
-import { computeHype } from './scoring.js?v=mutpbd0j';
-import { CURVE_DEXES, NON_MEME, NON_MEME_TAGS, PUMP_INITIAL_VTOKENS, PUMP_K, PUMP_TOKENS_FOR_SALE } from './constants.js?v=mutpbd0j';
-import { Emitter, clamp } from './util.js?v=mutpbd0j';
-import { change4h, freshCandles, sparkPoints } from './candles.js?v=mutpbd0j';
-import { EVM_BASE_ASSETS, EVM_NON_MEME_SYMBOLS, evmEligible, getChain, isAddressOn, normAddr } from './chains.js?v=mutpbd0j';
+import { computeHype } from './scoring.js?v=mutxbptp';
+import { CURVE_DEXES, NON_MEME, NON_MEME_TAGS, PUMP_INITIAL_VTOKENS, PUMP_K, PUMP_TOKENS_FOR_SALE } from './constants.js?v=mutxbptp';
+import { Emitter, clamp } from './util.js?v=mutxbptp';
+import { change4h, freshCandles, sparkPoints } from './candles.js?v=mutxbptp';
+import { EVM_BASE_ASSETS, EVM_NON_MEME_SYMBOLS, evmEligible, getChain, isAddressOn, normAddr } from './chains.js?v=mutxbptp';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -18,13 +18,17 @@ const EMA = 0.35; // smoothing per rescore tick (~2s) so ranks don't jitter
  * 5 minutes with the last hour, and the last hour with the last 6 hours.
  * hot = accelerating hard, up = speeding up, flat = steady, cool = slowing, dead = fading out.
  */
-export function freshness(vol5, vol1h, vol6h) {
+export function freshness(vol5, vol1h, vol6h, ageMs = Infinity) {
   if (!(vol1h >= 1000)) return null;
-  const r5 = (vol5 || 0) / 5;
-  const r60 = vol1h / 60;
-  const r360 = vol6h > 0 ? vol6h / 360 : r60;
+  // A market younger than the window has traded only for part of it: compare paces over the
+  // time it actually existed (a 20-minute-old token's "1 h volume" is 20 minutes of trading).
+  const ageMin = Math.max(10, (ageMs > 0 ? ageMs : Infinity) / MIN);
+  const r5 = (vol5 || 0) / Math.min(5, ageMin);
+  const r60 = vol1h / Math.min(60, ageMin);
+  const r360 = vol6h > 0 ? vol6h / Math.min(360, ageMin) : r60;
   const accel = r5 / r60;
-  const trend = r360 > 0 ? r60 / r360 : 1;
+  // Under an hour old there is no longer history to compare the last hour with.
+  const trend = ageMin < 60 ? 1 : r360 > 0 ? r60 / r360 : 1;
   if (accel >= 1.6 && trend >= 1.1) return 'hot';
   if (accel >= 1.2) return 'up';
   if (accel < 0.35 && trend < 0.9) return 'dead';
@@ -170,7 +174,11 @@ export class Store extends Emitter {
     if (source) t.sources.add(source);
     for (const [k, v] of Object.entries(patch)) {
       if (!isClean(v)) continue;
-      if (NESTED.has(k) && typeof v === 'object') {
+      if (k === 'socials' && typeof v === 'object') {
+        // Links from token metadata (anyone can set them): web links only.
+        const links = Object.fromEntries(Object.entries(v).filter(([, u]) => typeof u === 'string' && /^https?:\/\/\S+$/i.test(u.trim())).map(([s, u]) => [s, u.trim()]));
+        t[k] = { ...t[k], ...links };
+      } else if (NESTED.has(k) && typeof v === 'object') {
         t[k] = { ...t[k], ...cleanObj(v) };
       } else if (TEXT.has(k)) {
         const text = String(v).replace(INVISIBLE, '').trim();
@@ -188,6 +196,7 @@ export class Store extends Emitter {
         }
       } else {
         t[k] = v;
+        if (k === 'priceUsd' && v > 0) t.priceAt = now; // when a source last delivered a price
       }
     }
     return t;
@@ -255,6 +264,7 @@ export class Store extends Emitter {
     if (!(mcap > 0)) return;
     t.mcap = mcap;
     t.priceUsd = mcap / 1e9;
+    t.priceAt = now;
     t.lastMarketFromStream = now;
   }
 
@@ -347,8 +357,11 @@ export class Store extends Emitter {
       // Spike: +15 points vs ~1 minute ago — only for tokens with a few minutes of real
       // market data, otherwise every newly discovered token would "jump" from 0.
       if (!t.marketSince && (t.mcap > 0 || t.liquidity > 0)) t.marketSince = now;
-      const settled = t.marketSince && now - t.marketSince > 3 * MIN && t.hist.length >= 5;
-      const ref = settled ? t.hist[t.hist.length - 5][1] : t.hype.score;
+      // The reference sample must be recent: after this network was paused, the last samples
+      // are from before the pause and every gradual rise would look like a jump.
+      const refS = t.hist.length >= 5 ? t.hist[t.hist.length - 5] : null;
+      const settled = t.marketSince && now - t.marketSince > 3 * MIN && refS && now - refS[0] <= 90_000;
+      const ref = settled ? refS[1] : t.hype.score;
       const surge = t.hype.market?.surge || 0;
       const vol5 = t.hype.market?.vol5 || 0;
       if (settled && surge >= 4 && vol5 >= 5000 && now - (t.lastSurge || 0) > 15 * MIN) {
@@ -517,6 +530,7 @@ export class Store extends Emitter {
       i: t.image,
       ca: t.createdAt || null,
       p: t.priceUsd || null,
+      pa: t.priceAt || 0,
       mc: t.mcap || t.fdv || null,
       lq: t.liquidity || null,
       v5: m.vol5 || null,
@@ -552,7 +566,7 @@ export class Store extends Emitter {
       dm: t.audit?.devMints ?? null, // tokens the creator launched
       dmg: t.audit?.devMigrations ?? null, // …of which graduated
       dhp: t.audit?.honeypotSameCreator ?? null, // EVM: other honeypots by the creator
-      fz: freshness(m.vol5, m.vol1h, t.volume?.h6),
+      fz: freshness(m.vol5, m.vol1h, t.volume?.h6, (t.migratedAt || t.createdAt) ? now - (t.migratedAt || t.createdAt) : Infinity),
       hg: m.holderGrowth1h || null,
       x: t.x?.mentions1h ?? null,
       xc: t.x?.capped || false,

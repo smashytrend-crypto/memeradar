@@ -38,6 +38,7 @@ const state = {
   view: ((v) => (v === 'pos' ? 'hype' : v))(LS.get('view', 'hype')), // 'pos' was a tab in an older version
   filters: LS.get('filters', { minMcap: 0, minLiq: 0, maxAgeH: 0, safe: false }),
   watch: new Set(LS.get('watch', [])),
+  watchChain: LS.get('watchChain', {}) || {}, // mint -> network it was starred on
   hidden: new Set(LS.get('hidden', [])), // tokens the viewer hid from the lists
   blocked: new Set(LS.get('blocked', [])), // creators whose tokens are hidden
   positions: LS.get('positions', {}), // mint -> { p: entry price, mc, usd, t, chain, n, s, i, last }
@@ -58,6 +59,11 @@ const state = {
   firstSnapshot: true,
   pendingSnapshot: null,
 };
+if (!state.positions || typeof state.positions !== 'object') state.positions = {};
+if (!Array.isArray(state.closed)) state.closed = [];
+if (!Array.isArray(state.wallet.tx)) state.wallet.tx = [];
+// Positions saved before the demo wallet existed were never paid from it.
+for (const p of Object.values(state.positions)) if (p && p.w === undefined) p.w = false;
 
 // ---------- formatting ----------
 const SUB = '₀₁₂₃₄₅₆₇₈₉';
@@ -688,7 +694,8 @@ function emptyText() {
     return '<b>Brak wybić wolumenu w tej chwili</b>Pojawią się tu tokeny, których wolumen z 5 min jest co najmniej 2× wyższy niż ich średnia.';
   if (state.firstSnapshot) return '<b>Łączenie ze źródłami danych…</b>Pierwsze tokeny pojawią się w ciągu kilku sekund.';
   const f = state.filters;
-  if (f.minMcap || f.minLiq || f.maxAgeH || f.safe) return '<b>Nic nie pasuje do filtrów</b>Poluzuj filtry, aby zobaczyć więcej tokenów.';
+  if (f.minMcap || f.minLiq || f.maxAgeH || f.safe || f.maxDev || f.minLp || f.paid) return '<b>Nic nie pasuje do filtrów</b>Poluzuj filtry, aby zobaczyć więcej tokenów.';
+  if (state.hidden.size || state.blocked.size) return '<b>Brak tokenów do pokazania</b>Część tokenów jest ukryta lub zablokowana — sprawdź listę ukrytych.';
   return '<b>Zbieram dane…</b>Radar potrzebuje chwili, aby zebrać aktywność z rynku.';
 }
 
@@ -779,7 +786,7 @@ function connect() {
       // Demo positions on this network stay loaded even when off the list.
       const posHere = Object.keys(state.positions).filter((m) => (state.positions[m].chain || 'solana') === ENGINE.chain);
       if (posHere.length) ENGINE.track(posHere);
-      applySnapshot(ENGINE.snapshot(state.view, filters, 100, state.view === 'watch' ? [...state.watch] : []));
+      applySnapshot(ENGINE.snapshot(state.view, filters, 100, state.view === 'watch' ? watchedHere() : []));
       if (sheetOpen('pos') && !sheetBusy()) renderPositions();
       if (sheetOpen('wallet') && !sheetBusy()) renderWallet();
     };
@@ -809,7 +816,7 @@ function connect() {
   if (f.minLiq) params.set('minLiq', f.minLiq);
   if (f.maxAgeH) params.set('maxAgeH', f.maxAgeH);
   if (f.safe) params.set('safe', '1');
-  if (state.view === 'watch') params.set('mints', [...state.watch].join(','));
+  if (state.view === 'watch') params.set('mints', watchedHere().join(','));
   if (state.view !== 'hype') state.hypeRows = null; // win rate needs the Hype list (not streamed here)
   const es = new EventSource(`/api/stream?${params}`);
   state.es = es;
@@ -855,8 +862,15 @@ function creatorWarning(d) {
 }
 
 /** The viewer's position in a token: P&L vs. the saved entry price, or null. */
+/** The viewer's position in this address on the network on screen (an EVM address can be a
+ *  different token on another network), or null. */
+function posHere(m) {
+  const p = state.positions[m];
+  return p && (p.chain || 'solana') === (ENGINE?.chain || 'solana') ? p : null;
+}
+
 function posPnl(d) {
-  const p = state.positions[d.m];
+  const p = posHere(d.m);
   if (!p || !(p.p > 0) || !(d.p > 0)) return null;
   const pct = (d.p / p.p - 1) * 100;
   return { pct, usd: p.usd > 0 ? p.usd * (d.p / p.p - 1) : null, value: p.usd > 0 ? p.usd * (d.p / p.p) : null, cls: pct >= 0 ? 'up' : 'down', entry: p };
@@ -889,22 +903,37 @@ function deposit(amount) {
   saveWallet();
 }
 
+/** Saves a demo buy; false when it can't be added to the existing position (nothing is charged). */
 function savePosition(mint, price, usd, mc, d = {}) {
+  const prev = state.positions[mint];
+  if (prev && prev.p > 0 && prev.usd > 0) {
+    // The same EVM address can be a different token on another network.
+    if ((prev.chain || 'solana') !== (ENGINE?.chain || 'solana')) {
+      toast('Masz już pozycję DEMO pod tym adresem na innej sieci — najpierw ją sprzedaj');
+      return false;
+    }
+    // Positions from before a wallet reset (or the wallet) aren't funded from it: new money
+    // added to them could never come back.
+    if (prev.w !== true) {
+      toast('Ta pozycja jest poza walletem DEMO — sprzedaj ją, zanim dokupisz');
+      return false;
+    }
+  }
   // Funded from the demo wallet: the stake leaves the balance now and returns (with P&L) on close.
   state.wallet.cash -= usd;
   walletTx('open', usd, { n: d.n || '', s: d.s || '' });
   saveWallet();
-  const prev = state.positions[mint];
   if (prev && prev.p > 0 && prev.usd > 0) {
     // Buying more: one position with the average entry (weighted by tokens bought).
     const tokens = prev.usd / prev.p + usd / price;
     prev.p = (prev.usd + usd) / tokens;
     prev.mc = prev.mc && mc ? (prev.usd + usd) / (prev.usd / prev.mc + usd / mc) : prev.mc || mc;
     prev.usd += usd;
-    prev.w = prev.w !== false;
+    // Break even is measured from the new average entry: armed only if still above +BE_PCT.
+    if (prev.be) prev.bea = (price / prev.p - 1) * 100 > BE_PCT;
     LS.set('positions', state.positions);
     renderPosCount();
-    return;
+    return true;
   }
   state.positions[mint] = {
     w: true,
@@ -921,6 +950,7 @@ function savePosition(mint, price, usd, mc, d = {}) {
   };
   LS.set('positions', state.positions);
   renderPosCount();
+  return true;
 }
 
 /** Closes a demo position at `price` (its current price), keeping the result for the P&L history. */
@@ -942,6 +972,8 @@ function sellPosition(mint, fraction, price, extra = {}) {
     const pct = (exit / p.p - 1) * 100;
     state.closed.unshift({
       m: mint, n: p.n, s: p.s, chain: p.chain, usd: part, pct, f,
+      // Positions outside the wallet (opened before a reset) stay out of the statistics.
+      w: p.w !== false,
       pnl: part > 0 ? part * (exit / p.p - 1) : 0, openedAt: p.t, closedAt: Date.now(), ...extra,
     });
     state.closed = state.closed.filter((c) => Date.now() - c.closedAt < 90 * 86400e3).slice(0, 500);
@@ -964,8 +996,8 @@ function quickBuy(usd) {
     return openSheet('wallet');
   }
   if (!(d.p > 0) || !(d.mc > 0)) return toast('Brak ceny lub MC — spróbuj za chwilę');
-  const had = !!state.positions[state.selected];
-  savePosition(state.selected, d.p, usd, d.mc, d);
+  const had = !!posHere(state.selected);
+  if (!savePosition(state.selected, d.p, usd, d.mc, d)) return;
   toast(`💼 ${had ? 'Dokupiono' : 'Kupiono'} DEMO za ${fmt.usd(usd)} przy MC ${fmt.usd(d.mc)}`);
   renderDetail(d);
 }
@@ -1104,9 +1136,13 @@ function checkExits() {
     hit = true;
   }
   if (!hit) return;
-  if (sheetOpen('pos')) renderPositions();
-  if (sheetOpen('wallet')) renderWallet();
-  if (state.detail) renderDetail(state.detail);
+  // A finger on the screen: the regular refresh redraws once it lifts (a rebuild now would
+  // swallow the tap on iOS).
+  if (!sheetBusy()) {
+    if (sheetOpen('pos')) renderPositions();
+    if (sheetOpen('wallet')) renderWallet();
+  }
+  if (state.detail && Date.now() >= drawerTouch) renderDetail(state.detail);
 }
 setInterval(checkExits, 2000);
 
@@ -1124,7 +1160,9 @@ function positionList() {
     // positions use the last price seen while it was on screen (shown as such).
     if (ENGINE && chain !== ENGINE.chain) continue;
     const rows = ENGINE ? ENGINE.rowsFor(chain, mints) : mints.map((m) => state.rows.get(m)?.data).filter(Boolean);
-    for (const r of rows) if (r?.p > 0) live.set(r.m, r);
+    // Right after switching back to a paused network its prices are hours old: a row counts as
+    // live only once a source has refreshed its price (protects SL / TP / BE from stale prices).
+    for (const r of rows) if (r?.p > 0 && (!ENGINE || !(ENGINE.since > 0) || r.pa >= ENGINE.since)) live.set(r.m, r);
   }
   const now = Date.now();
   let dirty = false;
@@ -1166,7 +1204,7 @@ function pnlWindow(list, ms) {
     trades++;
   }
   for (const c of state.closed) {
-    if (now - c.openedAt > ms) continue;
+    if (c.w === false || now - c.openedAt > ms) continue;
     pnl += c.pnl;
     cost += c.usd;
     trades++;
@@ -1174,18 +1212,22 @@ function pnlWindow(list, ms) {
   return { pnl, pct: cost > 0 ? (pnl / cost) * 100 : null, trades };
 }
 
-/** Profitable / losing demo positions: open ones by current P&L, closed trades (a position sold
- *  in parts counts once) by their total result. */
+/** Profitable / losing demo positions, each counted once by its total result: open ones by the
+ *  parts already sold plus the current P&L, closed ones by the sum of their sales. */
 function winLoss(stat, list) {
-  const open = { win: 0, loss: 0 };
-  for (const x of stat) {
-    if (x.pct == null || Math.abs(x.pct) < 1e-9) continue;
-    open[x.pct > 0 ? 'win' : 'loss']++;
-  }
   const trades = new Map();
   for (const c of state.closed) {
+    if (c.w === false) continue;
     const k = `${c.m}:${c.openedAt}`;
     trades.set(k, (trades.get(k) ?? 0) + (c.usd > 0 ? c.pnl : c.pct));
+  }
+  const open = { win: 0, loss: 0 };
+  for (const x of stat) {
+    const now = x.p.usd > 0 ? x.pnl : x.pct;
+    if (now == null) continue;
+    const v = (trades.get(`${x.m}:${x.p.t}`) ?? 0) + now;
+    if (Math.abs(v) < 1e-9) continue;
+    open[v > 0 ? 'win' : 'loss']++;
   }
   // Partly sold positions still open are counted with the open ones.
   for (const x of list) trades.delete(`${x.m}:${x.p.t}`);
@@ -1315,6 +1357,14 @@ for (const sel of ['#posSheet', '#walletSheet']) {
   for (const ev of ['touchend', 'touchcancel']) $(sel).addEventListener(ev, () => (sheetTouch = Date.now() + 400), { passive: true });
 }
 const sheetBusy = () => Date.now() < sheetTouch;
+// A touch whose target was replaced mid-gesture never bubbles its touchend to the sheet: end the
+// guards from the document too, so live refreshes don't stay paused for a minute.
+for (const ev of ['touchend', 'touchcancel'])
+  document.addEventListener(ev, () => {
+    const soon = Date.now() + 400;
+    if (sheetTouch > soon) sheetTouch = soon;
+    if (drawerTouch > soon) drawerTouch = soon;
+  }, { passive: true, capture: true });
 function openSheet(name) {
   for (const [k, [sel]] of Object.entries(SHEETS)) $(sel).hidden = k !== name;
   document.body.classList.add('sheet-open');
@@ -1439,10 +1489,21 @@ function setChain(id) {
   setView(state.view === 'watch' ? 'hype' : state.view);
 }
 
+/** Watched tokens of the network on screen: by the network they were starred on (older entries
+ *  without one: by address format). */
+function watchedHere() {
+  const evm = chainCfg().evm;
+  const chain = ENGINE?.chain || 'solana';
+  return [...state.watch].filter((m) => {
+    const c = state.watchChain[m];
+    if (c) return c === chain;
+    return evm ? /^0x[0-9a-fA-F]{40}$/.test(m) : !m.startsWith('0x');
+  });
+}
+
 /** Watchlist count for the network on screen (addresses are per network). */
 function renderWatchCount() {
-  const evm = chainCfg().evm;
-  const n = [...state.watch].filter((m) => (evm ? /^0x[0-9a-fA-F]{40}$/.test(m) : !m.startsWith('0x'))).length;
+  const n = watchedHere().length;
   $('#c-watch').textContent = n || '';
 }
 
@@ -1488,9 +1549,15 @@ setInterval(() => {
 
 // ---------- watchlist ----------
 function toggleWatch(mint) {
-  if (state.watch.has(mint)) state.watch.delete(mint);
-  else state.watch.add(mint);
+  if (state.watch.has(mint)) {
+    state.watch.delete(mint);
+    delete state.watchChain[mint];
+  } else {
+    state.watch.add(mint);
+    state.watchChain[mint] = ENGINE?.chain || 'solana';
+  }
   LS.set('watch', [...state.watch]);
+  LS.set('watchChain', state.watchChain);
   renderWatchCount();
   toast(state.watch.has(mint) ? '★ Dodano do obserwowanych' : 'Usunięto z obserwowanych');
   const star = state.rows.get(mint)?.el.querySelector('.star');
@@ -1592,6 +1659,12 @@ async function openDetail(mint, push = true) {
 function closeDetail() {
   state.selected = null;
   clearInterval(detailTimer);
+  // Stop the hidden DexScreener chart (it keeps streaming); after the slide-out animation.
+  setTimeout(() => {
+    if (state.selected) return;
+    state.chartFrame?.remove();
+    state.chartFrame = null;
+  }, 350);
   $('#drawer').classList.remove('open');
   $('#drawer').setAttribute('aria-hidden', 'true');
   $('#scrim').hidden = true;
@@ -1699,9 +1772,9 @@ function renderDetail(d) {
     dexLink,
     ...chainLinks,
     ['Szukaj na 𝕏', `https://x.com/search?q=${encodeURIComponent(d.m)}&f=live`],
-    d.socials?.twitter ? ['𝕏 projektu', d.socials.twitter] : null,
-    d.socials?.telegram ? ['Telegram', d.socials.telegram] : null,
-    d.socials?.website ? ['Strona', d.socials.website] : null,
+    linkUrl(d.socials?.twitter) ? ['𝕏 projektu', d.socials.twitter] : null,
+    linkUrl(d.socials?.telegram) ? ['Telegram', d.socials.telegram] : null,
+    linkUrl(d.socials?.website) ? ['Strona', d.socials.website] : null,
   ].filter(Boolean);
 
   const parts = Object.entries(d.hp || {})
@@ -1824,7 +1897,7 @@ function renderDetail(d) {
       <p class="note" style="margin:0 0 8px">Pozycja treningowa — nie kupujesz prawdziwych tokenów. Grasz środkami z walletu DEMO, a zysk lub stratę widzisz na żywo („Otwarte pozycje” na dolnym pasku).</p>
       <div class="wallet-line">👛 Saldo DEMO: <b>${fmt.usd(state.wallet.cash)}</b> <button data-act="wallet-open">Doładuj</button></div>
       ${quickBuyRow('Kup')}
-      <p class="note" style="margin:8px 0">…albo wpisz własną kwotę i MC wejścia:</p>
+      <p class="note" style="margin:8px 0">…albo wpisz własną kwotę i MC wejścia (np. 150k; puste = obecny MC):</p>
       <div class="pos-form">
         <input id="posUsd" type="number" inputmode="decimal" min="0" step="any" placeholder="Kwota w $ z walletu DEMO" />
         <input id="posEntry" type="text" autocomplete="off" autocapitalize="off" placeholder="MC wejścia, np. 150k (puste = obecny)" />
@@ -1869,18 +1942,20 @@ function renderDetail(d) {
     desc: d.description ? `<div class="card"><h3>Opis</h3><p class="desc">${esc(d.description)}</p></div>` : '',
   };
 
-  const layoutKey = `${d.m}|${hasPair}`;
+  const chartTabs = `${hasPair ? `<button data-chart="dex" class="${chartTab === 'dex' ? 'active' : ''}">Cena (DexScreener)</button>` : ''}
+        <button data-chart="hype" class="${chartTab === 'hype' ? 'active' : ''}">Hype i cena (radar)</button>`;
+  const layoutKey = d.m;
   if (state.detailLayout !== layoutKey) {
-    // First render for this token (or its DEX pair just appeared): build the whole drawer.
+    // First render for this token: build the whole drawer.
     state.detailLayout = layoutKey;
+    state.detailPair = hasPair;
     state.detailHtml = { ...sections };
     state.chartHist = null;
     const sec = (k) => `<div data-sec="${k}">${sections[k]}</div>`;
     // Chart first, right under the token header (above the position and the Hype Score).
     body.innerHTML = `${sec('head')}
     <div class="card d-chart"><h3>Wykres <span class="chart-tabs">
-        ${hasPair ? `<button data-chart="dex" class="${chartTab === 'dex' ? 'active' : ''}">Cena (DexScreener)</button>` : ''}
-        <button data-chart="hype" class="${chartTab === 'hype' ? 'active' : ''}">Hype i cena (radar)</button></span></h3>
+        ${chartTabs}</span></h3>
       <div class="chart-box" id="chartBox"></div></div>
     ${sec('pos')}${sec('holders')}${sec('ai')}${sec('grid')}
     <div class="d-stack">
@@ -1891,10 +1966,27 @@ function renderDetail(d) {
     return;
   }
 
+  // The DEX pair appeared (or the main pool changed) while the drawer is open: swap only the
+  // chart, keeping the rest of the drawer, typed amounts and the scroll position.
+  const frameSrc = state.chartFrame?.dataset.src || '';
+  if (state.detailPair !== hasPair || (chartTab === 'dex' && d.pair && !frameSrc.includes(`/${d.pair}?`))) {
+    state.detailPair = hasPair;
+    state.chartHist = null;
+    const tabs = body.querySelector('.d-chart .chart-tabs');
+    if (tabs) tabs.innerHTML = chartTabs;
+    const box = $('#chartBox');
+    if (box) box.innerHTML = '';
+    renderChart(d, chartTab);
+  }
+
+  const active = document.activeElement;
   for (const [k, html] of Object.entries(sections)) {
     if (state.detailHtml[k] === html) continue;
-    state.detailHtml[k] = html;
     const el = body.querySelector(`[data-sec="${k}"]`);
+    // Don't rebuild a section while the viewer is typing in it (iOS would close the keyboard
+    // and lose the text); it updates once the field loses focus.
+    if (el && active && active.matches?.('input, textarea, select') && el.contains(active)) continue;
+    state.detailHtml[k] = html;
     if (el) el.innerHTML = html;
   }
   // Our own hype/price chart redraws only when a new history point arrives; the DexScreener
@@ -2200,6 +2292,9 @@ $('#feedChips').addEventListener('click', (e) => {
 
 $('#scrim').addEventListener('click', closeDetail);
 $('#drawer').addEventListener('click', (e) => {
+  // A button tap finishes typing: let the section with the form re-render (it is held back
+  // while one of its fields has focus).
+  if (e.target.closest('button') && document.activeElement?.matches?.('input')) document.activeElement.blur();
   const act = e.target.closest('[data-act]')?.dataset.act;
   if (act === 'close') closeDetail();
   else if (act === 'copy' && state.selected) copy(state.selected);
@@ -2226,7 +2321,7 @@ $('#drawer').addEventListener('click', (e) => {
     if (raw && !(mc > 0)) return toast('Nie rozumiem MC — wpisz np. 150k albo 1.2m');
     if (!(d.p > 0) || !(d.mc > 0)) return toast('Brak ceny lub MC — spróbuj za chwilę');
     const entry = d.p * (mc / d.mc);
-    savePosition(state.selected, entry, usd, mc, d);
+    if (!savePosition(state.selected, entry, usd, mc, d)) return;
     toast(`💼 Pozycja DEMO otwarta przy MC ${fmt.usd(mc)}`);
     renderDetail(state.detail);
   } else if (act === 'qbuy') {
@@ -2235,12 +2330,12 @@ $('#drawer').addEventListener('click', (e) => {
     editQuickBuy();
   }
   const ex = e.target.closest('[data-exit]');
-  if (ex && state.selected) {
+  if (ex && state.selected && posHere(state.selected)) {
     exitClick(state.selected, ex.dataset.exit);
     if (state.detail) renderDetail(state.detail);
   }
   const sell = e.target.closest('[data-sell]');
-  if (sell && state.selected) {
+  if (sell && state.selected && posHere(state.selected)) {
     const f = Number(sell.dataset.sell) / 100;
     sellPosition(state.selected, f, state.detail?.p);
     toast(f >= 1 ? 'Pozycja DEMO zamknięta' : `Sprzedano ${Math.round(f * 100)}% pozycji DEMO`);
@@ -2437,10 +2532,37 @@ if (STATIC) {
   document.body.classList.add('static');
 }
 connect();
+// ---------- several tabs ----------
+// Positions and the wallet live in localStorage: another tab (or an older Safari tab coming
+// back) must pick up the latest copy instead of overwriting it with its stale one.
+function reloadTradeState() {
+  const positions = LS.get('positions', {});
+  state.positions = positions && typeof positions === 'object' ? positions : {};
+  for (const p of Object.values(state.positions)) if (p && p.w === undefined) p.w = false;
+  const closed = LS.get('closedPositions', []);
+  state.closed = Array.isArray(closed) ? closed : [];
+  state.wallet = { cash: 0, deposits: 0, tx: [], ...LS.get('wallet', {}) };
+  if (!Array.isArray(state.wallet.tx)) state.wallet.tx = [];
+  posSaveAt = Date.now(); // positionList must not write straight back
+  renderPosCount();
+  if (sheetOpen('pos')) renderPositions();
+  if (sheetOpen('wallet')) renderWallet();
+  if (state.detail) renderDetail(state.detail);
+}
+window.addEventListener('storage', (e) => {
+  if (['mr:positions', 'mr:wallet', 'mr:closedPositions'].includes(e.key)) reloadTradeState();
+});
+document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && reloadTradeState());
+window.addEventListener('pageshow', (e) => e.persisted && reloadTradeState());
+
 // Deep link: #t=<network>:<address> (older links: #t=<solana address>).
-const deep = location.hash.match(/^#t=(?:(\w+):)?([1-9A-HJ-NP-Za-km-z]{32,44}|0x[0-9a-fA-F]{40})$/);
-if (deep) {
+function openDeepLink() {
+  const deep = location.hash.match(/^#t=(?:(\w+):)?([1-9A-HJ-NP-Za-km-z]{32,44}|0x[0-9a-fA-F]{40})$/);
+  if (!deep) return;
   const net = deep[1] || (deep[2].startsWith('0x') ? null : 'solana');
-  if (ENGINE && net && ENGINE.chains[net]) setChain(net);
+  if (ENGINE && net && ENGINE.chains[net] && net !== ENGINE.chain) setChain(net);
   openDetail(deep[2].startsWith('0x') ? deep[2].toLowerCase() : deep[2], false);
 }
+openDeepLink();
+// A link opened while the app is already running (the app's own replaceState doesn't fire this).
+window.addEventListener('hashchange', openDeepLink);

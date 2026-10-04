@@ -3,15 +3,15 @@
 // cross-origin reads). One engine per network, created the first time the viewer opens it; only
 // the network on screen polls its sources, the others pause (and keep their data for a quick
 // switch back).
-import { Store } from './server/store.js?v=mutpbd0j';
-import { every, getJSON, num } from './server/util.js?v=mutpbd0j';
-import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=mutpbd0j';
-import { startPumpPortal } from './server/sources/pumpportal.js?v=mutpbd0j';
-import { startDexScreener } from './server/sources/dexscreener.js?v=mutpbd0j';
-import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=mutpbd0j';
-import { startJupiter } from './server/sources/jupiter.js?v=mutpbd0j';
-import { startRugCheck } from './server/sources/rugcheck.js?v=mutpbd0j';
-import { startGoPlus } from './server/sources/goplus.js?v=mutpbd0j';
+import { Store } from './server/store.js?v=mutxbptp';
+import { every, getJSON, num } from './server/util.js?v=mutxbptp';
+import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=mutxbptp';
+import { startPumpPortal } from './server/sources/pumpportal.js?v=mutxbptp';
+import { startDexScreener } from './server/sources/dexscreener.js?v=mutxbptp';
+import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=mutxbptp';
+import { startJupiter } from './server/sources/jupiter.js?v=mutxbptp';
+import { startRugCheck } from './server/sources/rugcheck.js?v=mutxbptp';
+import { startGoPlus } from './server/sources/goplus.js?v=mutxbptp';
 
 const baseConfig = {
   demo: false,
@@ -128,7 +128,12 @@ function use(chainId) {
     engines.set(id, e);
   }
   current = engines.get(id);
-  for (const e of engines.values()) e.store.active = e === current;
+  for (const e of engines.values()) {
+    const on = e === current;
+    // Prices of a network that was paused are frozen until its sources refresh them.
+    if (on && !e.store.active) e.since = Date.now();
+    e.store.active = on;
+  }
   current.store.rescore();
   return current;
 }
@@ -137,6 +142,10 @@ export const engine = {
   chains: CHAINS,
   get chain() {
     return current?.chain.id;
+  },
+  /** When the network on screen became active: its rows' prices count as live only once updated after it. */
+  get since() {
+    return current?.since || 0;
   },
   /** Switches the network on screen (creating its engine on first use). */
   setChain: (id) => use(id).chain.id,
