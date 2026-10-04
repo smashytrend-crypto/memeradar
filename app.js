@@ -43,6 +43,7 @@ const state = {
   positions: LS.get('positions', {}), // mint -> { p: entry price, mc, usd, t, chain, n, s, i, last }
   closed: LS.get('closedPositions', []), // closed demo trades (last 90 days) for the 1d / 7d / 30d P&L
   wallet: { cash: 0, deposits: 0, tx: [], ...LS.get('wallet', {}) }, // demo wallet funding the demo positions
+  quickBuy: LS.get('quickBuy', [50, 100, 250, 500]), // the viewer's quick-buy amounts in $
   presets: LS.get('presets', []), // saved filter sets [{ name, f }]
   feedFilter: 'all',
   paused: false,
@@ -510,9 +511,8 @@ function updateRow(entry, d, idx) {
   else if (d.gr) chips.push('<span class="chip grad">🎓 DEX</span>');
   const pos = posPnl(d);
   if (pos) chips.push(`<span class="chip pos ${pos.cls}" title="Twoja pozycja DEMO: ${fmt.pct(pos.pct)}${pos.usd != null ? ` (${pos.usd >= 0 ? '+' : ''}${fmt.usd(pos.usd)})` : ''}">💼 DEMO ${fmt.pct(pos.pct)}</span>`);
-  if (d.fz && FRESH[d.fz]) chips.push(`<span class="chip fz ${FRESH[d.fz][2]}" title="Hype teraz: ${FRESH[d.fz][1]}">${FRESH[d.fz][0]} ${FRESH[d.fz][1]}</span>`);
-  const serial = creatorWarning(d);
-  if (serial) chips.push(`<span class="chip warnc" title="${esc(serial.tip)}">${serial.short}</span>`);
+  if (d.fz && FRESH[d.fz]) chips.push(`<span class="chip fz ${FRESH[d.fz][2]}" title="Hype teraz: ${FRESH[d.fz][1]}">${FRESH[d.fz][0]}<span class="fz-t"> ${FRESH[d.fz][1]}</span></span>`);
+  // Creator warning: shown on the list as the highlighted dev icon (see holderIcons).
   if (d.vs >= 2) chips.push(`<span class="chip surge" title="Wolumen 5 min względem własnej średniej">🚀 ${d.vs.toFixed(1)}×</span>`);
   if (d.ai) chips.push(`<span class="chip ai" title="${esc(d.ai)}">🤖</span>`);
   if (d.bo) chips.push(`<span class="chip boost">⚡${d.bo}</span>`);
@@ -847,9 +847,9 @@ const plTokens = (n) => pl(n, 'token', 'tokeny', 'tokenów');
 
 /** Warning for a creator with a bad track record (serial launcher / honeypot deployer), or null. */
 function creatorWarning(d) {
-  if (d.dhp > 0) return { short: '☠️ twórca honeypotów', tip: `Ten twórca wdrożył już ${d.dhp} honeypot(y) (GoPlus)` };
+  if (d.dhp > 0) return { icon: '☠️', short: '☠️ twórca honeypotów', tip: `Ten twórca wdrożył już ${d.dhp} honeypot(y) (GoPlus)` };
   if (d.dm >= 20 && (d.dmg || 0) / d.dm < 0.05)
-    return { short: '🧑‍🍳 seryjny twórca', tip: `Twórca stworzył ${fmt.n(d.dm)} tokenów, graduację przeszło ${fmt.n(d.dmg || 0)}` };
+    return { icon: '🧑‍🍳', short: '🧑‍🍳 seryjny twórca', tip: `Seryjny twórca: stworzył ${fmt.n(d.dm)} tokenów, graduację przeszło ${fmt.n(d.dmg || 0)}` };
   return null;
 }
 
@@ -893,6 +893,18 @@ function savePosition(mint, price, usd, mc, d = {}) {
   state.wallet.cash -= usd;
   walletTx('open', usd, { n: d.n || '', s: d.s || '' });
   saveWallet();
+  const prev = state.positions[mint];
+  if (prev && prev.p > 0 && prev.usd > 0) {
+    // Buying more: one position with the average entry (weighted by tokens bought).
+    const tokens = prev.usd / prev.p + usd / price;
+    prev.p = (prev.usd + usd) / tokens;
+    prev.mc = prev.mc && mc ? (prev.usd + usd) / (prev.usd / prev.mc + usd / mc) : prev.mc || mc;
+    prev.usd += usd;
+    prev.w = prev.w !== false;
+    LS.set('positions', state.positions);
+    renderPosCount();
+    return;
+  }
   state.positions[mint] = {
     w: true,
     p: price,
@@ -911,30 +923,67 @@ function savePosition(mint, price, usd, mc, d = {}) {
 }
 
 /** Closes a demo position at `price` (its current price), keeping the result for the P&L history. */
-function closePosition(mint, price) {
+/** Sells `fraction` (0–1] of a demo position at `price`; 1 closes it. */
+function sellPosition(mint, fraction, price) {
   const p = state.positions[mint];
   if (!p) return;
+  const f = p.usd > 0 ? Math.min(1, Math.max(0, fraction)) : 1;
   const exit = price > 0 ? price : p.last?.p;
-  // Wallet-funded positions pay their current value back into the demo balance.
-  if (p.w && p.usd > 0) {
-    const back = exit > 0 && p.p > 0 ? p.usd * (exit / p.p) : p.usd;
+  const part = (p.usd || 0) * f;
+  // Wallet-funded positions pay the sold part's current value back into the demo balance.
+  if (p.w && part > 0) {
+    const back = exit > 0 && p.p > 0 ? part * (exit / p.p) : part;
     state.wallet.cash += back;
-    walletTx('close', back, { n: p.n, s: p.s, pnl: back - p.usd });
+    walletTx('close', back, { n: p.n, s: p.s, pnl: back - part, f });
     saveWallet();
   }
   if (exit > 0 && p.p > 0) {
     const pct = (exit / p.p - 1) * 100;
     state.closed.unshift({
-      m: mint, n: p.n, s: p.s, chain: p.chain, usd: p.usd || 0, pct,
-      pnl: p.usd > 0 ? p.usd * (exit / p.p - 1) : 0, openedAt: p.t, closedAt: Date.now(),
+      m: mint, n: p.n, s: p.s, chain: p.chain, usd: part, pct, f,
+      pnl: part > 0 ? part * (exit / p.p - 1) : 0, openedAt: p.t, closedAt: Date.now(),
     });
     state.closed = state.closed.filter((c) => Date.now() - c.closedAt < 90 * 86400e3).slice(0, 500);
     LS.set('closedPositions', state.closed);
   }
-  delete state.positions[mint];
+  if (f >= 1 || p.usd - part < 0.005) delete state.positions[mint];
+  else p.usd -= part;
   LS.set('positions', state.positions);
   renderPosCount();
 }
+const closePosition = (mint, price) => sellPosition(mint, 1, price);
+
+/** Buys `usd` of the token in the drawer at the current price (quick buy). */
+function quickBuy(usd) {
+  const d = state.detail;
+  if (!d || !state.selected) return;
+  if (usd > state.wallet.cash + 1e-9) {
+    toast(`Za mało środków w walletcie DEMO (saldo ${fmt.usd(state.wallet.cash)}) — doładuj go`);
+    closeDetail();
+    return openSheet('wallet');
+  }
+  if (!(d.p > 0) || !(d.mc > 0)) return toast('Brak ceny lub MC — spróbuj za chwilę');
+  const had = !!state.positions[state.selected];
+  savePosition(state.selected, d.p, usd, d.mc, d);
+  toast(`💼 ${had ? 'Dokupiono' : 'Kupiono'} DEMO za ${fmt.usd(usd)} przy MC ${fmt.usd(d.mc)}`);
+  renderDetail(d);
+}
+
+function editQuickBuy() {
+  const text = prompt('Kwoty szybkiego zakupu w $ (oddziel przecinkami, max 6):', state.quickBuy.join(', '));
+  if (text == null) return;
+  const list = text.split(/[,;\s]+/).map(parseAmount).filter((v) => v > 0).slice(0, 6);
+  if (!list.length) return toast('Nie rozumiem kwot — wpisz np. 50, 100, 250');
+  state.quickBuy = list;
+  LS.set('quickBuy', list);
+  if (state.detail) renderDetail(state.detail);
+  toast('Zapisano przyciski szybkiego zakupu');
+}
+
+const quickBuyRow = (label) =>
+  `<div class="qb-row"><span>${label}</span>${state.quickBuy.map((v) => `<button data-act="qbuy" data-usd="${v}">+$${fmt.n(v)}</button>`).join('')}<button class="qb-edit" data-act="qbuy-edit" aria-label="Ustaw kwoty szybkiego zakupu" title="Ustaw kwoty">⚙︎</button></div>`;
+const sellRow = (attr) =>
+  `<div class="qs-row">${[25, 50, 75, 100].map((v) => `<button ${attr}="${v}">${v === 100 ? 'Sprzedaj 100%' : `${v}%`}</button>`).join('')}</div>`;
 
 // ---------- open demo positions (bottom bar) ----------
 let posSaveAt = 0;
@@ -1033,7 +1082,8 @@ function renderPositions() {
               <div><span>Wkład → wartość</span><b>${x.p.usd > 0 ? `${fmt.usd(x.p.usd)} → ${fmt.usd(x.value)}` : '—'}</b></div>
               <div><span>Zysk / strata</span><b class="${(x.pnl ?? 0) >= 0 ? 'up' : 'down'}">${x.pnl != null ? money(x.pnl) : '—'}</b></div>
             </div>
-            <div class="pos-acts"><button data-pos-open>Otwórz token</button><button data-pos-close>✖ Zamknij</button></div>
+            ${x.p.usd > 0 ? sellRow('data-pos-sell') : '<div class="qs-row"><button data-pos-sell="100">✖ Zamknij</button></div>'}
+            <div class="pos-acts"><button data-pos-open>Otwórz token</button></div>
           </div>`;
         })
         .join('')
@@ -1041,7 +1091,7 @@ function renderPositions() {
   const recent = state.closed.filter((c) => Date.now() - c.closedAt < 30 * 86400e3).slice(0, 20);
   const history = recent.length
     ? `<h3 class="pos-h">Zamknięte (30 dni)</h3><div class="pos-closed">${recent
-        .map((c) => `<div><span>${esc(c.n || fmt.short(c.m))} <small>$${esc(c.s || '?')} · ${fmt.ago(c.closedAt)}</small></span><b class="${c.pct >= 0 ? 'up' : 'down'}">${fmt.pct(c.pct)}${c.usd > 0 ? ` · ${money(c.pnl)}` : ''}</b></div>`)
+        .map((c) => `<div><span>${esc(c.n || fmt.short(c.m))} <small>$${esc(c.s || '?')}${c.f && c.f < 1 ? ` · ${Math.round(c.f * 100)}%` : ''} · ${fmt.ago(c.closedAt)}</small></span><b class="${c.pct >= 0 ? 'up' : 'down'}">${fmt.pct(c.pct)}${c.usd > 0 ? ` · ${money(c.pnl)}` : ''}</b></div>`)
         .join('')}</div>`
     : '';
   const html = summary + `<h3 class="pos-h">Otwarte (${list.length})</h3>` + cards + history;
@@ -1141,7 +1191,8 @@ function holderIcons(d, compact = false) {
   const evm = chainCfg().evm;
   const cells = [
     ['top10', tone(d.t10, 30, 50), shortPct(d.t10), `Top 10 holderów: ${shortPct(d.t10)}`],
-    ['dev', tone(d.dv, 5, 15), shortPct(d.dv), `Dev trzyma: ${shortPct(d.dv)}`],
+    // Serial creator / honeypot deployer: the dev icon lights up red.
+    ((cw) => ['dev', `${tone(d.dv, 5, 15)}${cw ? ' alert' : ''}`, shortPct(d.dv), `Dev trzyma: ${shortPct(d.dv)}${cw ? ` · ⚠️ ${cw.tip}` : ''}`])(creatorWarning(d)),
     evm ? null : ['insiders', tone(d.ins, 5, 15), shortPct(d.ins), `Insiderzy: ${shortPct(d.ins)}`],
     ['lp', tone(d.lpb, 50, 90, true), shortPct(d.lpb), `LP spalone: ${shortPct(d.lpb)}`],
     ['paid', d.dp == null ? 'na' : d.dp ? 'up' : 'down', d.dp == null ? '—' : d.dp ? (compact ? '✓' : 'Paid') : compact ? '✗' : 'Unpaid', `DEX paid: ${d.dp == null ? 'nie sprawdzono' : d.dp ? 'tak' : 'nie'}`],
@@ -1391,6 +1442,10 @@ function closeDetail() {
   history.replaceState(null, '', location.pathname + location.search);
 }
 
+let drawerTouch = 0;
+$('#drawer').addEventListener('touchstart', () => (drawerTouch = Date.now() + 60_000), { passive: true });
+for (const ev of ['touchend', 'touchcancel']) $('#drawer').addEventListener(ev, () => (drawerTouch = Date.now() + 400), { passive: true });
+
 async function loadDetail(mint) {
   if (ENGINE) {
     const d = await ENGINE.detail(mint);
@@ -1401,6 +1456,8 @@ async function loadDetail(mint) {
       return;
     }
     state.detail = d;
+    // A finger on the drawer: wait, so a live re-render doesn't swallow the tap (iOS).
+    if (Date.now() < drawerTouch) return;
     renderDetail(d);
     return;
   }
@@ -1602,10 +1659,14 @@ function renderDetail(d) {
         <div><span>Wynik</span><b class="${pp.cls}">${fmt.pct(pp.pct)} · ${fmtX(d.p / pp.entry.p)}</b></div>
         ${pp.usd != null ? `<div><span>Włożone</span><b>${fmt.usd(pp.entry.usd)}</b></div><div><span>Wartość</span><b>${fmt.usd(pp.value)}</b></div><div><span>Zysk / strata</span><b class="${pp.cls}">${pp.usd >= 0 ? '+' : '−'}${fmt.usd(Math.abs(pp.usd))}</b></div>` : ''}
       </div>
-      <div class="d-acts"><button data-act="pos-close">✖ Zamknij pozycję DEMO</button></div></div>`
+      ${pp.entry.usd > 0 ? sellRow('data-sell') : '<div class="d-acts"><button data-sell="100">✖ Zamknij pozycję DEMO</button></div>'}
+      <div class="wallet-line" style="margin-top:10px">👛 Saldo DEMO: <b>${fmt.usd(state.wallet.cash)}</b> <button data-act="wallet-open">Doładuj</button></div>
+      ${quickBuyRow('Dokup')}</div>`
     : `<div class="card"><h3>💼 Pozycja <span class="demo-tag">DEMO</span> <small>treningowa</small></h3>
       <p class="note" style="margin:0 0 8px">Pozycja treningowa — nie kupujesz prawdziwych tokenów. Grasz środkami z walletu DEMO, a zysk lub stratę widzisz na żywo („Otwarte pozycje” na dolnym pasku).</p>
       <div class="wallet-line">👛 Saldo DEMO: <b>${fmt.usd(state.wallet.cash)}</b> <button data-act="wallet-open">Doładuj</button></div>
+      ${quickBuyRow('Kup')}
+      <p class="note" style="margin:8px 0">…albo wpisz własną kwotę i MC wejścia:</p>
       <div class="pos-form">
         <input id="posUsd" type="number" inputmode="decimal" min="0" step="any" placeholder="Kwota w $ z walletu DEMO" />
         <input id="posEntry" type="text" autocomplete="off" autocapitalize="off" placeholder="MC wejścia, np. 150k (puste = obecny)" />
@@ -2008,9 +2069,16 @@ $('#drawer').addEventListener('click', (e) => {
     savePosition(state.selected, entry, usd, mc, d);
     toast(`💼 Pozycja DEMO otwarta przy MC ${fmt.usd(mc)}`);
     renderDetail(state.detail);
-  } else if (act === 'pos-close' && state.selected) {
-    closePosition(state.selected, state.detail?.p);
-    toast('Pozycja DEMO zamknięta');
+  } else if (act === 'qbuy') {
+    quickBuy(Number(e.target.closest('[data-usd]').dataset.usd));
+  } else if (act === 'qbuy-edit') {
+    editQuickBuy();
+  }
+  const sell = e.target.closest('[data-sell]');
+  if (sell && state.selected) {
+    const f = Number(sell.dataset.sell) / 100;
+    sellPosition(state.selected, f, state.detail?.p);
+    toast(f >= 1 ? 'Pozycja DEMO zamknięta' : `Sprzedano ${Math.round(f * 100)}% pozycji DEMO`);
     if (state.detail) renderDetail(state.detail);
   }
   const chart = e.target.closest('[data-chart]');
@@ -2114,6 +2182,8 @@ window.addEventListener(
 $('#bottombar').addEventListener('click', (e) => {
   const b = e.target.closest('[data-nav]');
   if (!b) return;
+  // The bar stays on top of an open token window: any option closes the window first.
+  if (state.selected) closeDetail();
   if (SHEETS[b.dataset.nav]) openSheet(b.dataset.nav);
   else {
     closeSheets();
@@ -2149,13 +2219,16 @@ $('#posSheet').addEventListener('click', (e) => {
   const card = e.target.closest('[data-pos]');
   if (!card) return;
   const mint = card.dataset.pos;
-  if (e.target.closest('[data-pos-close]')) {
+  const sellBtn = e.target.closest('[data-pos-sell]');
+  if (sellBtn) {
     const x = positionList().find((p) => p.m === mint);
     const lastAt = x?.p.last?.at;
-    closePosition(mint, x?.r?.p || x?.p.last?.p);
-    // Instant close (no confirmation — timing matters); a position on another network closes at
-    // the last price seen there.
-    toast(x?.stale ? `Pozycja DEMO zamknięta po ostatniej znanej cenie (sprzed ${lastAt ? fmt.ago(lastAt) : '—'})` : 'Pozycja DEMO zamknięta');
+    const f = Number(sellBtn.dataset.posSell) / 100;
+    sellPosition(mint, f, x?.r?.p || x?.p.last?.p);
+    // Instant (no confirmation — timing matters); a position on another network sells at the
+    // last price seen there.
+    const what = f >= 1 ? 'Pozycja DEMO zamknięta' : `Sprzedano ${Math.round(f * 100)}% pozycji DEMO`;
+    toast(x?.stale ? `${what} po ostatniej znanej cenie (sprzed ${lastAt ? fmt.ago(lastAt) : '—'})` : what);
     renderPositions();
     return;
   }

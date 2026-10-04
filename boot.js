@@ -1,6 +1,6 @@
-window.__MR_VERSION = 'mutm9tuk';
+window.__MR_VERSION = 'mutmsx0x';
 // Starts the in-browser engine, then the regular UI (which detects it and skips the server).
-import { engine } from './engine.js?v=mutm9tuk';
+import { engine } from './engine.js?v=mutmsx0x';
 
 window.__MR_ENGINE = engine;
-await import('./app.js?v=mutm9tuk');
+await import('./app.js?v=mutmsx0x');

@@ -758,7 +758,7 @@ a { color: inherit; text-decoration: none; }
 body { padding-bottom: calc(84px + env(safe-area-inset-bottom, 0px)); }
 .bottombar {
   /* Low on the screen: on iPhones it sits partly in the home-indicator area. */
-  position: fixed; left: 50%; bottom: max(6px, calc(env(safe-area-inset-bottom, 0px) - 12px)); z-index: 35;
+  position: fixed; left: 50%; bottom: max(6px, calc(env(safe-area-inset-bottom, 0px) - 12px)); z-index: 55; /* above the token window */
   transform: translateX(-50%); width: min(340px, calc(100vw - 32px));
   display: flex; justify-content: space-around; gap: 2px; padding: 6px;
   /* Frosted glass: light see-through tint, strong blur, bright top edge. */
@@ -844,3 +844,32 @@ body.sheet-open { overflow: hidden; }
 .bottombar.mini button { min-height: 36px; padding: 4px; gap: 0; }
 .bottombar.mini .bl { opacity: 0; max-height: 0; }
 .bottombar.mini .bb-count { top: 1px; }
+
+/* Token window scrolls clear of the floating bottom bar. */
+.drawer-inner { padding-bottom: calc(110px + env(safe-area-inset-bottom, 0px)) !important; }
+
+/* ---------- quick buy / quick sell ---------- */
+.qb-row, .qs-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
+.qb-row > span { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-right: 2px; }
+.qb-row button, .qs-row button {
+  flex: 1; min-width: 56px; height: 36px; padding: 0 8px; border-radius: 10px; border: 1px solid var(--line2);
+  background: var(--panel2); color: var(--text); font: 700 13px/1 var(--mono); cursor: pointer;
+}
+.qb-row button { border-color: rgba(31, 214, 143, 0.35); color: var(--up); background: rgba(31, 214, 143, 0.08); }
+.qb-row .qb-edit { flex: 0 0 36px; min-width: 36px; color: var(--muted); background: var(--panel2); border-color: var(--line2); }
+.qs-row button { border-color: rgba(255, 77, 106, 0.35); color: var(--down); background: rgba(255, 77, 106, 0.08); }
+.qb-row button:active, .qs-row button:active { transform: scale(0.96); }
+
+/* Creator warning on the list: icon only, highlighted. */
+.chip.warnc.ico {
+  padding: 1px 5px; background: rgba(255, 77, 106, 0.22); box-shadow: 0 0 0 1px rgba(255, 77, 106, 0.55), 0 0 8px rgba(255, 77, 106, 0.35);
+}
+
+/* Dev icon highlighted for a serial creator / honeypot deployer. */
+.hs.alert { color: #ff8095; }
+.hs.alert svg {
+  box-sizing: content-box; padding: 2px; margin: -2px; border-radius: 6px; color: #fff;
+  background: rgba(255, 77, 106, 0.85); box-shadow: 0 0 8px rgba(255, 77, 106, 0.6);
+}
+/* Phones: hype-freshness chip as an icon only (its label didn't fit). */
+@container board (max-width: 703px) { .chip.fz .fz-t { display: none; } .chip.fz { padding: 1px 5px; } }
