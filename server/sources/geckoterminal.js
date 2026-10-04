@@ -1,8 +1,8 @@
 // GeckoTerminal public API (https://www.geckoterminal.com/dex-api): trending + new pools per network,
 // and 15-minute price candles (OHLCV) for the top tokens — used for the 4h change and the
 // mini charts, since DexScreener only reports 5m / 1h / 6h / 24h changes.
-import { IS_BROWSER, RateLimiter, errMsg, every, getJSON, num, toMs } from '../util.js?v=muua81b1';
-import { gtCurve, isAddressOn, normAddr } from '../chains.js?v=muua81b1';
+import { IS_BROWSER, RateLimiter, errMsg, every, getJSON, num, toMs } from '../util.js?v=muuc3hva';
+import { gtCurve, isAddressOn, normAddr } from '../chains.js?v=muuc3hva';
 
 const API = 'https://api.geckoterminal.com/api/v2/networks';
 const NAME = 'geckoterminal';

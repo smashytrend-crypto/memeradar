@@ -3152,15 +3152,9 @@ function drawCandlesSvg(d) {
     const right = li % 2 === 1;
     svg += `<line x1="${PL}" x2="${W - PR}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="${col}" class="lvl"/><text x="${right ? W - PR - 4 : PL + 4}" y="${(y(v) - 4).toFixed(1)}" fill="${col}" class="ll"${right ? ' text-anchor="end"' : ''}>${esc(label)}</text>`;
   });
-  // Whales / tracked wallets / top holders (from the latest trades).
-  const topSet = new Set((d.topHolders || []).map((h) => normWallet(h.a)));
+  // Whales / tracked wallets (from the latest trades).
   for (const t of tr) {
     const w = walletOf(t.wallet);
-    if (topSet.has(normWallet(t.wallet)) && !w) {
-      const i = idxAt(t.t);
-      if (i >= 0 && t.price >= lo && t.price <= hi) svg += `<circle cx="${x(i).toFixed(1)}" cy="${y(t.price).toFixed(1)}" r="4" class="th"><title>Top 10 holder: ${t.side === 'buy' ? 'kupno' : 'sprzedaż'} ${fmt.usd(t.usd)}</title></circle>`;
-      continue;
-    }
     if (!w && t.usd < whale) continue;
     const i = idxAt(t.t);
     if (i < 0 || !(t.price > 0) || t.price < lo || t.price > hi) continue;
@@ -3183,7 +3177,7 @@ function drawCandlesSvg(d) {
   const hhmm = (ts) => new Date(ts).toLocaleString('pl-PL', tf === '1h' || tf === '4h' ? { day: '2-digit', month: '2-digit', hour: '2-digit' } : { hour: '2-digit', minute: '2-digit' });
   for (const i of [0, Math.floor(n / 2), n - 1]) svg += `<text x="${Math.min(W - PR - 30, Math.max(PL, x(i) - 20)).toFixed(1)}" y="${H - 6}" class="cl">${hhmm(list[i][0])}</text>`;
   const SYN = { trades: 'świece z ostatnich transakcji', radar: 'świece z cen radaru', live: 'świece z ceny na żywo', cache: 'zapisana historia — odświeżam' };
-  const legend = `<div class="c-legend">${c.synth ? `<span class="muted">ⓘ ${SYN[c.synth]}</span>` : ''}<span><i class="lg-mb"></i>Twoje kupno</span><span><i class="lg-ms"></i>Twoja sprzedaż</span><span><i class="lg-w"></i>🐋 Wieloryb</span><span><i class="lg-th"></i>Top 10</span>${state.wallets.length ? '<span><i class="lg-tw"></i>Śledzony</span>' : ''}</div>`;
+  const legend = `<div class="c-legend">${c.synth ? `<span class="muted">ⓘ ${SYN[c.synth]}</span>` : ''}<span><i class="lg-mb"></i>Twoje kupno</span><span><i class="lg-ms"></i>Twoja sprzedaż</span><span><i class="lg-w"></i>🐋 Wieloryb</span>${state.wallets.length ? '<span><i class="lg-tw"></i>Śledzony</span>' : ''}</div>`;
   // Current market cap, big, next to the timeframes; the live dot shows the 1-second refresh.
   const head = `<div class="c-now"><i class="${live ? 'on' : ''}"></i>${mcK ? `MC ${fmt.usd(nowP * mcK)}` : fmt.price(nowP)}</div>`;
   box.innerHTML = `${tfRow}${head}<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" class="candles">${svg}</svg>${legend}`;
@@ -3326,7 +3320,6 @@ function drawCandlesLW(d) {
   }
   // Markers: my trades, whales, tracked wallets, top holders, migration.
   const first = c.list[0][0];
-  const topSet = new Set((d.topHolders || []).map((h) => normWallet(h.a)));
   const whale = WHALE_USD_UI[ENGINE?.chain] || 1000;
   const marks = [];
   if (d.ma && d.ma >= first) marks.push({ time: tOf(d.ma), position: 'belowBar', color: '#c9a7ff', shape: 'square', text: '🎓' });
@@ -3334,7 +3327,6 @@ function drawCandlesLW(d) {
     if (t.t < first) continue;
     const w = walletOf(t.wallet);
     if (w) marks.push({ time: tOf(t.t), position: t.side === 'buy' ? 'belowBar' : 'aboveBar', color: '#c9a7ff', shape: 'circle', text: `${w.emoji || '👛'} ${w.name}` });
-    else if (topSet.has(normWallet(t.wallet))) marks.push({ time: tOf(t.t), position: t.side === 'buy' ? 'belowBar' : 'aboveBar', color: '#e4c15a', shape: 'circle', text: 'T10' });
     else if (t.usd >= whale) marks.push({ time: tOf(t.t), position: t.side === 'buy' ? 'belowBar' : 'aboveBar', color: t.side === 'buy' ? '#4da3ff' : '#ffaa4d', shape: 'circle', text: '🐋' });
   }
   for (const t of mine) {
