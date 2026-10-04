@@ -1,5 +1,5 @@
 // RugCheck (https://api.rugcheck.xyz/swagger/index.html): safety report for top tokens.
-import { RateLimiter, errMsg, every, getJSON } from '../util.js?v=muu4nwbk';
+import { RateLimiter, errMsg, every, getJSON } from '../util.js?v=muu7qgut';
 
 const BASE = 'https://api.rugcheck.xyz/v1';
 const NAME = 'rugcheck';
@@ -15,6 +15,22 @@ export function rugToReport(r) {
     lpBurnPct: main?.lp ? Number(main.lp.lpLockedPct) || 0 : null,
     insidersPct: r.topHolders ? insiders.reduce((a, h) => a + (Number(h.pct) || 0), 0) : null,
     insiders: r.graphInsidersDetected ?? insiders.length,
+    creator: typeof r.creator === 'string' ? r.creator : undefined,
+    // Top holder wallets (owners), leaving out pools / AMMs / lockers: for the chart's "top 10
+    // holders" entry level.
+    holders: Array.isArray(r.topHolders)
+      ? r.topHolders
+          .filter((h) => h && typeof h.owner === 'string' && !(r.knownAccounts || {})[h.owner] && !(r.markets || []).some((m) => m?.pubkey === h.owner || m?.liquidityA === h.address || m?.liquidityB === h.address))
+          .slice(0, 10)
+          .map((h) => ({ a: h.owner, pct: Number(h.pct) || 0 }))
+      : null,
+    // The creator's other tokens with their current market cap (dev history).
+    devTokens: Array.isArray(r.creatorTokens)
+      ? r.creatorTokens
+          .filter((x) => x && x.mint && x.mint !== r.mint)
+          .map((x) => ({ mint: x.mint, mc: Number(x.marketCap) || 0, at: Date.parse(x.createdAt) || 0 }))
+          .slice(0, 200)
+      : null,
   };
 }
 
@@ -27,7 +43,11 @@ export function startRugCheck(store) {
     // Full report: besides the risks it carries the markets (LP burned / locked) and top holders
     // flagged as insiders.
     const r = await lim.run(() => getJSON(`${BASE}/tokens/${t.mint}/report`, { timeout: 20_000 }));
-    t.rug = { ...rugToReport(r), at: Date.now() };
+    const rep = rugToReport(r);
+    t.rug = { ...rep, at: Date.now() };
+    if (rep.devTokens) t.devTokens = rep.devTokens;
+    if (rep.holders) t.topHolders = rep.holders;
+    if (rep.creator && !t.creator) store.upsert(t.mint, { creator: rep.creator }, NAME);
     store.setSource(NAME, 'ok', `OK · ${++okCount} raportów`);
   }
 

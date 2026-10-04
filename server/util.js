@@ -67,19 +67,37 @@ export class RateLimiter {
     this.interval = 60000 / Math.max(perMinute, 0.01);
     this.next = 0;
     this.pausedUntil = 0;
-    this.chain = Promise.resolve();
+    this.queue = [];
+    this.timer = null;
   }
 
-  async run(fn) {
-    const slot = this.chain.then(async () => {
-      const now = Date.now();
-      const at = Math.max(this.next, this.pausedUntil, now);
-      this.next = at + this.interval;
-      if (at > now) await sleep(at - now);
+  /** Runs fn in the next free slot; `priority` jumps the queue (something the viewer is waiting for). */
+  run(fn, priority = false) {
+    return new Promise((resolve, reject) => {
+      const job = { fn, resolve, reject };
+      if (priority) this.queue.unshift(job);
+      else this.queue.push(job);
+      this.#pump();
     });
-    this.chain = slot;
-    await slot;
-    return fn();
+  }
+
+  #pump() {
+    if (this.timer || !this.queue.length) return;
+    const now = Date.now();
+    const at = Math.max(this.next, this.pausedUntil, now);
+    if (at > now) {
+      this.timer = setTimeout(() => {
+        this.timer = null;
+        this.#pump();
+      }, at - now);
+      return;
+    }
+    this.next = now + this.interval;
+    const job = this.queue.shift();
+    Promise.resolve()
+      .then(job.fn)
+      .then(job.resolve, job.reject);
+    this.#pump();
   }
 
   /** Back off (e.g. after HTTP 429). */

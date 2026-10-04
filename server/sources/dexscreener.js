@@ -1,9 +1,9 @@
 // DexScreener public API (https://docs.dexscreener.com/api/reference):
 // discovery (profiles / boosts) + batched market data for every tracked token.
-import { RateLimiter, errMsg, every, getJSON, num, sleep, toMs } from '../util.js?v=muu4nwbk';
-import { Store } from '../store.js?v=muu4nwbk';
-import { isCurvePair } from '../constants.js?v=muu4nwbk';
-import { isAddressOn, normAddr } from '../chains.js?v=muu4nwbk';
+import { RateLimiter, errMsg, every, getJSON, num, sleep, toMs } from '../util.js?v=muu7qgut';
+import { Store } from '../store.js?v=muu7qgut';
+import { isCurvePair } from '../constants.js?v=muu7qgut';
+import { isAddressOn, normAddr } from '../chains.js?v=muu7qgut';
 
 const BASE = 'https://api.dexscreener.com';
 const NAME = 'dexscreener';
@@ -215,6 +215,13 @@ export function startDexScreener(store, config) {
       const orders = Array.isArray(data) ? data : data?.orders || [];
       t.dexPaid = orders.some((o) => o.type === 'tokenProfile' && o.status === 'approved');
       t.dexPaidAt = Date.now();
+      // Every approved paid order with its payment time: profile ("DEX paid"), community takeover
+      // (CTO), ads; plus boosts.
+      const boosts = Array.isArray(data?.boosts) ? data.boosts : [];
+      t.dsOrders = [
+        ...orders.filter((o) => o && o.status === 'approved' && typeof o.type === 'string').map((o) => ({ type: o.type, at: Number(o.paymentTimestamp) || 0 })),
+        ...boosts.map((b) => ({ type: 'boost', at: Number(b.paymentTimestamp) || 0, amount: Number(b.amount) || 0 })),
+      ].sort((a, b) => a.at - b.at);
       return t.dexPaid;
     },
     /** Free-text / CA search across the whole network — adds results to the radar. */

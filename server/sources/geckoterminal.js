@@ -1,8 +1,8 @@
 // GeckoTerminal public API (https://www.geckoterminal.com/dex-api): trending + new pools per network,
 // and 15-minute price candles (OHLCV) for the top tokens — used for the 4h change and the
 // mini charts, since DexScreener only reports 5m / 1h / 6h / 24h changes.
-import { IS_BROWSER, RateLimiter, errMsg, every, getJSON, num, toMs } from '../util.js?v=muu4nwbk';
-import { gtCurve, isAddressOn, normAddr } from '../chains.js?v=muu4nwbk';
+import { IS_BROWSER, RateLimiter, errMsg, every, getJSON, num, toMs } from '../util.js?v=muu7qgut';
+import { gtCurve, isAddressOn, normAddr } from '../chains.js?v=muu7qgut';
 
 const API = 'https://api.geckoterminal.com/api/v2/networks';
 const NAME = 'geckoterminal';
@@ -27,6 +27,52 @@ export function parseOhlcv(json) {
     out.push([ts * 1000, open, close]);
   }
   return out.sort((a, b) => a[0] - b[0]);
+}
+
+/** OHLCV response → full candles [startMs, open, high, low, close, volumeUsd], oldest first. */
+export function parseOhlcvFull(json) {
+  const list = json?.data?.attributes?.ohlcv_list;
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const row of list) {
+    if (!Array.isArray(row)) continue;
+    const [ts, o, h, l, c, v] = row.map(num);
+    if (!(ts > 0) || !(o > 0) || !(c > 0)) continue;
+    out.push([ts * 1000, o, Math.max(h || 0, o, c), Math.min(l > 0 ? l : Infinity, o, c), c, v || 0]);
+  }
+  return out.sort((a, b) => a[0] - b[0]);
+}
+
+/**
+ * Pool trades response → [{ t, side, usd, wallet, tx, price, amount }], newest first. `mint` picks
+ * the token side (a trade's price / amount are for the token, not the quote coin).
+ */
+export function parseTrades(json, mint) {
+  const list = Array.isArray(json?.data) ? json.data : [];
+  const m = String(mint || '').toLowerCase();
+  const out = [];
+  for (const x of list) {
+    const a = x?.attributes || {};
+    const side = a.kind === 'buy' || a.kind === 'sell' ? a.kind : null;
+    if (!side) continue;
+    // On a buy the token is what was received ("to"); on a sell it is what was given ("from").
+    const toIsToken = String(a.to_token_address || '').toLowerCase() === m;
+    const fromIsToken = String(a.from_token_address || '').toLowerCase() === m;
+    const tokenSide = toIsToken ? 'to' : fromIsToken ? 'from' : side === 'buy' ? 'to' : 'from';
+    const t = toMs(a.block_timestamp);
+    const usd = num(a.volume_in_usd);
+    if (!(t > 0) || !(usd >= 0)) continue;
+    out.push({
+      t,
+      side,
+      usd,
+      wallet: typeof a.tx_from_address === 'string' ? a.tx_from_address : '',
+      tx: typeof a.tx_hash === 'string' ? a.tx_hash : '',
+      price: num(a[`price_${tokenSide}_in_usd`]) || null,
+      amount: num(a[`${tokenSide}_token_amount`]) || 0,
+    });
+  }
+  return out.sort((a, b) => b.t - a.t);
 }
 
 export function poolToPatch(pool, tokensById, network = 'solana') {
@@ -175,6 +221,9 @@ export function startGeckoTerminal(store) {
       // EVM radars are filled from GeckoTerminal's pool lists: let discovery use the shared
       // budget first, until the list has some depth.
       if (chain.evm && store.ranked.length < 40) return;
+      // A token window is open: its trades / candles get the budget (they are what the viewer
+      // is looking at); background candles wait.
+      if (now - (store.focusAt || 0) < 15_000) return;
       const [t] = store.pickForRefresh('ohlcv', 1, now, {
         intervals: { top: 5 * MIN, hot: 15 * MIN, young: 20 * MIN, rest: 6 * 60 * MIN },
         filter: (tok) => !!tok.pairAddress && ((store.rank.get(tok.mint) || Infinity) <= 150 || tok.pinnedUntil > now),
@@ -200,4 +249,47 @@ export function startGeckoTerminal(store) {
     },
     active,
   );
+
+  // Viewer requests share the backoff: a 429 pauses the limiter like any background call.
+  const guard = async (p) => {
+    try {
+      const json = await p;
+      ok();
+      return json;
+    } catch (err) {
+      if (err?.status !== 404) fail(err);
+      throw err;
+    }
+  };
+  const TF = { '1m': ['minute', 1], '5m': ['minute', 5], '15m': ['minute', 15], '1h': ['hour', 1], '4h': ['hour', 4] };
+  return {
+    /** Latest ~300 trades of the token's main pool, newest first (`priority`: the viewer waits). */
+    async trades(t, priority = false) {
+      if (!t?.pairAddress) return [];
+      const pool = t.pairAddress;
+      const json = await guard(lim.run(() => getJSON(`${BASE}/pools/${pool}/trades`, { headers: HEADERS }), priority));
+      return parseTrades(json, t.mint);
+    },
+    /** Full candles for the chart: tf = 1m / 5m / 15m / 1h / 4h. */
+    async candles(t, tf = '5m', priority = false) {
+      if (!t?.pairAddress) return [];
+      const [unit, agg] = TF[tf] || TF['5m'];
+      const pool = t.pairAddress;
+      const json = await guard(
+        lim.run(() => getJSON(`${BASE}/pools/${pool}/ohlcv/${unit}?aggregate=${agg}&limit=200&currency=usd&token=${t.mint}`, { headers: HEADERS }), priority),
+      );
+      return parseOhlcvFull(json);
+    },
+    /** Token info: developer address / holding (EVM dev check), holder distribution, categories. */
+    async info(t, priority = false) {
+      const json = await guard(lim.run(() => getJSON(`${BASE}/tokens/${t.mint}/info`, { headers: HEADERS }), priority));
+      const a = json?.data?.attributes || {};
+      return {
+        dev: typeof a.developer_address === 'string' ? normAddr(chain, a.developer_address) : null,
+        devPct: num(a.developer_holding_percentage) ?? null,
+        holders: num(a.holders?.count) ?? null,
+        categories: Array.isArray(a.categories) ? a.categories.slice(0, 6) : [],
+      };
+    },
+  };
 }

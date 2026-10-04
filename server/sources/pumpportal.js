@@ -1,6 +1,6 @@
 // On-chain stream of pump.fun / bonk.fun launches, trades and migrations via PumpPortal's
 // free WebSocket (https://pumpportal.fun/data-api/real-time). One connection only — their rule.
-import { num } from '../util.js?v=muu4nwbk';
+import { num } from '../util.js?v=muu7qgut';
 
 const WS_URL = 'wss://pumpportal.fun/api/data';
 const NAME = 'pumpportal';
@@ -47,6 +47,8 @@ export function startPumpPortal(store, config) {
     const type = String(msg.txType || '').toLowerCase();
 
     if (type === 'create') {
+      // Tracked wallets launching a token (wallet tracker) — seen even when launches aren't listed.
+      store.launchHook?.({ mint: msg.mint, name: msg.name, symbol: msg.symbol, creator: msg.traderPublicKey });
       const t = store.onLaunch({
         mint: msg.mint,
         name: msg.name,
@@ -93,7 +95,8 @@ export function startPumpPortal(store, config) {
       backoff = 1000;
       lastMsg = Date.now();
       store.setSource(NAME, 'ok', 'strumień na żywo');
-      if (!config.onlyGraduated) send({ method: 'subscribeNewToken' });
+      // New tokens are free; with onlyGraduated they only feed the wallet tracker's launch alerts.
+      send({ method: 'subscribeNewToken' });
       send({ method: 'subscribeMigration' });
       // Re-subscribe everything after a reconnect.
       for (const m of subs) toSub.add(m);

@@ -2,7 +2,7 @@
 // honeypot, sell / buy tax, mint and owner powers — plus holder count and top-holder share.
 // Results go into the same shapes RugCheck / Jupiter fill on Solana (t.rug risks, t.audit,
 // holders), so scoring and the UI treat every network alike.
-import { RateLimiter, errMsg, every, getJSON, num } from '../util.js?v=muu4nwbk';
+import { RateLimiter, errMsg, every, getJSON, num } from '../util.js?v=muu7qgut';
 
 const BASE = 'https://api.gopluslabs.io/api/v1/token_security';
 const NAME = 'goplus';
@@ -51,8 +51,14 @@ export function goplusToReport(r) {
       devBalancePercentage: creator != null ? creator * 100 : undefined,
       // Creator history on EVM: other honeypots deployed by the same address.
       honeypotSameCreator: num(r.honeypot_with_same_creator),
+      // Same meaning as Solana's mint / freeze authority (for the safety filters).
+      // (separate names: scoring treats Solana's authority fields as its own risks; GoPlus already
+      // reports these as risks above)
+      evmMintOff: r.is_mintable != null ? !on(r.is_mintable) : undefined,
+      evmFreezeOff: r.transfer_pausable != null || r.is_blacklisted != null ? !(on(r.transfer_pausable) || on(r.is_blacklisted)) : undefined,
     },
     creator: typeof r.creator_address === 'string' ? r.creator_address.toLowerCase() : undefined,
+    topHolders: people.slice(0, 10).filter((h) => typeof h.address === 'string').map((h) => ({ a: h.address.toLowerCase(), pct: (num(h.percent) || 0) * 100 })),
     holders: num(r.holder_count) || undefined,
   };
 }
@@ -67,9 +73,10 @@ export function startGoPlus(store) {
     const json = await lim.run(() => getJSON(`${BASE}/${chainId}?contract_addresses=${t.mint}`));
     const r = json?.result?.[t.mint] || json?.result?.[t.mint.toLowerCase()];
     if (!r) return;
-    const { rug, audit, holders, creator } = goplusToReport(r);
+    const { rug, audit, holders, creator, topHolders } = goplusToReport(r);
     t.rug = rug;
     t.audit = audit;
+    if (topHolders.length) t.topHolders = topHolders;
     store.upsert(t.mint, { holders, creator: t.creator || creator }, NAME);
     store.setSource(NAME, 'ok', `OK · ${++okCount} raportów`);
   }

@@ -1,8 +1,8 @@
-import { computeHype } from './scoring.js?v=muu4nwbk';
-import { CURVE_DEXES, NON_MEME, NON_MEME_TAGS, PUMP_INITIAL_VTOKENS, PUMP_K, PUMP_TOKENS_FOR_SALE } from './constants.js?v=muu4nwbk';
-import { Emitter, clamp } from './util.js?v=muu4nwbk';
-import { change4h, freshCandles, sparkPoints } from './candles.js?v=muu4nwbk';
-import { EVM_BASE_ASSETS, EVM_NON_MEME_SYMBOLS, evmEligible, getChain, isAddressOn, normAddr } from './chains.js?v=muu4nwbk';
+import { computeHype } from './scoring.js?v=muu7qgut';
+import { CURVE_DEXES, NON_MEME, NON_MEME_TAGS, PUMP_INITIAL_VTOKENS, PUMP_K, PUMP_TOKENS_FOR_SALE } from './constants.js?v=muu7qgut';
+import { Emitter, clamp } from './util.js?v=muu7qgut';
+import { change4h, freshCandles, sparkPoints } from './candles.js?v=muu7qgut';
+import { EVM_BASE_ASSETS, EVM_NON_MEME_SYMBOLS, evmEligible, getChain, isAddressOn, normAddr } from './chains.js?v=muu7qgut';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -34,6 +34,33 @@ export function freshness(vol5, vol1h, vol6h, ageMs = Infinity) {
   if (accel < 0.35 && trend < 0.9) return 'dead';
   if (accel < 0.6) return 'cool';
   return 'flat';
+}
+
+/**
+ * Dev rating 0–100 from the creator's track record: their other tokens with market caps
+ * (RugCheck, Solana) or launch / graduation counts (Jupiter), and honeypots (GoPlus, EVM).
+ * Many launches that went nowhere pull it down; tokens that reached $30k / $100k+ push it up.
+ */
+export function devRating({ tokens, devMints, devMigrations, honeypots } = {}) {
+  if (honeypots > 0) return { score: 0, n: null, good: 0, best: null, honeypots };
+  const clampS = (v) => Math.max(0, Math.min(100, Math.round(v)));
+  const spam = (n) => (n > 3 ? Math.min(40, (n - 3) * 2) : 0);
+  // RugCheck lists at most ~50 of the creator's tokens: when Jupiter counts more launches, its
+  // launch / graduation numbers are the better picture.
+  if (Array.isArray(tokens) && !(devMints > tokens.length + 1)) {
+    const n = tokens.length;
+    if (!n) return { score: 70, n: 0, good: 0, ok: 0, best: null };
+    const good = tokens.filter((x) => x.mc >= 100_000).length;
+    const ok = tokens.filter((x) => x.mc >= 30_000).length;
+    const best = Math.max(...tokens.map((x) => x.mc || 0));
+    const quality = (good + (ok - good) * 0.4) / n;
+    return { score: clampS(50 + 50 * Math.min(1, quality * 3) - spam(n)), n, good, ok, best };
+  }
+  if (devMints > 0) {
+    const g = devMigrations || 0;
+    return { score: clampS(50 + 50 * Math.min(1, (g / devMints) * 3) - spam(devMints)), n: devMints, good: g, ok: g, best: null, migrations: true };
+  }
+  return null;
 }
 
 function blank(mint, now) {
@@ -562,6 +589,11 @@ export class Store extends Emitter {
       ins: r1(t.rug?.insidersPct ?? null),
       lpb: r1(t.rug?.lpBurnPct ?? null),
       dp: t.dexPaid ?? null,
+      cto: t.dsOrders ? t.dsOrders.some((o) => o.type === 'communityTakeover') : null,
+      ad: t.dsOrders ? t.dsOrders.some((o) => /ad$/i.test(o.type)) : null,
+      mad: t.audit?.mintAuthorityDisabled ?? t.audit?.evmMintOff ?? null, // mint authority off (EVM: not mintable)
+      fad: t.audit?.freezeAuthorityDisabled ?? t.audit?.evmFreezeOff ?? null, // freeze authority off (EVM: no pause / blacklist)
+      dr: devRating({ tokens: t.devTokens, devMints: t.audit?.devMints, devMigrations: t.audit?.devMigrations, honeypots: t.audit?.honeypotSameCreator })?.score ?? null,
       cr: t.creator || null,
       dm: t.audit?.devMints ?? null, // tokens the creator launched
       dmg: t.audit?.devMigrations ?? null, // …of which graduated
@@ -616,6 +648,12 @@ export class Store extends Emitter {
       insiders: t.rug?.insiders ?? null,
       lpBurnPct: t.rug?.lpBurnPct ?? null,
       dexPaid: t.dexPaid ?? null,
+      dsOrders: t.dsOrders || null, // paid DexScreener orders (profile / CTO / ads / boosts) with times
+      dev: devRating({ tokens: t.devTokens, devMints: t.audit?.devMints, devMigrations: t.audit?.devMigrations, honeypots: t.audit?.honeypotSameCreator }),
+      devTokens: t.devTokens ? [...t.devTokens].sort((a, b) => b.mc - a.mc).slice(0, 8) : null,
+      devInfo: t.devInfo || null, // EVM: GeckoTerminal developer address / holding
+      topHolders: t.topHolders || null, // top 10 holder wallets [{ a, pct }] (RugCheck / GoPlus)
+      launchedAt: t.createdAt || null,
       risk: t.hype.risk,
       market: t.hype.market,
       txns: t.txns,

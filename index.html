@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=muu4nwbk" />
+  <link rel="stylesheet" href="styles.css?v=muu7qgut" />
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -92,7 +92,24 @@
           <option value="0">dowolnie</option><option value="50">od 50%</option><option value="90">od 90%</option>
         </select>
       </label>
+      <label class="sel"><span>Top 10 do</span>
+        <select id="fTop10">
+          <option value="0">dowolnie</option><option value="20">20%</option><option value="30">30%</option><option value="50">50%</option>
+        </select>
+      </label>
+      <label class="sel"><span>Insiderzy do</span>
+        <select id="fIns">
+          <option value="0">dowolnie</option><option value="5">5%</option><option value="10">10%</option><option value="20">20%</option>
+        </select>
+      </label>
+      <label class="sel"><span>Holderzy od</span>
+        <select id="fHold">
+          <option value="0">dowolnie</option><option value="100">100</option><option value="500">500</option><option value="1000">1 000</option><option value="5000">5 000</option>
+        </select>
+      </label>
       <label class="toggle"><input type="checkbox" id="fPaid" /><i></i><span>Tylko DEX Paid</span></label>
+      <label class="toggle"><input type="checkbox" id="fAuth" /><i></i><span>Mint i freeze wyłączone</span></label>
+      <label class="toggle"><input type="checkbox" id="fSocial" /><i></i><span>Ma social</span></label>
       <label class="toggle"><input type="checkbox" id="fSafe" /><i></i><span>Ukryj ryzykowne</span></label>
       <label class="sel preset"><span>Presety</span>
         <select id="fPreset"></select>
@@ -134,6 +151,7 @@
           <button data-f="all" class="active">Wszystko</button>
           <button data-f="launch">✨ Launche</button>
           <button data-f="whale">🐋 Wieloryby</button>
+          <button data-f="wallet">👛 Portfele</button>
           <button data-f="migrate">🎓 Graduacje</button>
           <button data-f="spike">🔥 Skoki</button>
           <button data-f="surge">🚀 Wolumen</button>
@@ -181,6 +199,6 @@
     Dane: PumpPortal (on-chain), DexScreener, GeckoTerminal, Jupiter, RugCheck, GoPlus, X API. To nie jest porada inwestycyjna — memecoiny są skrajnie ryzykowne.
   </footer>
 
-  <script type="module" src="boot.js?v=muu4nwbk"></script>
+  <script type="module" src="boot.js?v=muu7qgut"></script>
 </body>
 </html>

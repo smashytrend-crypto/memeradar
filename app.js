@@ -46,6 +46,11 @@ const state = {
   wallet: { cash: 0, deposits: 0, tx: [], ...LS.get('wallet', {}) }, // demo wallet funding the demo positions
   quickBuy: LS.get('quickBuy', [50, 100, 250, 500]), // the viewer's quick-buy amounts in $
   fees: LS.get('fees', true) !== false, // demo trades pay realistic fees
+  wallets: ((w) => (Array.isArray(w) ? w.filter((x) => x && typeof x.a === 'string') : []))(LS.get('wallets', [])), // tracked wallets [{ a, name, emoji }]
+  candleTf: LS.get('candleTf', '5m'), // candle chart timeframe
+  calMonth: 0, // PnL calendar: months back from the current one
+  tr: null, // trades of the open token { m, list, at }
+  candles: null, // candles of the open token { key, list, at }
   nativeUsd: {}, // network -> native coin price in $ (for network / priority fees)
   presets: LS.get('presets', []), // saved filter sets [{ name, f }]
   feedFilter: 'all',
@@ -123,6 +128,15 @@ const fmt = {
   },
   short(a) {
     return a ? `${a.slice(0, 4)}…${a.slice(-4)}` : '';
+  },
+  /** Duration: 45 s, 4 min, 3 h, 2 dni. */
+  dur(ms) {
+    const s = Math.max(0, ms / 1000);
+    if (s < 60) return `${Math.round(s)} s`;
+    if (s < 3600) return `${Math.round(s / 60)} min`;
+    if (s < 86400) return `${Math.round(s / 3600)} h`;
+    const d = Math.round(s / 86400);
+    return `${d} ${d === 1 ? 'dzień' : 'dni'}`;
   },
 };
 const cls = (v) => (v == null || !Number.isFinite(v) || Math.abs(v) < 0.05 ? 'flat' : v > 0 ? 'up' : 'down');
@@ -522,6 +536,9 @@ function updateRow(entry, d, idx) {
   if (d.fz && FRESH[d.fz]) chips.push(`<span class="chip fz ${FRESH[d.fz][2]}" title="Hype teraz: ${FRESH[d.fz][1]}">${FRESH[d.fz][0]} ${FRESH[d.fz][1]}</span>`);
   const serial = creatorWarning(d);
   if (serial) chips.push(`<span class="chip warnc" title="${esc(serial.tip)}">${serial.short}</span>`);
+  if (d.cto) chips.push('<span class="chip cto" title="Community takeover — społeczność przejęła projekt (opłacone na DexScreenerze)">CTO</span>');
+  if (d.ad) chips.push('<span class="chip adc" title="Płatna reklama na DexScreenerze">📣 Ad</span>');
+  if (d.dr >= 80) chips.push(`<span class="chip gooddev" title="Ocena deva ${d.dr}/100 — jego wcześniejsze tokeny radziły sobie dobrze">⭐ dev ${d.dr}</span>`);
   if (d.vs >= 2) chips.push(`<span class="chip surge" title="Wolumen 5 min względem własnej średniej">🚀 ${d.vs.toFixed(1)}×</span>`);
   if (d.ai) chips.push(`<span class="chip ai" title="${esc(d.ai)}">🤖</span>`);
   if (d.bo) chips.push(`<span class="chip boost">⚡${d.bo}</span>`);
@@ -696,7 +713,7 @@ function emptyText() {
     return '<b>Brak wybić wolumenu w tej chwili</b>Pojawią się tu tokeny, których wolumen z 5 min jest co najmniej 2× wyższy niż ich średnia.';
   if (state.firstSnapshot) return '<b>Łączenie ze źródłami danych…</b>Pierwsze tokeny pojawią się w ciągu kilku sekund.';
   const f = state.filters;
-  if (f.minMcap || f.minLiq || f.maxAgeH || f.safe || f.maxDev || f.minLp || f.paid) return '<b>Nic nie pasuje do filtrów</b>Poluzuj filtry, aby zobaczyć więcej tokenów.';
+  if (f.minMcap || f.minLiq || f.maxAgeH || f.safe || f.maxDev || f.minLp || f.paid || f.maxTop10 || f.maxIns || f.minHolders || f.auth || f.social) return '<b>Nic nie pasuje do filtrów</b>Poluzuj filtry, aby zobaczyć więcej tokenów.';
   if (state.hidden.size || state.blocked.size) return '<b>Brak tokenów do pokazania</b>Część tokenów jest ukryta lub zablokowana — sprawdź listę ukrytych.';
   return '<b>Zbieram dane…</b>Radar potrzebuje chwili, aby zebrać aktywność z rynku.';
 }
@@ -734,13 +751,20 @@ function viewerFilter(rows, view) {
       !(r.cr && state.blocked.has(r.cr)) &&
       !(f.maxDev && r.dv != null && r.dv > f.maxDev) &&
       !(f.minLp && r.lpb != null && r.lpb < f.minLp) &&
-      !(f.paid && r.dp !== true),
+      !(f.paid && r.dp !== true) &&
+      !(f.maxTop10 && r.t10 != null && r.t10 > f.maxTop10) &&
+      !(f.maxIns && r.ins != null && r.ins > f.maxIns) &&
+      !(f.minHolders && !(r.h >= f.minHolders)) &&
+      // Safety switches need the facts: unknown counts as not passing.
+      !(f.auth && !(r.mad === true && r.fad === true)) &&
+      !(f.social && !(r.tw || r.tg || r.web)),
   );
 }
 
 function applySnapshot(snap) {
   applyMode(snap.stats);
-  $('#feedChips [data-f="whale"]').hidden = !snap.stats.liveTrades;
+  // Whales come from the trades of watched tokens / positions / the open token (GeckoTerminal).
+  $('#feedChips [data-f="whale"]').hidden = !snap.stats.liveTrades && !ENGINE;
   snap.rows = viewerFilter(snap.rows, snap.view);
   if (snap.view === 'hype') state.hypeRows = snap.rows;
   if (snap.stats.solPrice > 0) state.nativeUsd[ENGINE?.chain || 'solana'] = snap.stats.solPrice;
@@ -788,7 +812,8 @@ function connect() {
       if (state.view !== 'hype') state.hypeRows = viewerFilter(ENGINE.snapshot('hype', filters, 100).rows, 'hype');
       // Demo positions on this network stay loaded even when off the list.
       const posHere = Object.keys(state.positions).filter((m) => (state.positions[m].chain || 'solana') === ENGINE.chain);
-      if (posHere.length) ENGINE.track(posHere);
+      // …and with the watched ones, their trades feed the whale / tracked-wallet alerts.
+      ENGINE.track([...new Set([...posHere, ...watchedHere()])]);
       applySnapshot(ENGINE.snapshot(state.view, filters, 100, state.view === 'watch' ? watchedHere() : []));
       if (sheetOpen('pos') && !sheetBusy()) renderPositions();
       if (sheetOpen('wallet') && !sheetBusy()) renderWallet();
@@ -859,6 +884,8 @@ const plTokens = (n) => pl(n, 'token', 'tokeny', 'tokenów');
 /** Warning for a creator with a bad track record (serial launcher / honeypot deployer), or null. */
 function creatorWarning(d) {
   if (d.dhp > 0) return { short: '☠️ twórca honeypotów', tip: `Ten twórca wdrożył już ${d.dhp} honeypot(y) (GoPlus)` };
+  if (d.dr != null && d.dr < 25 && !(d.dm >= 20))
+    return { short: '🧑‍🍳 seryjny twórca', tip: `Ocena deva ${d.dr}/100 — wiele tokenów, które do niczego nie doszły` };
   if (d.dm >= 20 && (d.dmg || 0) / d.dm < 0.05)
     return { short: '🧑‍🍳 seryjny twórca', tip: `Twórca stworzył ${fmt.n(d.dm)} tokenów, graduację przeszło ${fmt.n(d.dmg || 0)}` };
   return null;
@@ -957,7 +984,7 @@ function savePosition(mint, price, usd, mc, d = {}, fee = 0) {
   }
   // Funded from the demo wallet: the stake leaves the balance now and returns (with P&L) on close.
   state.wallet.cash -= usd;
-  walletTx('open', usd, { n: d.n || '', s: d.s || '', ...(fee > 0 ? { fee } : {}) });
+  walletTx('open', usd, { m: mint, n: d.n || '', s: d.s || '', p: price, ...(fee > 0 ? { fee } : {}) });
   saveWallet();
   if (prev && prev.p > 0 && prev.usd > 0) {
     // Buying more: one position with the average entry (weighted by tokens bought).
@@ -1007,7 +1034,7 @@ function sellPosition(mint, fraction, price, extra = {}) {
   // Wallet-funded positions pay it back into the demo balance.
   if (p.w && part > 0) {
     state.wallet.cash += back;
-    walletTx('close', back, { n: p.n, s: p.s, pnl: back - part, f, ...(fee > 0 ? { fee } : {}) });
+    walletTx('close', back, { m: mint, n: p.n, s: p.s, pnl: back - part, f, p: exit, ...(fee > 0 ? { fee } : {}) });
     saveWallet();
   }
   if (exit > 0 && p.p > 0) {
@@ -1356,7 +1383,7 @@ function renderPositions() {
             </div>
             ${x.p.usd > 0 ? sellRow('data-pos-sell') : '<div class="qs-row"><button data-pos-sell="100">✖ Zamknij</button></div>'}
             ${exitRows(x.p, 'data-pos-exit')}
-            <div class="pos-acts"><button data-pos-open>Otwórz token</button></div>
+            <div class="pos-acts"><button data-pos-open>Otwórz token</button>${x.pct != null ? '<button data-pos-share>📸 Karta PnL</button>' : ''}</div>
           </div>`;
         })
         .join('')
@@ -1364,10 +1391,10 @@ function renderPositions() {
   const recent = state.closed.filter((c) => Date.now() - c.closedAt < 30 * 86400e3).slice(0, 20);
   const history = recent.length
     ? `<h3 class="pos-h">Zamknięte (30 dni)</h3><div class="pos-closed">${recent
-        .map((c) => `<div><span>${esc(c.n || fmt.short(c.m))} <small>${c.sl ? '🛑 SL · ' : c.tp ? '🎯 TP · ' : c.be ? '🛡️ BE · ' : c.safe ? '🔒 SAFE · ' : ''}$${esc(c.s || '?')}${c.f && c.f < 1 ? ` · ${Math.round(c.f * 100)}%` : ''} · ${fmt.ago(c.closedAt)}</small></span><b class="${c.pct >= 0 ? 'up' : 'down'}">${fmt.pct(c.pct)}${c.usd > 0 ? ` · ${money(c.pnl)}` : ''}</b></div>`)
+        .map((c) => `<div><span>${esc(c.n || fmt.short(c.m))} <small>${c.sl ? '🛑 SL · ' : c.tp ? '🎯 TP · ' : c.be ? '🛡️ BE · ' : c.safe ? '🔒 SAFE · ' : ''}$${esc(c.s || '?')}${c.f && c.f < 1 ? ` · ${Math.round(c.f * 100)}%` : ''} · ${fmt.ago(c.closedAt)}</small></span><b class="${c.pct >= 0 ? 'up' : 'down'}">${fmt.pct(c.pct)}${c.usd > 0 ? ` · ${money(c.pnl)}` : ''}</b><button class="share-mini" data-share-closed="${esc(c.m)}|${c.closedAt}" aria-label="Karta PnL">📸</button></div>`)
         .join('')}</div>`
     : '';
-  const html = summary + `<h3 class="pos-h">Otwarte (${list.length})</h3>` + cards + history;
+  const html = summary + `<h3 class="pos-h">Otwarte (${list.length})</h3>` + cards + history + pnlCalendar();
   if (body.dataset.html !== html) {
     body.dataset.html = html;
     body.innerHTML = html;
@@ -1415,7 +1442,7 @@ function renderWallet() {
     </div>`;
   const body = $('#walletBody');
   if (!body.querySelector('#wCard')) {
-    body.innerHTML = `<div id="wCard"></div>${form}<div id="wFees"></div><div id="wHist"></div>
+    body.innerHTML = `<div id="wCard"></div>${form}<div id="wFees"></div><div id="wTrack"></div><div id="wHist"></div>
       <div class="d-acts" style="margin-top:16px"><button data-wallet="reset">♻️ Wyzeruj wallet DEMO</button></div>`;
   }
   const put = (id, html) => {
@@ -1427,6 +1454,7 @@ function renderWallet() {
   };
   put('#wCard', card);
   put('#wFees', feesCard);
+  put('#wTrack', walletTrackerCard());
   put('#wHist', hist);
 }
 
@@ -1606,7 +1634,7 @@ function setView(view) {
 }
 
 // ---------- feed ----------
-const FEED_IC = { launch: '✨', whale: '🐋', migrate: '🎓', spike: '🔥', x: '𝕏', surge: '🚀', ai: '🤖' };
+const FEED_IC = { launch: '✨', whale: '🐋', wallet: '👛', migrate: '🎓', spike: '🔥', x: '𝕏', surge: '🚀', ai: '🤖' };
 function feedItem(it) {
   return `<li class="fi ${it.type}" data-m="${it.mint}"><span class="fi-ic">${FEED_IC[it.type] || '•'}</span>
     <div class="fi-t">${esc(it.text)}<small data-at="${it.at}">${fmt.ago(it.at)} temu</small></div></li>`;
@@ -1721,7 +1749,9 @@ let detailTimer;
 async function openDetail(mint, push = true) {
   state.selected = mint;
   state.detail = null;
-  state.chartTab = STATIC ? 'hype' : 'dex';
+  state.chartTab = STATIC ? 'hype' : LS.get('chartTab', 'dex');
+  state.tr = null;
+  state.candles = null;
   state.detailLayout = null;
   $('#drawer').classList.add('open');
   $('#drawer').setAttribute('aria-hidden', 'false');
@@ -1768,6 +1798,7 @@ async function loadDetail(mint) {
       return;
     }
     state.detail = d;
+    loadTrades(mint);
     // A finger on the drawer: wait, so a live re-render doesn't swallow the tap (iOS).
     if (Date.now() < drawerTouch) return;
     renderDetail(d);
@@ -1955,6 +1986,7 @@ function renderDetail(d) {
   const holdersCard = `<div class="card"><h3>Struktura holderów <small>jak w Axiom</small></h3>
     <div class="hstats">${hstats.map(([k, v, tip]) => `<div title="${esc(tip)}"><span>${k}</span>${v}</div>`).join('')}</div>
     <div class="creator ${cw ? 'bad' : ''}">🧑‍🍳 Twórca ${creatorLink} · ${history}${cw ? ` <span class="chip warnc">${cw.short}</span>` : ''}</div>
+    ${devSection(d)}
     <div class="d-acts">
       <button data-act="hide">🙈 Ukryj token</button>
       ${d.creator ? '<button data-act="block">⛔ Blokuj twórcę</button>' : ''}
@@ -2020,11 +2052,11 @@ function renderDetail(d) {
           <div><span>Zaangażowanie</span><b>${fmt.n(x.engagement)}</b></div>
           <div><span>Zasięg (obs.)</span><b>${fmt.n(x.reach)}</b></div></div>` : ''}
         <div class="tweets">${tweets}</div></div>`,
-    trades: `<div class="card"><h3>Transakcje na żywo <small>strumień on-chain</small></h3>${trades}</div>`,
+    trades: ENGINE ? tradesSection(d) : `<div class="card"><h3>Transakcje na żywo <small>strumień on-chain</small></h3>${trades}</div>`,
     desc: d.description ? `<div class="card"><h3>Opis</h3><p class="desc">${esc(d.description)}</p></div>` : '',
   };
 
-  const chartTabs = `${hasPair ? `<button data-chart="dex" class="${chartTab === 'dex' ? 'active' : ''}">Cena (DexScreener)</button>` : ''}
+  const chartTabs = `${hasPair ? `<button data-chart="dex" class="${chartTab === 'dex' ? 'active' : ''}">DexScreener</button>` : ''}${hasPair && ENGINE?.candles ? `<button data-chart="candles" class="${chartTab === 'candles' ? 'active' : ''}">Świece DMN</button>` : ''}
         <button data-chart="hype" class="${chartTab === 'hype' ? 'active' : ''}">Hype i cena (radar)</button>`;
   const layoutKey = d.m;
   if (state.detailLayout !== layoutKey) {
@@ -2069,11 +2101,19 @@ function renderDetail(d) {
     // and lose the text); it updates once the field loses focus.
     if (el && active && active.matches?.('input, textarea, select') && el.contains(active)) continue;
     state.detailHtml[k] = html;
-    if (el) el.innerHTML = html;
+    if (el) {
+      // Inner scroll boxes (trades tables) keep their position across the refresh.
+      const keep = [...el.querySelectorAll('.tr-wrap')].map((w) => w.scrollTop);
+      el.innerHTML = html;
+      el.querySelectorAll('.tr-wrap').forEach((w, i) => {
+        if (keep[i]) w.scrollTop = keep[i];
+      });
+    }
   }
   // Our own hype/price chart redraws only when a new history point arrives; the DexScreener
   // iframe is left alone and updates itself.
   if (chartTab === 'hype') renderChart(d, 'hype');
+  else if (chartTab === 'candles') renderChart(d, 'candles');
   $('#drawer').scrollTop = scroll;
 }
 
@@ -2130,6 +2170,11 @@ async function requestAnalysis(mint) {
 function renderChart(d, tab) {
   const box = $('#chartBox');
   if (!box) return;
+  if (tab === 'candles' && d.pair) {
+    drawCandles(d);
+    loadCandles(d);
+    return;
+  }
   if (tab === 'dex' && d.pair) {
     const src = `https://dexscreener.com/${chainCfg().dex}/${d.pair}?embed=1&loadChartSettings=0&trades=0&tabs=0&info=0&chartLeftToolbar=0&chartTheme=dark&theme=dark&chartStyle=1&chartType=usd&interval=5`;
     // Keep the iframe alive across detail refreshes.
@@ -2234,14 +2279,19 @@ bindFilter('#fSafe', 'safe');
 bindFilter('#fDev', 'maxDev');
 bindFilter('#fLp', 'minLp');
 bindFilter('#fPaid', 'paid');
+bindFilter('#fTop10', 'maxTop10');
+bindFilter('#fIns', 'maxIns');
+bindFilter('#fHold', 'minHolders');
+bindFilter('#fAuth', 'auth');
+bindFilter('#fSocial', 'social');
 
 // ---------- filter presets ----------
 const BUILTIN_PRESETS = [
-  { name: '🛡 Bezpieczne', f: { maxDev: 5, minLp: 90, paid: true, safe: true } },
+  { name: '🛡 Bezpieczne', f: { maxDev: 5, minLp: 90, paid: true, safe: true, auth: true, maxTop10: 30 } },
   { name: '🌱 Świeże (do 6 h)', f: { maxAgeH: 6, minMcap: 10000 } },
   { name: '🐳 Duże (MC od $1M)', f: { minMcap: 1000000, minLiq: 50000 } },
 ];
-const EMPTY_FILTERS = { minMcap: 0, minLiq: 0, maxAgeH: 0, safe: false, maxDev: 0, minLp: 0, paid: false };
+const EMPTY_FILTERS = { minMcap: 0, minLiq: 0, maxAgeH: 0, safe: false, maxDev: 0, minLp: 0, paid: false, maxTop10: 0, maxIns: 0, minHolders: 0, auth: false, social: false };
 
 function renderPresets() {
   const opts = [
@@ -2258,9 +2308,8 @@ function renderPresets() {
 function applyFilters(f) {
   state.filters = { ...EMPTY_FILTERS, ...f };
   LS.set('filters', state.filters);
-  for (const [id, key] of [['#fMcap', 'minMcap'], ['#fLiq', 'minLiq'], ['#fAge', 'maxAgeH'], ['#fDev', 'maxDev'], ['#fLp', 'minLp']]) $(id).value = String(state.filters[key] || 0);
-  $('#fSafe').checked = !!state.filters.safe;
-  $('#fPaid').checked = !!state.filters.paid;
+  for (const [id, key] of [['#fMcap', 'minMcap'], ['#fLiq', 'minLiq'], ['#fAge', 'maxAgeH'], ['#fDev', 'maxDev'], ['#fLp', 'minLp'], ['#fTop10', 'maxTop10'], ['#fIns', 'maxIns'], ['#fHold', 'minHolders']]) $(id).value = String(state.filters[key] || 0);
+  for (const [id, key] of [['#fSafe', 'safe'], ['#fPaid', 'paid'], ['#fAuth', 'auth'], ['#fSocial', 'social']]) $(id).checked = !!state.filters[key];
   connect();
 }
 
@@ -2424,9 +2473,21 @@ $('#drawer').addEventListener('click', (e) => {
     toast(`${f >= 1 ? 'Pozycja DEMO zamknięta' : `Sprzedano ${Math.round(f * 100)}% pozycji DEMO`}${feeNote(fee)}`);
     if (state.detail) renderDetail(state.detail);
   }
+  const tfb = e.target.closest('[data-tf]');
+  if (tfb && state.detail) {
+    state.candleTf = tfb.dataset.tf;
+    LS.set('candleTf', state.candleTf);
+    renderChart(state.detail, 'candles');
+  }
+  const tw = e.target.closest('[data-track-wallet]');
+  if (tw) {
+    askTrackWallet(tw.dataset.trackWallet);
+    if (state.detail) renderDetail(state.detail);
+  }
   const chart = e.target.closest('[data-chart]');
   if (chart && state.detail) {
     state.chartTab = chart.dataset.chart;
+    LS.set('chartTab', state.chartTab);
     $$('[data-chart]').forEach((b) => b.classList.toggle('active', b === chart));
     $('#chartBox').innerHTML = '';
     renderChart(state.detail, state.chartTab);
@@ -2542,6 +2603,18 @@ $('#walletSheet').addEventListener('change', (e) => {
 });
 $('#walletSheet').addEventListener('click', (e) => {
   if (e.target.closest('[data-sheet-close]')) return closeSheets();
+  if (e.target.closest('[data-wt-add]')) {
+    const a = $('#wtAddr')?.value || '';
+    trackWallet(a, $('#wtName')?.value || '', $('#wtEmoji')?.value || '👛');
+    if (walletOf(a)) renderWallet();
+    return;
+  }
+  const del = e.target.closest('[data-wt-del]');
+  if (del) {
+    untrackWallet(del.dataset.wtDel);
+    toast('Przestałem śledzić portfel');
+    return renderWallet();
+  }
   const quick = e.target.closest('[data-wallet-amt]');
   const act = e.target.closest('[data-wallet]')?.dataset.wallet;
   if (quick || act === 'topup') {
@@ -2569,9 +2642,46 @@ $('#walletSheet').addEventListener('click', (e) => {
 $('#posSheet').addEventListener('click', (e) => {
   if (e.target.closest('[data-sheet-close]')) return closeSheets();
   if (e.target.closest('[data-sheet-wallet]')) return openSheet('wallet');
+  const cal = e.target.closest('[data-cal]');
+  if (cal) {
+    state.calMonth = Math.max(0, Math.min(24, state.calMonth + Number(cal.dataset.cal)));
+    return renderPositions();
+  }
+  const sc = e.target.closest('[data-share-closed]');
+  if (sc) {
+    const [m, at] = sc.dataset.shareClosed.split('|');
+    const c = state.closed.find((x) => x.m === m && String(x.closedAt) === at);
+    if (!c) return;
+    const ch = ENGINE?.chains?.[c.chain || 'solana'];
+    return sharePnlCard({
+      sym: c.s, name: c.n, pct: c.pct, pnl: c.usd > 0 ? c.pnl : null,
+      sub: `${ch ? ch.name : ''}${c.sl ? ' · Stop loss' : c.tp ? ' · Take profit' : c.safe ? ' · SAFE' : c.be ? ' · Break even' : ''}`,
+      rows: [
+        ['Wkład', c.usd > 0 ? fmt.usd(c.usd) : '—'],
+        ['Sprzedano', c.f && c.f < 1 ? `${Math.round(c.f * 100)}% pozycji` : 'całość'],
+        ['Czas trzymania', c.openedAt ? fmt.dur(c.closedAt - c.openedAt) : '—'],
+        ['Opłaty', c.fee > 0 ? feeUsd(c.fee) : '—'],
+      ],
+    });
+  }
   const card = e.target.closest('[data-pos]');
   if (!card) return;
   const mint = card.dataset.pos;
+  if (e.target.closest('[data-pos-share]')) {
+    const x = positionList().find((p) => p.m === mint);
+    if (!x || x.pct == null) return;
+    const ch = ENGINE?.chains?.[x.p.chain || 'solana'];
+    return sharePnlCard({
+      sym: x.p.s, name: x.p.n, pct: x.pct, pnl: x.pnl,
+      sub: `${ch ? ch.name : ''} · pozycja otwarta`,
+      rows: [
+        ['MC wejścia', fmt.usd(x.mcIn)],
+        ['MC teraz', fmt.usd(x.mcNow)],
+        ['Wkład → wartość', x.p.usd > 0 ? `${fmt.usd(x.p.usd)} → ${fmt.usd(x.value)}` : '—'],
+        ['Czas trzymania', fmt.dur(Date.now() - x.p.t)],
+      ],
+    });
+  }
   const exBtn = e.target.closest('[data-pos-exit]');
   if (exBtn) {
     exitClick(mint, exBtn.dataset.posExit);
@@ -2603,6 +2713,7 @@ setInterval(() => {
 
 // ---------- boot ----------
 renderChains();
+ENGINE?.setWallets?.(state.wallets);
 renderWatchCount();
 renderPosCount();
 $('#chains').addEventListener('click', (e) => {
@@ -2622,6 +2733,510 @@ if (STATIC) {
   document.body.classList.add('static');
 }
 connect();
+// ---------- tracked wallets ----------
+const normWallet = (a) => {
+  if (typeof a !== 'string') return '';
+  const s = a.trim();
+  return s.startsWith('0x') ? s.toLowerCase() : s;
+};
+function walletOf(a) {
+  const k = normWallet(a);
+  return k ? state.wallets.find((w) => normWallet(w.a) === k) || null : null;
+}
+function saveWallets() {
+  LS.set('wallets', state.wallets);
+  ENGINE?.setWallets(state.wallets);
+}
+function trackWallet(a, name, emoji = '👛') {
+  const addr = normWallet(a);
+  if (!/^0x[0-9a-fA-F]{40}$/.test(addr) && !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(addr)) return toast('To nie wygląda na adres portfela');
+  const label = String(name || '').trim().slice(0, 24) || fmt.short(addr);
+  const prev = walletOf(addr);
+  if (prev) Object.assign(prev, { name: label, emoji });
+  else state.wallets.push({ a: addr, name: label, emoji, t: Date.now() });
+  saveWallets();
+  toast(`${emoji} Śledzę portfel: ${label}`);
+}
+function untrackWallet(a) {
+  const k = normWallet(a);
+  state.wallets = state.wallets.filter((w) => normWallet(w.a) !== k);
+  saveWallets();
+}
+/** Wallet cell: tracked label, DEV tag, or the short address (tap to track). */
+function walletCell(a, creator) {
+  const w = walletOf(a);
+  const dev = creator && normWallet(creator) === normWallet(a);
+  return `<button class="wal${w ? ' tracked' : ''}" data-track-wallet="${esc(a)}" title="${w ? 'Śledzony portfel' : 'Dotknij, aby śledzić ten portfel'}">${w ? `${esc(w.emoji || '👛')} ${esc(w.name)}` : esc(fmt.short(a))}${dev ? ' <i class="devtag">DEV</i>' : ''}</button>`;
+}
+const WALLET_EMOJI = ['👛', '🐋', '🧠', '🎯', '🔥', '👑', '🤖', '🐸', '💎', '⚠️'];
+function askTrackWallet(a) {
+  const w = walletOf(a);
+  const name = prompt(`${w ? 'Zmień nazwę' : 'Nazwa dla portfela'} ${fmt.short(a)} (puste = przestań śledzić):`, w?.name || '');
+  if (name == null) return;
+  if (!name.trim()) {
+    if (w) {
+      untrackWallet(a);
+      toast('Przestałem śledzić portfel');
+    }
+    return;
+  }
+  trackWallet(a, name, w?.emoji || '👛');
+}
+
+// ---------- live trades / top traders (open token) ----------
+const WHALE_USD_UI = { solana: 1000, bsc: 1000, base: 1000, robinhood: 500, ethereum: 5000 };
+let tradesBusy = false;
+/** Loads the open token's latest trades (the engine caches them for 25 s). */
+async function loadTrades(mint) {
+  if (!ENGINE?.trades || tradesBusy) return;
+  if (state.tr?.m === mint && Date.now() - state.tr.at < 25_000) return;
+  tradesBusy = true;
+  try {
+    const list = await ENGINE.trades(mint);
+    if (state.selected !== mint) return;
+    state.tr = { m: mint, list: list || [], at: Date.now(), none: list == null };
+    if (state.detail && Date.now() >= drawerTouch) renderDetail(state.detail);
+  } catch {
+    // Keep what we had and wait the usual 25 s before trying again.
+    if (state.selected === mint) state.tr = { m: mint, list: state.tr?.m === mint ? state.tr.list : [], at: Date.now(), err: true };
+  } finally {
+    tradesBusy = false;
+  }
+}
+
+/** Per-wallet summary of the trades: bought / sold $, result, still holding, what they're doing. */
+function topTraders(list, price) {
+  const by = new Map();
+  for (const t of [...list].sort((a, b) => a.t - b.t)) {
+    if (!t.wallet) continue;
+    let o = by.get(t.wallet);
+    if (!o) by.set(t.wallet, (o = { w: t.wallet, bUsd: 0, sUsd: 0, bAmt: 0, sAmt: 0, b: 0, s: 0, seq: [] }));
+    if (t.side === 'buy') {
+      o.bUsd += t.usd;
+      o.bAmt += t.amount;
+      o.b++;
+    } else {
+      o.sUsd += t.usd;
+      o.sAmt += t.amount;
+      o.s++;
+    }
+    o.seq.push(t.side);
+  }
+  return [...by.values()]
+    .map((o) => {
+      const held = Math.max(0, o.bAmt - o.sAmt);
+      // Only sells of tokens bought in the window count; with no buys in it the result is unknown.
+      const sRatio = o.sAmt > o.bAmt ? (o.bAmt > 0 ? o.bAmt / o.sAmt : 0) : 1;
+      const pnl = o.b ? o.sUsd * sRatio + (price > 0 ? held * price : 0) - o.bUsd : null;
+      const last3 = o.seq.slice(-3);
+      const state_ =
+        o.b && !o.s ? (o.b >= 3 && last3.every((x) => x === 'buy') ? 'dokupuje' : 'trzyma')
+        : o.s && held <= o.bAmt * 0.02 ? (o.b ? 'sprzedał' : 'sprzedaje')
+        : last3[last3.length - 1] === 'sell' ? 'sprzedaje'
+        : 'trzyma';
+      return { ...o, held, pnl, vol: o.bUsd + o.sUsd, status: state_ };
+    })
+    .sort((a, b) => b.vol - a.vol)
+    .slice(0, 12);
+}
+
+function tradesSection(d) {
+  const tr = state.tr?.m === d.m ? state.tr : null;
+  if (!ENGINE?.trades) return '<div class="card"><h3>Transakcje na żywo</h3><p class="note">Dostępne w wersji przeglądarkowej.</p></div>';
+  if (!d.pair) return '<div class="card"><h3>Transakcje na żywo</h3><p class="note">Token nie ma jeszcze puli DEX — transakcje pojawią się po graduacji.</p></div>';
+  if (!tr) return '<div class="card"><h3>Transakcje na żywo</h3><p class="note">Ładowanie transakcji…</p></div>';
+  if (!tr.list.length) return `<div class="card"><h3>Transakcje na żywo</h3><p class="note">${tr.err ? 'Nie udało się pobrać transakcji (limit darmowego API) — spróbuję za chwilę.' : 'Brak transakcji w tej puli.'}</p></div>`;
+  const whale = WHALE_USD_UI[ENGINE.chain] || 1000;
+  const rows = tr.list
+    .slice(0, 30)
+    .map((t) => `<tr class="${t.usd >= whale ? 'whale' : ''}"><td class="side ${t.side === 'buy' ? 'up' : 'down'}">${t.side === 'buy' ? 'Kupno' : 'Sprzedaż'}</td><td class="mono">${t.usd >= whale ? '🐋 ' : ''}${fmt.usd(t.usd)}</td><td>${walletCell(t.wallet, d.creator)}</td><td class="mono muted">${fmt.ago(t.t)}</td></tr>`)
+    .join('');
+  const buys = tr.list.filter((t) => t.side === 'buy');
+  const bUsd = buys.reduce((a, t) => a + t.usd, 0);
+  const sUsd = tr.list.reduce((a, t) => a + (t.side === 'sell' ? t.usd : 0), 0);
+  const span = tr.list.length > 1 ? tr.list[0].t - tr.list[tr.list.length - 1].t : 0;
+  const top = topTraders(tr.list, d.p);
+  const STATUS = { dokupuje: 'up', trzyma: '', sprzedaje: 'down', sprzedał: 'muted' };
+  const topRows = top
+    .map((o) => `<tr><td>${walletCell(o.w, d.creator)}</td><td class="mono tt-vol"><span class="up">↑ ${fmt.usd(o.bUsd)}</span><span class="down">↓ ${fmt.usd(o.sUsd)}</span></td><td class="mono tt-res">${o.pnl == null ? '<b class="muted" title="Kupił przed widocznymi transakcjami">?</b>' : `<b class="${o.pnl >= 0 ? 'up' : 'down'}">${o.pnl >= 0 ? '+' : '−'}${fmt.usd(Math.abs(o.pnl))}</b>`}<small class="${STATUS[o.status]}">${o.status}</small></td></tr>`)
+    .join('');
+  return `<div class="card"><h3>Transakcje na żywo <small>${tr.list.length} ostatnich · ${span ? fmt.dur(span) : ''}</small></h3>
+      <div class="tr-sum"><span class="up">Kupno ${fmt.usd(bUsd)}</span><span class="down">Sprzedaż ${fmt.usd(sUsd)}</span><span>${new Set(buys.map((t) => t.wallet)).size} kupujących</span></div>
+      <div class="tr-wrap"><table class="trades">${rows}</table></div>
+      <p class="note">🐋 = transakcja od ${fmt.usd(whale)}. Dotknij portfela, aby go śledzić (alerty w „Na żywo” → 👛 Portfele).</p></div>
+    <div class="card"><h3>Top traderzy <small>z ostatnich ${tr.list.length} transakcji</small></h3>
+      <div class="tr-wrap"><table class="trades top"><tr class="th"><td>Portfel</td><td>Kupił / sprzedał</td><td>Wynik</td></tr>${topRows}</table></div>
+      <p class="note">Wynik = sprzedaż + wartość tego, co jeszcze trzyma, minus zakupy — tylko z widocznych transakcji (starsze nie są liczone).</p></div>`;
+}
+
+// ---------- dev rating / DexScreener orders (token window) ----------
+function devSection(d) {
+  const r = d.dev;
+  const lines = [];
+  if (r) {
+    const c = r.score >= 70 ? 'up' : r.score >= 40 ? 'warn' : 'down';
+    const what = r.honeypots
+      ? `wdrożył już ${r.honeypots} honeypot(y)`
+      : r.n === 0
+        ? 'pierwszy token tego deva'
+        : r.migrations
+          ? `${fmt.n(r.n)} ${plTokens(r.n)}, graduację przeszło ${fmt.n(r.good)}`
+          : `${fmt.n(r.n)} ${plTokens(r.n)} wcześniej · ${r.good} powyżej $100k${r.ok > r.good ? ` · ${r.ok - r.good} powyżej $30k` : ''}${r.best ? ` · najlepszy ${fmt.usd(r.best)}` : ''}`;
+    lines.push(`<div class="dev-score"><b class="${c}">${r.score}</b><span>/100</span><div><b>Ocena deva</b><small>${what}</small></div><i class="dev-bar"><i class="${c}" style="width:${r.score}%"></i></i></div>`);
+  }
+  if (d.devTokens?.length)
+    lines.push(`<div class="dev-tokens">${d.devTokens.map((x) => `<span class="chip ${x.mc >= 100000 ? 'up' : x.mc >= 30000 ? 'warn' : ''}" title="${esc(x.mint)}">${fmt.usd(x.mc)}${x.at ? ` · ${fmt.ago(x.at)}` : ''}</span>`).join('')}</div>`);
+  if (d.devInfo?.dev) lines.push(`<p class="note">Deployer (GeckoTerminal): ${walletCell(d.devInfo.dev, d.creator)}${d.devInfo.devPct != null ? ` · trzyma ${d.devInfo.devPct.toFixed(1)}%` : ''}</p>`);
+  const tw = d.creator && walletOf(d.creator);
+  if (tw) lines.push(`<p class="note"><b>${esc(tw.emoji || '👛')} Twórca to śledzony portfel: ${esc(tw.name)}</b></p>`);
+  // Paid DexScreener orders with timing relative to the launch.
+  const ORDER = { tokenProfile: '✅ DEX paid', communityTakeover: '🤝 CTO', tokenAd: '📣 Reklama', trendingBarAd: '📣 Pasek trendów', boost: '⚡ Boost' };
+  const os = (d.dsOrders || []).filter((o) => ORDER[o.type]);
+  if (os.length) {
+    const since = (at) => (d.launchedAt && at > d.launchedAt ? ` · ${fmt.dur(at - d.launchedAt)} po starcie` : '');
+    lines.push(`<div class="orders">${os.map((o) => `<span class="chip ${o.type === 'communityTakeover' ? 'cto' : ''}" title="${o.at ? new Date(o.at).toLocaleString('pl-PL') : ''}">${ORDER[o.type]}${o.amount ? ` ${o.amount}` : ''}${o.at ? `${since(o.at)}` : ''}</span>`).join('')}</div>`);
+  }
+  return lines.join('');
+}
+
+// ---------- candle chart ----------
+const TF_LIST = ['1m', '5m', '15m', '1h', '4h'];
+let candlesBusy = null; // key of the load in flight
+async function loadCandles(d) {
+  const tf = state.candleTf;
+  const key = `${d.m}|${tf}`;
+  if (candlesBusy || !ENGINE?.candles) return;
+  if (state.candles?.key === key && Date.now() - state.candles.at < 50_000) return;
+  candlesBusy = key;
+  const wanted = () => key === `${state.selected}|${state.candleTf}`;
+  try {
+    const list = await ENGINE.candles(d.m, tf);
+    if (wanted()) state.candles = { key, list: list || [], at: Date.now() };
+  } catch (e) {
+    if (wanted())
+      state.candles = e?.status === 404 ? { key, list: [], at: Date.now() } : { key, list: state.candles?.key === key ? state.candles.list : [], at: Date.now() - 35_000, err: true };
+  } finally {
+    candlesBusy = null;
+  }
+  if (state.chartTab !== 'candles' || !state.detail || state.selected !== state.detail.m) return;
+  // The timeframe or token changed while loading: load what is wanted now.
+  if (!wanted()) return loadCandles(state.detail);
+  drawCandles(state.detail);
+}
+
+/** The viewer's demo buys / sells of this token: [{ t, side, p }]. */
+function myTrades(m) {
+  return state.wallet.tx.filter((t) => t.m === m && (t.type === 'open' || t.type === 'close') && t.p > 0).map((t) => ({ t: t.t, side: t.type === 'open' ? 'buy' : 'sell', p: t.p }));
+}
+
+/**
+ * Price levels for the chart: the viewer's buy level (open position's entry, else the average of
+ * their recent buys), their sell level (average of recent sells) and the top 10 holders' average
+ * entry — from their buys among the latest trades (Axiom shows the same line); without enough of
+ * them, the 10 biggest buyers in those trades.
+ */
+function chartLevels(d, mine, tr) {
+  const out = {};
+  const recent = mine.filter((t) => Date.now() - t.t < 7 * 86400e3);
+  const pos = posHere(d.m);
+  const buys = recent.filter((t) => t.side === 'buy');
+  const sells = recent.filter((t) => t.side === 'sell');
+  if (pos?.p > 0) {
+    out.buy = pos.p;
+    out.buyN = buys.filter((t) => t.t >= pos.t).length || 1;
+  } else if (buys.length) {
+    out.buy = buys.reduce((a, t) => a + t.p, 0) / buys.length;
+    out.buyN = buys.length;
+  }
+  if (sells.length) {
+    out.sell = sells.reduce((a, t) => a + t.p, 0) / sells.length;
+    out.sellN = sells.length;
+  }
+  // Volume-weighted average buy price of a set of wallets.
+  const avgBuy = (pred) => {
+    let usd = 0;
+    let amt = 0;
+    const who = new Set();
+    for (const t of tr) {
+      if (t.side !== 'buy' || !(t.amount > 0) || !(t.usd > 0) || !pred(t)) continue;
+      usd += t.usd;
+      amt += t.amount;
+      who.add(t.wallet);
+    }
+    return amt > 0 ? { p: usd / amt, n: who.size } : null;
+  };
+  const holders = new Set((d.topHolders || []).map((h) => normWallet(h.a)));
+  const h = holders.size ? avgBuy((t) => holders.has(normWallet(t.wallet))) : null;
+  if (h && h.n >= 2) {
+    out.top = h.p;
+    out.topKind = 'holders';
+  } else if (tr.length) {
+    const by = new Map();
+    for (const t of tr) if (t.side === 'buy' && t.amount > 0) by.set(t.wallet, (by.get(t.wallet) || 0) + t.amount);
+    const top = new Set([...by.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map((e) => e[0]));
+    const b = avgBuy((t) => top.has(t.wallet));
+    if (b) {
+      out.top = b.p;
+      out.topKind = 'buyers';
+    }
+  }
+  return out;
+}
+
+function drawCandles(d) {
+  const box = $('#chartBox');
+  if (!box) return;
+  const tf = state.candleTf;
+  const c = state.candles?.key === `${d.m}|${tf}` ? state.candles : null;
+  const tfRow = `<div class="tf-row">${TF_LIST.map((x) => `<button data-tf="${x}" class="${x === tf ? 'active' : ''}">${x}</button>`).join('')}</div>`;
+  if (!c || !c.list.length) {
+    const html = `${tfRow}<div class="empty"><b>${c ? (c.err ? 'Limit darmowego API — spróbuję za chwilę' : 'Brak świec dla tej puli') : 'Ładowanie świec…'}</b></div>`;
+    if (box.dataset.ck !== html || !box.querySelector('.tf-row')) {
+      box.dataset.ck = html;
+      box.innerHTML = html;
+    }
+    return;
+  }
+  const pos = posHere(d.m);
+  const mine = myTrades(d.m);
+  const tr = state.tr?.m === d.m ? state.tr.list : [];
+  const whale = WHALE_USD_UI[ENGINE?.chain] || 1000;
+  // Drawn at the box's real pixel size, so labels keep their shape on any screen.
+  const W = Math.max(300, Math.round(box.clientWidth || 660));
+  const H = Math.max(220, Math.round((box.clientHeight || 360) - 24));
+  const key = `${W}x${H}|${(d.topHolders || []).length}|${c.key}|${c.at}|${c.list.length}|${pos ? `${pos.p}|${pos.sl}|${pos.tp}|${pos.safe}|${pos.be}` : ''}|${mine.length}|${tr.length}|${d.p}`;
+  if (box.dataset.ck === key && box.querySelector('svg.candles')) return;
+  box.dataset.ck = key;
+  const list = c.list.slice(-Math.max(30, Math.min(120, Math.floor(W / 6))));
+  // Live last candle: extend with the current price.
+  const last = [...list[list.length - 1]];
+  if (d.p > 0) {
+    last[4] = d.p;
+    last[2] = Math.max(last[2], d.p);
+    last[3] = Math.min(last[3], d.p);
+    list[list.length - 1] = last;
+  }
+  const PT = 44, PB = 64, PL = 4, PR = 64;
+  const ph = H - PT - PB;
+  let lo = Math.min(...list.map((k) => k[3]));
+  let hi = Math.max(...list.map((k) => k[2]));
+  // Position levels inside a sensible band around the visible prices join the range.
+  const levels = [];
+  const lv = chartLevels(d, mine, tr);
+  if (lv.buy) levels.push([lv.buy, `Moje kupno${lv.buyN > 1 ? ` (śr. z ${lv.buyN})` : ''}`, '#4da3ff']);
+  if (lv.sell) levels.push([lv.sell, `Moja sprzedaż${lv.sellN > 1 ? ` (śr. z ${lv.sellN})` : ''}`, '#ff8a4d']);
+  if (lv.top) levels.push([lv.top, `Top 10 ${lv.topKind === 'holders' ? 'holderów' : 'kupujących'} · śr. wejście`, '#e4c15a']);
+  if (pos?.p > 0) {
+    if (pos.sl) levels.push([pos.p * (1 - pos.sl / 100), `SL −${fmt.n(pos.sl)}%`, '#ff4d6a']);
+    if (pos.tp) levels.push([pos.p * (1 + pos.tp / 100), `TP +${fmt.n(pos.tp)}%`, '#1fd68f']);
+    if (pos.safe) levels.push([pos.p * (1 + SAFE_PCT / 100), 'SAFE', '#f5b83d']);
+    if (pos.be) levels.push([pos.p * (1 + BE_PCT / 100), 'BE', '#7cbcff']);
+  }
+  for (const [v] of levels) if (v > lo / 2 && v < hi * 2) (lo = Math.min(lo, v)), (hi = Math.max(hi, v));
+  if (!(hi > lo)) hi = lo * 1.01 || 1;
+  const pad = (hi - lo) * 0.06;
+  lo -= pad;
+  hi += pad;
+  const y = (v) => PT + ph - ((v - lo) / (hi - lo)) * ph;
+  const n = list.length;
+  const step = (W - PL - PR) / n;
+  const x = (i) => PL + step * i + step / 2;
+  const t0 = list[0][0];
+  const tfMs = { '1m': 60e3, '5m': 300e3, '15m': 900e3, '1h': 3600e3, '4h': 14400e3 }[tf];
+  const idxAt = (ts) => {
+    if (ts < t0) return -1;
+    for (let i = n - 1; i >= 0; i--) if (list[i][0] <= ts) return ts - list[i][0] <= tfMs * 2 || i === n - 1 ? i : -1;
+    return -1;
+  };
+  const vmax = Math.max(...list.map((k) => k[5] || 0)) || 1;
+  const bw = Math.max(1.5, step * 0.62);
+  let svg = '';
+  // Grid + price labels.
+  for (let g = 0; g <= 4; g++) {
+    const v = lo + ((hi - lo) * g) / 4;
+    svg += `<line x1="${PL}" x2="${W - PR}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" class="cg"/><text x="${W - PR + 6}" y="${(y(v) + 4).toFixed(1)}" class="cl">${fmt.price(v)}</text>`;
+  }
+  // Volume.
+  list.forEach((k, i) => {
+    const vh = ((k[5] || 0) / vmax) * (PB - 30);
+    svg += `<rect x="${(x(i) - bw / 2).toFixed(1)}" y="${(H - 22 - vh).toFixed(1)}" width="${bw.toFixed(1)}" height="${vh.toFixed(1)}" class="${k[4] >= k[1] ? 'vu' : 'vd'}"/>`;
+  });
+  // Candles.
+  list.forEach((k, i) => {
+    const up = k[4] >= k[1];
+    const yo = y(k[1]), yc = y(k[4]);
+    svg += `<line x1="${x(i).toFixed(1)}" x2="${x(i).toFixed(1)}" y1="${y(k[2]).toFixed(1)}" y2="${y(k[3]).toFixed(1)}" class="${up ? 'wu' : 'wd'}"/><rect x="${(x(i) - bw / 2).toFixed(1)}" y="${Math.min(yo, yc).toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(1, Math.abs(yc - yo)).toFixed(1)}" class="${up ? 'cu' : 'cd'}"/>`;
+  });
+  // Migration moment.
+  if (d.ma) {
+    const i = idxAt(d.ma);
+    if (i >= 0) svg += `<line x1="${x(i)}" x2="${x(i)}" y1="${PT}" y2="${PT + ph}" class="mig"/><text x="${x(i) + 4}" y="${PT + ph - 6}" class="ml">🎓 migracja</text>`;
+  }
+  // Position levels.
+  // Labels alternate left / right so close levels don't cover each other.
+  levels.forEach(([v, label, col], li) => {
+    if (v < lo || v > hi) return;
+    const right = li % 2 === 1;
+    svg += `<line x1="${PL}" x2="${W - PR}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="${col}" class="lvl"/><text x="${right ? W - PR - 4 : PL + 4}" y="${(y(v) - 4).toFixed(1)}" fill="${col}" class="ll"${right ? ' text-anchor="end"' : ''}>${esc(label)}</text>`;
+  });
+  // Whales / tracked wallets / top holders (from the latest trades).
+  const topSet = new Set((d.topHolders || []).map((h) => normWallet(h.a)));
+  for (const t of tr) {
+    const w = walletOf(t.wallet);
+    if (topSet.has(normWallet(t.wallet)) && !w) {
+      const i = idxAt(t.t);
+      if (i >= 0 && t.price >= lo && t.price <= hi) svg += `<circle cx="${x(i).toFixed(1)}" cy="${y(t.price).toFixed(1)}" r="4" class="th"><title>Top 10 holder: ${t.side === 'buy' ? 'kupno' : 'sprzedaż'} ${fmt.usd(t.usd)}</title></circle>`;
+      continue;
+    }
+    if (!w && t.usd < whale) continue;
+    const i = idxAt(t.t);
+    if (i < 0 || !(t.price > 0) || t.price < lo || t.price > hi) continue;
+    svg += `<circle cx="${x(i).toFixed(1)}" cy="${y(t.price).toFixed(1)}" r="${w ? 5 : 4}" class="${w ? 'tw' : t.side === 'buy' ? 'wb' : 'ws'}"><title>${w ? `${esc(w.name)}: ` : '🐋 '}${t.side === 'buy' ? 'kupno' : 'sprzedaż'} ${fmt.usd(t.usd)}</title></circle>`;
+  }
+  // The viewer's demo buys / sells.
+  for (const t of mine) {
+    const i = idxAt(t.t);
+    if (i < 0) continue;
+    const k = list[i];
+    if (t.side === 'buy') {
+      const yy = y(k[3]) + 6;
+      svg += `<path d="M${x(i)} ${yy} l6 10 h-12 z" class="mb"><title>Twoje kupno DEMO</title></path>`;
+    } else {
+      const yy = y(k[2]) - 6;
+      svg += `<path d="M${x(i)} ${yy} l6 -10 h-12 z" class="ms"><title>Twoja sprzedaż DEMO</title></path>`;
+    }
+  }
+  // Time labels.
+  const hhmm = (ts) => new Date(ts).toLocaleString('pl-PL', tf === '1h' || tf === '4h' ? { day: '2-digit', month: '2-digit', hour: '2-digit' } : { hour: '2-digit', minute: '2-digit' });
+  for (const i of [0, Math.floor(n / 2), n - 1]) svg += `<text x="${Math.min(W - PR - 30, Math.max(PL, x(i) - 20)).toFixed(1)}" y="${H - 6}" class="cl">${hhmm(list[i][0])}</text>`;
+  const legend = `<div class="c-legend"><span><i class="lg-mb"></i>Twoje kupno</span><span><i class="lg-ms"></i>Twoja sprzedaż</span><span><i class="lg-w"></i>🐋 Wieloryb</span><span><i class="lg-th"></i>Top 10</span>${state.wallets.length ? '<span><i class="lg-tw"></i>Śledzony</span>' : ''}</div>`;
+  box.innerHTML = `${tfRow}<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" class="candles">${svg}</svg>${legend}`;
+}
+
+// ---------- PnL card (share) ----------
+async function sharePnlCard(c) {
+  const cv = document.createElement('canvas');
+  cv.width = 1080;
+  cv.height = 1350;
+  const g = cv.getContext('2d');
+  const up = c.pct >= 0;
+  const bg = g.createLinearGradient(0, 0, 1080, 1350);
+  bg.addColorStop(0, '#0b0f17');
+  bg.addColorStop(1, up ? '#0d2a1f' : '#2a0d14');
+  g.fillStyle = bg;
+  g.fillRect(0, 0, 1080, 1350);
+  g.fillStyle = up ? 'rgba(31,214,143,0.10)' : 'rgba(255,77,106,0.10)';
+  g.beginPath();
+  g.arc(900, 260, 420, 0, Math.PI * 2);
+  g.fill();
+  const font = (w, px) => `${w} ${px}px -apple-system, "SF Pro Display", "Segoe UI", Roboto, sans-serif`;
+  g.fillStyle = '#ff7a2e';
+  g.font = font(900, 64);
+  g.fillText('DMN', 80, 140);
+  g.fillStyle = '#f5b83d';
+  g.font = font(800, 34);
+  g.fillText('DEMO · trening', 240, 136);
+  g.fillStyle = '#e8edf5';
+  g.font = font(800, 76);
+  g.fillText(String(c.sym ? `$${c.sym}` : c.name || 'Token').slice(0, 18), 80, 330);
+  g.fillStyle = '#8a96a8';
+  g.font = font(500, 38);
+  g.fillText(String(c.sub || '').slice(0, 44), 80, 392);
+  g.fillStyle = up ? '#1fd68f' : '#ff4d6a';
+  g.font = font(900, 210);
+  g.fillText(`${up ? '+' : ''}${c.pct >= 1000 ? Math.round(c.pct).toLocaleString('pl-PL') : c.pct.toFixed(1)}%`, 70, 640);
+  if (c.pnl != null) {
+    g.font = font(800, 76);
+    g.fillText(`${c.pnl >= 0 ? '+' : '−'}$${Math.abs(c.pnl).toLocaleString('pl-PL', { maximumFractionDigits: 2 })}`, 80, 760);
+  }
+  g.fillStyle = '#8a96a8';
+  g.font = font(500, 40);
+  let yy = 900;
+  for (const [k, v] of c.rows || []) {
+    g.fillStyle = '#8a96a8';
+    g.fillText(k, 80, yy);
+    g.fillStyle = '#e8edf5';
+    g.font = font(700, 40);
+    g.fillText(v, 520, yy);
+    g.font = font(500, 40);
+    yy += 70;
+  }
+  g.fillStyle = '#5c6779';
+  g.font = font(500, 30);
+  g.fillText(`${new Date().toLocaleString('pl-PL', { dateStyle: 'medium', timeStyle: 'short' })} · pozycja treningowa, bez prawdziwych pieniędzy`, 80, 1290);
+  const blob = await new Promise((r) => cv.toBlob(r, 'image/png'));
+  if (!blob) return toast('Nie udało się utworzyć obrazka');
+  const file = new File([blob], `dmn-pnl-${c.sym || 'token'}.png`, { type: 'image/png' });
+  try {
+    if (navigator.canShare?.({ files: [file] })) {
+      await navigator.share({ files: [file], title: 'DMN — wynik DEMO' });
+      return;
+    }
+  } catch (e) {
+    if (e?.name === 'AbortError') return;
+  }
+  // No file sharing: open the image (long-press to save on iPhone).
+  const url = URL.createObjectURL(blob);
+  const win = window.open(url, '_blank');
+  if (!win) {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = file.name;
+    a.click();
+  }
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+// ---------- PnL calendar ----------
+function pnlCalendar() {
+  const now = new Date();
+  const first = new Date(now.getFullYear(), now.getMonth() - state.calMonth, 1);
+  const days = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+  const byDay = new Map();
+  for (const c of state.closed) {
+    if (c.w === false) continue;
+    const dt = new Date(c.closedAt);
+    if (dt.getFullYear() !== first.getFullYear() || dt.getMonth() !== first.getMonth()) continue;
+    const k = dt.getDate();
+    const o = byDay.get(k) || { pnl: 0, n: 0 };
+    o.pnl += c.usd > 0 ? c.pnl : 0;
+    o.n++;
+    byDay.set(k, o);
+  }
+  const total = [...byDay.values()].reduce((a, o) => a + o.pnl, 0);
+  const lead = (first.getDay() + 6) % 7; // Monday first
+  const cells = [];
+  for (let i = 0; i < lead; i++) cells.push('<div class="cal-d empty"></div>');
+  const today = state.calMonth === 0 ? now.getDate() : -1;
+  const short = (v) => (Math.abs(v) >= 1000 ? `${(v / 1000).toFixed(1)}k` : Math.abs(v) >= 10 ? Math.round(v) : v.toFixed(1));
+  for (let dd = 1; dd <= days; dd++) {
+    const o = byDay.get(dd);
+    const cls = o ? (o.pnl > 0 ? 'win' : o.pnl < 0 ? 'loss' : 'flat') : '';
+    cells.push(`<div class="cal-d ${cls}${dd === today ? ' today' : ''}" title="${o ? `${o.n} transakcji · ${o.pnl >= 0 ? '+' : '−'}$${Math.abs(o.pnl).toFixed(2)}` : ''}"><span>${dd}</span>${o ? `<b>${o.pnl >= 0 ? '+' : '−'}${short(Math.abs(o.pnl))}</b>` : ''}</div>`);
+  }
+  const month = first.toLocaleString('pl-PL', { month: 'long', year: 'numeric' });
+  return `<h3 class="pos-h">Kalendarz PnL</h3>
+    <div class="cal"><div class="cal-head"><button data-cal="1" aria-label="Poprzedni miesiąc">‹</button><b>${month}</b><span class="${total > 0 ? 'up' : total < 0 ? 'down' : 'muted'}">${byDay.size ? `${total >= 0 ? '+' : '−'}${fmt.usd(Math.abs(total))}` : '—'}</span><button data-cal="-1" ${state.calMonth === 0 ? 'disabled' : ''} aria-label="Następny miesiąc">›</button></div>
+      <div class="cal-grid">${['Pn', 'Wt', 'Śr', 'Cz', 'Pt', 'So', 'Nd'].map((x) => `<div class="cal-w">${x}</div>`).join('')}${cells.join('')}</div></div>`;
+}
+
+/** Wallet tracker card (wallet sheet). */
+function walletTrackerCard() {
+  const list = state.wallets
+    .map((w) => `<div class="wt-row"><span>${esc(w.emoji || '👛')}</span><b>${esc(w.name)}</b><small class="mono">${esc(fmt.short(w.a))}</small><button data-wt-del="${esc(w.a)}" aria-label="Usuń">✕</button></div>`)
+    .join('');
+  return `<div class="card wallet-track"><h3>👛 Śledzone portfele <small>${state.wallets.length || ''}</small></h3>
+      ${list || '<p class="note">Brak śledzonych portfeli. Dodaj adres poniżej albo dotknij portfela w „Transakcjach na żywo” lub „Top traderach” tokena.</p>'}
+      <div class="pos-form wt-form">
+        <input id="wtAddr" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Adres portfela" />
+        <input id="wtName" type="text" autocomplete="off" placeholder="Nazwa, np. Smart dev" />
+        <select id="wtEmoji">${WALLET_EMOJI.map((e) => `<option>${e}</option>`).join('')}</select>
+        <button data-wt-add>➕ Śledź portfel</button>
+      </div>
+      <p class="note">Alerty w panelu „Na żywo” (👛 Portfele): gdy śledzony portfel kupi lub sprzeda obserwowany token, otwartą pozycję albo otwarty token, oraz gdy wypuści nowy token na pump.fun. Działa przy otwartej aplikacji.</p>
+    </div>`;
+}
+
 // ---------- several tabs ----------
 // Positions and the wallet live in localStorage: another tab (or an older Safari tab coming
 // back) must pick up the latest copy instead of overwriting it with its stale one.
