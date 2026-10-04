@@ -35,12 +35,14 @@ const chainCfg = () => (ENGINE?.chains && ENGINE.chains[ENGINE.chain]) || { id: 
 if (ENGINE) ENGINE.setChain(LS.get('chain', 'solana'));
 
 const state = {
-  view: LS.get('view', 'hype'),
+  view: ((v) => (v === 'pos' ? 'hype' : v))(LS.get('view', 'hype')), // 'pos' was a tab in an older version
   filters: LS.get('filters', { minMcap: 0, minLiq: 0, maxAgeH: 0, safe: false }),
   watch: new Set(LS.get('watch', [])),
   hidden: new Set(LS.get('hidden', [])), // tokens the viewer hid from the lists
   blocked: new Set(LS.get('blocked', [])), // creators whose tokens are hidden
-  positions: LS.get('positions', {}), // mint -> { p: entry price, usd, t, chain }
+  positions: LS.get('positions', {}), // mint -> { p: entry price, mc, usd, t, chain, n, s, i, last }
+  closed: LS.get('closedPositions', []), // closed demo trades (last 90 days) for the 1d / 7d / 30d P&L
+  wallet: { cash: 0, deposits: 0, tx: [], ...LS.get('wallet', {}) }, // demo wallet funding the demo positions
   presets: LS.get('presets', []), // saved filter sets [{ name, f }]
   feedFilter: 'all',
   paused: false,
@@ -507,7 +509,7 @@ function updateRow(entry, d, idx) {
   if (d.bp != null) chips.push(`<span class="chip ${d.lp === 'bonk' ? 'bonk' : 'pump'}">${d.lp === 'bonk' ? 'bonk' : 'pump'}</span><span class="bc"><span class="bc-bar"><i style="width:${d.bp}%"></i></span>${d.bp.toFixed(0)}%</span>`);
   else if (d.gr) chips.push('<span class="chip grad">🎓 DEX</span>');
   const pos = posPnl(d);
-  if (pos) chips.push(`<span class="chip pos ${pos.cls}" title="Twoja pozycja: ${fmt.pct(pos.pct)}${pos.usd != null ? ` (${pos.usd >= 0 ? '+' : ''}${fmt.usd(pos.usd)})` : ''}">💼 ${fmt.pct(pos.pct)}</span>`);
+  if (pos) chips.push(`<span class="chip pos ${pos.cls}" title="Twoja pozycja DEMO: ${fmt.pct(pos.pct)}${pos.usd != null ? ` (${pos.usd >= 0 ? '+' : ''}${fmt.usd(pos.usd)})` : ''}">💼 DEMO ${fmt.pct(pos.pct)}</span>`);
   if (d.fz && FRESH[d.fz]) chips.push(`<span class="chip fz ${FRESH[d.fz][2]}" title="Hype teraz: ${FRESH[d.fz][1]}">${FRESH[d.fz][0]} ${FRESH[d.fz][1]}</span>`);
   const serial = creatorWarning(d);
   if (serial) chips.push(`<span class="chip warnc" title="${esc(serial.tip)}">${serial.short}</span>`);
@@ -680,7 +682,6 @@ function renderRows(rows) {
 }
 
 function emptyText() {
-  if (state.view === 'pos') return '<b>Brak pozycji</b>Otwórz token i w sekcji „Moja pozycja” zapisz, za ile kupiłeś — tu zobaczysz zysk lub stratę na żywo.';
   if (state.view === 'watch') return '<b>Brak obserwowanych tokenów</b>Kliknij ☆ przy tokenie, aby dodać go do listy.';
   if (state.view === 'surge' && !state.firstSnapshot)
     return '<b>Brak wybić wolumenu w tej chwili</b>Pojawią się tu tokeny, których wolumen z 5 min jest co najmniej 2× wyższy niż ich średnia.';
@@ -715,7 +716,7 @@ function applyMode(s) {
  * filters (dev %, LP burned, DEX paid). Watch / positions lists always show everything.
  */
 function viewerFilter(rows, view) {
-  if (view === 'watch' || view === 'pos') return rows;
+  if (view === 'watch') return rows;
   const f = state.filters;
   return rows.filter(
     (r) =>
@@ -730,8 +731,6 @@ function viewerFilter(rows, view) {
 function applySnapshot(snap) {
   applyMode(snap.stats);
   $('#feedChips [data-f="whale"]').hidden = !snap.stats.liveTrades;
-  // Positions use the watchlist path of the engine / server.
-  if (state.view === 'pos' && snap.view === 'watch') snap.view = 'pos';
   snap.rows = viewerFilter(snap.rows, snap.view);
   if (snap.view === 'hype') state.hypeRows = snap.rows;
   renderStats(snap.stats);
@@ -776,8 +775,12 @@ function connect() {
       state.lastSnapshot = Date.now();
       // The win rate always counts the main Hype list, whichever tab is open.
       if (state.view !== 'hype') state.hypeRows = viewerFilter(ENGINE.snapshot('hype', filters, 100).rows, 'hype');
-      const list = state.view === 'watch' ? [...state.watch] : state.view === 'pos' ? Object.keys(state.positions) : [];
-      applySnapshot(ENGINE.snapshot(state.view === 'pos' ? 'watch' : state.view, filters, 100, list));
+      // Demo positions on this network stay loaded even when off the list.
+      const posHere = Object.keys(state.positions).filter((m) => (state.positions[m].chain || 'solana') === ENGINE.chain);
+      if (posHere.length) ENGINE.track(posHere);
+      applySnapshot(ENGINE.snapshot(state.view, filters, 100, state.view === 'watch' ? [...state.watch] : []));
+      if (sheetOpen('pos') && !sheetBusy()) renderPositions();
+      if (sheetOpen('wallet') && !sheetBusy()) renderWallet();
     };
     run();
     state.tick = setInterval(run, 2000);
@@ -800,13 +803,12 @@ function connect() {
   }
   state.es?.close();
   const f = state.filters;
-  const params = new URLSearchParams({ view: state.view === 'pos' ? 'watch' : state.view, limit: '100' });
+  const params = new URLSearchParams({ view: state.view, limit: '100' });
   if (f.minMcap) params.set('minMcap', f.minMcap);
   if (f.minLiq) params.set('minLiq', f.minLiq);
   if (f.maxAgeH) params.set('maxAgeH', f.maxAgeH);
   if (f.safe) params.set('safe', '1');
   if (state.view === 'watch') params.set('mints', [...state.watch].join(','));
-  if (state.view === 'pos') params.set('mints', Object.keys(state.positions).join(','));
   if (state.view !== 'hype') state.hypeRows = null; // win rate needs the Hype list (not streamed here)
   const es = new EventSource(`/api/stream?${params}`);
   state.es = es;
@@ -839,8 +841,9 @@ const FRESH = {
   dead: ['📉', 'Wygasa', 'down'],
 };
 
-/** Polish plural: 1 token, 2–4 tokeny, 5+ tokenów (12–14 tokenów). */
-const plTokens = (n) => (n === 1 ? 'token' : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? 'tokeny' : 'tokenów');
+/** Polish plural: pl(n, 'token', 'tokeny', 'tokenów') → 1 token, 2–4 tokeny, 5+ / 12–14 tokenów. */
+const pl = (n, one, few, many) => (n === 1 ? one : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? few : many);
+const plTokens = (n) => pl(n, 'token', 'tokeny', 'tokenów');
 
 /** Warning for a creator with a bad track record (serial launcher / honeypot deployer), or null. */
 function creatorWarning(d) {
@@ -859,8 +862,7 @@ function posPnl(d) {
 }
 
 function renderPosCount() {
-  const evm = chainCfg().evm;
-  const n = Object.keys(state.positions).filter((m) => (evm ? m.startsWith('0x') : !m.startsWith('0x'))).length;
+  const n = Object.keys(state.positions).length;
   $('#c-pos').textContent = n || '';
 }
 
@@ -871,17 +873,253 @@ function parseAmount(text) {
   return Number(m[1]) * ({ k: 1e3, m: 1e6, b: 1e9 }[(m[2] || '').toLowerCase()] || 1);
 }
 
-function savePosition(mint, price, usd, mc) {
-  state.positions[mint] = { p: price, mc: mc || 0, usd: usd > 0 ? usd : 0, t: Date.now(), chain: ENGINE?.chain || 'solana' };
+// ---------- demo wallet ----------
+function saveWallet() {
+  state.wallet.tx = state.wallet.tx.slice(0, 200);
+  LS.set('wallet', state.wallet);
+}
+function walletTx(type, amount, extra = {}) {
+  state.wallet.tx.unshift({ t: Date.now(), type, amount, ...extra });
+}
+function deposit(amount) {
+  state.wallet.cash += amount;
+  state.wallet.deposits += amount;
+  walletTx('deposit', amount);
+  saveWallet();
+}
+
+function savePosition(mint, price, usd, mc, d = {}) {
+  // Funded from the demo wallet: the stake leaves the balance now and returns (with P&L) on close.
+  state.wallet.cash -= usd;
+  walletTx('open', usd, { n: d.n || '', s: d.s || '' });
+  saveWallet();
+  state.positions[mint] = {
+    w: true,
+    p: price,
+    mc: mc || 0,
+    usd: usd > 0 ? usd : 0,
+    t: Date.now(),
+    chain: ENGINE?.chain || 'solana',
+    // Name / icon and last seen price, for the positions list when the token isn't loaded.
+    n: d.n || '',
+    s: d.s || '',
+    i: d.i || '',
+    last: d.p > 0 ? { p: d.p, mc: d.mc || 0, at: Date.now() } : null,
+  };
   LS.set('positions', state.positions);
   renderPosCount();
 }
 
-function closePosition(mint) {
+/** Closes a demo position at `price` (its current price), keeping the result for the P&L history. */
+function closePosition(mint, price) {
+  const p = state.positions[mint];
+  if (!p) return;
+  const exit = price > 0 ? price : p.last?.p;
+  // Wallet-funded positions pay their current value back into the demo balance.
+  if (p.w && p.usd > 0) {
+    const back = exit > 0 && p.p > 0 ? p.usd * (exit / p.p) : p.usd;
+    state.wallet.cash += back;
+    walletTx('close', back, { n: p.n, s: p.s, pnl: back - p.usd });
+    saveWallet();
+  }
+  if (exit > 0 && p.p > 0) {
+    const pct = (exit / p.p - 1) * 100;
+    state.closed.unshift({
+      m: mint, n: p.n, s: p.s, chain: p.chain, usd: p.usd || 0, pct,
+      pnl: p.usd > 0 ? p.usd * (exit / p.p - 1) : 0, openedAt: p.t, closedAt: Date.now(),
+    });
+    state.closed = state.closed.filter((c) => Date.now() - c.closedAt < 90 * 86400e3).slice(0, 500);
+    LS.set('closedPositions', state.closed);
+  }
   delete state.positions[mint];
   LS.set('positions', state.positions);
   renderPosCount();
 }
+
+// ---------- open demo positions (bottom bar) ----------
+let posSaveAt = 0;
+
+/** Every open position with its latest known price: live from the network's engine when it has
+ *  run this session, otherwise the last price seen. */
+function positionList() {
+  const byChain = {};
+  for (const [m, p] of Object.entries(state.positions)) (byChain[p.chain || 'solana'] ??= []).push(m);
+  const live = new Map();
+  for (const [chain, mints] of Object.entries(byChain)) {
+    // Only the network on screen is live; a paused network's prices are frozen, so its
+    // positions use the last price seen while it was on screen (shown as such).
+    if (ENGINE && chain !== ENGINE.chain) continue;
+    const rows = ENGINE ? ENGINE.rowsFor(chain, mints) : mints.map((m) => state.rows.get(m)?.data).filter(Boolean);
+    for (const r of rows) if (r?.p > 0) live.set(r.m, r);
+  }
+  const now = Date.now();
+  let dirty = false;
+  const list = Object.entries(state.positions).map(([m, p]) => {
+    const r = live.get(m);
+    if (r) {
+      p.last = { p: r.p, mc: r.mc || 0, at: now };
+      if (!p.n && r.n) Object.assign(p, { n: r.n, s: r.s, i: r.i });
+      dirty = true;
+    }
+    const cur = r?.p || p.last?.p || 0;
+    const ratio = cur > 0 && p.p > 0 ? cur / p.p : null;
+    return {
+      m, p, r, ratio, stale: !r,
+      mcNow: r?.mc || p.last?.mc || null,
+      mcIn: p.mc || (ratio && (r?.mc || p.last?.mc) ? (r?.mc || p.last.mc) / ratio : null),
+      pct: ratio ? (ratio - 1) * 100 : null,
+      value: ratio && p.usd > 0 ? p.usd * ratio : null,
+      pnl: ratio && p.usd > 0 ? p.usd * (ratio - 1) : null,
+    };
+  });
+  if (dirty && now - posSaveAt > 10_000) {
+    posSaveAt = now;
+    LS.set('positions', state.positions);
+  }
+  return list.sort((a, b) => b.p.t - a.p.t);
+}
+
+/** P&L of demo trades opened in the window: open ones at the current price, closed at exit. */
+function pnlWindow(list, ms) {
+  const now = Date.now();
+  let pnl = 0;
+  let cost = 0;
+  let trades = 0;
+  for (const x of list) {
+    if (now - x.p.t > ms || x.pnl == null) continue;
+    pnl += x.pnl;
+    cost += x.p.usd;
+    trades++;
+  }
+  for (const c of state.closed) {
+    if (now - c.openedAt > ms) continue;
+    pnl += c.pnl;
+    cost += c.usd;
+    trades++;
+  }
+  return { pnl, pct: cost > 0 ? (pnl / cost) * 100 : null, trades };
+}
+
+function renderPositions() {
+  const body = $('#posBody');
+  const list = positionList();
+  const cost = list.reduce((a, x) => a + (x.p.usd || 0), 0);
+  const value = list.reduce((a, x) => a + (x.value ?? x.p.usd ?? 0), 0);
+  const pnl = value - cost;
+  const sign = (v) => (v >= 0 ? '+' : '−');
+  const money = (v) => `${sign(v)}${fmt.usd(Math.abs(v))}`;
+  const w = [['1d', 86400e3], ['7d', 7 * 86400e3], ['30d', 30 * 86400e3]].map(([k, ms]) => [k, pnlWindow(list, ms)]);
+  const summary = `<div class="wallet-line">👛 Saldo walletu DEMO: <b>${fmt.usd(state.wallet.cash)}</b> <button data-sheet-wallet>Wallet</button></div>
+    <div class="pos-sum">
+      <div><span>Wkład</span><b>${fmt.usd(cost)}</b></div>
+      <div><span>Wartość</span><b>${fmt.usd(value)}</b></div>
+      <div><span>Zysk / strata</span><b class="${pnl >= 0 ? 'up' : 'down'}">${money(pnl)}${cost > 0 ? ` <small>${fmt.pct((pnl / cost) * 100)}</small>` : ''}</b></div>
+    </div>
+    <div class="pos-pnl">${w
+      .map(([k, x]) => `<div><span>PnL ${k}</span><b class="${x.trades ? (x.pnl >= 0 ? 'up' : 'down') : 'muted'}">${x.trades ? money(x.pnl) : '—'}</b><small>${x.trades ? `${x.pct != null ? fmt.pct(x.pct) + ' · ' : ''}${x.trades} ${pl(x.trades, 'pozycja', 'pozycje', 'pozycji')}` : 'brak'}</small></div>`)
+      .join('')}</div>
+    <p class="note">PnL okresu = pozycje otwarte w tym czasie (otwarte liczone po obecnej cenie, zamknięte po cenie zamknięcia). To pozycje treningowe — bez prawdziwych pieniędzy.</p>`;
+  const cards = list.length
+    ? list
+        .map((x) => {
+          const d = { m: x.m, n: x.p.n || x.r?.n, s: x.p.s || x.r?.s, i: x.p.i || x.r?.i };
+          const ch = ENGINE?.chains?.[x.p.chain || 'solana'];
+          return `<div class="pos-card" data-pos="${esc(x.m)}" data-chain="${esc(x.p.chain || 'solana')}">
+            <div class="pos-top">${avatar(d)}<div class="pos-name"><b>${esc(d.n || fmt.short(x.m))}</b><small>$${esc(d.s || '?')}${ch ? ` · ${esc(ch.name)}` : ''} · ${fmt.ago(x.p.t)}${x.stale ? ` · <i>cena sprzed ${x.p.last?.at ? fmt.ago(x.p.last.at) : '—'}</i>` : ''}</small></div>
+              <b class="pos-pct ${x.pct >= 0 ? 'up' : 'down'}">${x.pct != null ? `${fmt.pct(x.pct)}<small>${fmtX(x.ratio)}</small>` : '—'}</b></div>
+            <div class="pos-grid">
+              <div><span>MC wejścia</span><b>${fmt.usd(x.mcIn)}</b></div>
+              <div><span>MC teraz</span><b>${fmt.usd(x.mcNow)}</b></div>
+              <div><span>Wkład → wartość</span><b>${x.p.usd > 0 ? `${fmt.usd(x.p.usd)} → ${fmt.usd(x.value)}` : '—'}</b></div>
+              <div><span>Zysk / strata</span><b class="${(x.pnl ?? 0) >= 0 ? 'up' : 'down'}">${x.pnl != null ? money(x.pnl) : '—'}</b></div>
+            </div>
+            <div class="pos-acts"><button data-pos-open>Otwórz token</button><button data-pos-close>✖ Zamknij</button></div>
+          </div>`;
+        })
+        .join('')
+    : '<div class="empty"><b>Brak otwartych pozycji DEMO</b>Otwórz token z listy i w karcie „Pozycja DEMO” wpisz kwotę oraz MC wejścia.</div>';
+  const recent = state.closed.filter((c) => Date.now() - c.closedAt < 30 * 86400e3).slice(0, 20);
+  const history = recent.length
+    ? `<h3 class="pos-h">Zamknięte (30 dni)</h3><div class="pos-closed">${recent
+        .map((c) => `<div><span>${esc(c.n || fmt.short(c.m))} <small>$${esc(c.s || '?')} · ${fmt.ago(c.closedAt)}</small></span><b class="${c.pct >= 0 ? 'up' : 'down'}">${fmt.pct(c.pct)}${c.usd > 0 ? ` · ${money(c.pnl)}` : ''}</b></div>`)
+        .join('')}</div>`
+    : '';
+  const html = summary + `<h3 class="pos-h">Otwarte (${list.length})</h3>` + cards + history;
+  if (body.dataset.html !== html) {
+    body.dataset.html = html;
+    body.innerHTML = html;
+  }
+}
+
+// ---------- demo wallet screen ----------
+function renderWallet() {
+  const w = state.wallet;
+  const list = positionList();
+  const inPos = list.reduce((a, x) => a + (x.p.w ? x.value ?? x.p.usd ?? 0 : 0), 0);
+  const equity = w.cash + inPos;
+  const pnl = equity - w.deposits;
+  const sign = (v) => (v >= 0 ? '+' : '−');
+  const TX = { deposit: ['⬇️', 'Doładowanie'], open: ['💼', 'Otwarcie pozycji'], close: ['✅', 'Zamknięcie pozycji'], reset: ['♻️', 'Reset walletu'] };
+  const tx = w.tx.slice(0, 30);
+  const card = `<div class="wallet-card">
+      <span>Saldo dostępne</span><b>${fmt.usd(w.cash)}</b>
+      <div class="wallet-sub"><div><span>W pozycjach</span><b>${fmt.usd(inPos)}</b></div><div><span>Razem</span><b>${fmt.usd(equity)}</b></div>
+        <div><span>Wynik</span><b class="${pnl >= 0 ? 'up' : 'down'}">${w.deposits > 0 ? `${sign(pnl)}${fmt.usd(Math.abs(pnl))} <small>${fmt.pct((pnl / w.deposits) * 100)}</small>` : '—'}</b></div></div>
+    </div>`;
+  // The top-up form is rendered once per opening, so live refreshes never touch the input
+  // (rebuilding it would close the iPhone keyboard mid-typing).
+  const form = `<div class="card wallet-top"><h3>Doładuj wallet DEMO</h3>
+      <div class="pos-form">
+        <input id="topUp" type="number" inputmode="decimal" min="0" step="any" placeholder="Kwota w $" />
+        <button data-wallet="topup">⬇️ Doładuj</button>
+      </div>
+      <div class="quick-amt">${[100, 500, 1000, 5000].map((v) => `<button data-wallet-amt="${v}">+$${fmt.n(v)}</button>`).join('')}</div>
+      <p class="note">To wirtualne pieniądze do treningu — możesz doładować dowolną kwotę.</p>
+    </div>`;
+  const hist = `<p class="note">Wpłacono łącznie ${fmt.usd(w.deposits)}.</p><h3 class="pos-h">Historia</h3>
+    <div class="pos-closed">${
+      tx.length
+        ? tx.map((t) => `<div><span>${TX[t.type]?.[0] || '•'} ${TX[t.type]?.[1] || t.type}${t.s ? ` <small>$${esc(t.s)}</small>` : ''} <small>· ${fmt.ago(t.t)}</small></span><b class="${t.type === 'open' ? 'down' : t.type === 'reset' ? '' : 'up'}">${t.type === 'open' ? '−' : t.type === 'reset' ? '' : '+'}${fmt.usd(t.amount)}${t.pnl != null ? ` <small class="${t.pnl >= 0 ? 'up' : 'down'}">(${sign(t.pnl)}${fmt.usd(Math.abs(t.pnl))})</small>` : ''}</b></div>`).join('')
+        : '<div><span class="muted">Brak operacji — doładuj wallet, żeby zacząć grać pozycjami DEMO.</span></div>'
+    }</div>`;
+  const body = $('#walletBody');
+  if (!body.querySelector('#wCard')) {
+    body.innerHTML = `<div id="wCard"></div>${form}<div id="wHist"></div>
+      <div class="d-acts" style="margin-top:16px"><button data-wallet="reset">♻️ Wyzeruj wallet DEMO</button></div>`;
+  }
+  const put = (id, html) => {
+    const el = body.querySelector(id);
+    if (el.dataset.html !== html) {
+      el.dataset.html = html;
+      el.innerHTML = html;
+    }
+  };
+  put('#wCard', card);
+  put('#wHist', hist);
+}
+
+const SHEETS = { pos: ['#posSheet', renderPositions], wallet: ['#walletSheet', renderWallet] };
+// While a finger is on a sheet, live re-renders wait: replacing a button mid-tap loses the tap
+// on iOS Safari.
+let sheetTouch = 0;
+for (const sel of ['#posSheet', '#walletSheet']) {
+  $(sel).addEventListener('touchstart', () => (sheetTouch = Date.now() + 60_000), { passive: true });
+  for (const ev of ['touchend', 'touchcancel']) $(sel).addEventListener(ev, () => (sheetTouch = Date.now() + 400), { passive: true });
+}
+const sheetBusy = () => Date.now() < sheetTouch;
+function openSheet(name) {
+  for (const [k, [sel]] of Object.entries(SHEETS)) $(sel).hidden = k !== name;
+  document.body.classList.add('sheet-open');
+  $$('#bottombar button').forEach((b) => b.classList.toggle('on', b.dataset.nav === name));
+  SHEETS[name][1]();
+  $(SHEETS[name][0]).scrollTop = 0;
+}
+function closeSheets() {
+  for (const [sel] of Object.values(SHEETS)) $(sel).hidden = true;
+  document.body.classList.remove('sheet-open');
+  $$('#bottombar button').forEach((b) => b.classList.toggle('on', b.dataset.nav === 'radar'));
+}
+const sheetOpen = (name) => !$(SHEETS[name][0]).hidden;
 
 // ---------- holder structure icons (Axiom-style) ----------
 const HICON = {
@@ -1357,20 +1595,21 @@ function renderDetail(d) {
   // Trade journal: the viewer's own entry and live P&L.
   const pp = posPnl(d);
   const posCard = pp
-    ? `<div class="card"><h3>💼 Moja pozycja <small>od ${fmt.ago(pp.entry.t)}</small></h3>
+    ? `<div class="card"><h3>💼 Pozycja <span class="demo-tag">DEMO</span> <small>od ${fmt.ago(pp.entry.t)}</small></h3>
       <div class="hstats">
         <div><span>MC wejścia</span><b>${fmt.usd(pp.entry.mc || (d.mc && d.p ? (pp.entry.p * d.mc) / d.p : null))}</b></div>
         <div><span>MC teraz</span><b>${fmt.usd(d.mc)}</b></div>
         <div><span>Wynik</span><b class="${pp.cls}">${fmt.pct(pp.pct)} · ${fmtX(d.p / pp.entry.p)}</b></div>
         ${pp.usd != null ? `<div><span>Włożone</span><b>${fmt.usd(pp.entry.usd)}</b></div><div><span>Wartość</span><b>${fmt.usd(pp.value)}</b></div><div><span>Zysk / strata</span><b class="${pp.cls}">${pp.usd >= 0 ? '+' : '−'}${fmt.usd(Math.abs(pp.usd))}</b></div>` : ''}
       </div>
-      <div class="d-acts"><button data-act="pos-close">✖ Zamknij pozycję</button></div></div>`
-    : `<div class="card"><h3>💼 Moja pozycja</h3>
-      <p class="note" style="margin:0 0 8px">Zapisz zakup, a aplikacja policzy zysk lub stratę na żywo (zakładka „Pozycje”).</p>
+      <div class="d-acts"><button data-act="pos-close">✖ Zamknij pozycję DEMO</button></div></div>`
+    : `<div class="card"><h3>💼 Pozycja <span class="demo-tag">DEMO</span> <small>treningowa</small></h3>
+      <p class="note" style="margin:0 0 8px">Pozycja treningowa — nie kupujesz prawdziwych tokenów. Grasz środkami z walletu DEMO, a zysk lub stratę widzisz na żywo („Otwarte pozycje” na dolnym pasku).</p>
+      <div class="wallet-line">👛 Saldo DEMO: <b>${fmt.usd(state.wallet.cash)}</b> <button data-act="wallet-open">Doładuj</button></div>
       <div class="pos-form">
-        <input id="posUsd" type="number" inputmode="decimal" min="0" step="any" placeholder="Kwota w $ (opcjonalnie)" />
+        <input id="posUsd" type="number" inputmode="decimal" min="0" step="any" placeholder="Kwota w $ z walletu DEMO" />
         <input id="posEntry" type="text" autocomplete="off" autocapitalize="off" placeholder="MC wejścia, np. 150k (puste = obecny)" />
-        <button data-act="pos-add">💼 Zapisz pozycję</button>
+        <button data-act="pos-add">💼 Zajmij pozycję DEMO</button>
       </div></div>`;
 
   const sections = {
@@ -1746,23 +1985,33 @@ $('#drawer').addEventListener('click', (e) => {
   else if (act === 'watch' && state.selected) toggleWatch(state.selected);
   else if (act === 'analyze' && state.selected) requestAnalysis(state.selected);
   else if (act === 'hide' && state.selected) hideToken(state.selected);
+  else if (act === 'wallet-open') {
+    closeDetail();
+    openSheet('wallet');
+  }
   else if (act === 'block' && state.detail?.creator) blockCreator(state.detail.creator);
   else if (act === 'pos-add' && state.selected && state.detail) {
     const d = state.detail;
     const usd = Number($('#posUsd')?.value) || 0;
+    if (!(usd > 0)) return toast('Wpisz kwotę pozycji w $');
+    if (usd > state.wallet.cash + 1e-9) {
+      toast(`Za mało środków w walletcie DEMO (saldo ${fmt.usd(state.wallet.cash)}) — doładuj go`);
+      closeDetail();
+      return openSheet('wallet');
+    }
     const raw = ($('#posEntry')?.value || '').trim();
     // Entry given as market cap (easier than long prices): price scales with market cap.
     const mc = raw ? parseAmount(raw) : d.mc;
     if (raw && !(mc > 0)) return toast('Nie rozumiem MC — wpisz np. 150k albo 1.2m');
     if (!(d.p > 0) || !(d.mc > 0)) return toast('Brak ceny lub MC — spróbuj za chwilę');
     const entry = d.p * (mc / d.mc);
-    savePosition(state.selected, entry, usd, mc);
-    toast(`💼 Zapisano pozycję przy MC ${fmt.usd(mc)}`);
+    savePosition(state.selected, entry, usd, mc, d);
+    toast(`💼 Pozycja DEMO otwarta przy MC ${fmt.usd(mc)}`);
     renderDetail(state.detail);
   } else if (act === 'pos-close' && state.selected) {
-    if (!confirm('Zamknąć (usunąć) tę pozycję?')) return;
-    closePosition(state.selected);
-    toast('Pozycja zamknięta');
+    if (!confirm('Zamknąć tę pozycję DEMO?')) return;
+    closePosition(state.selected, state.detail?.p);
+    toast('Pozycja DEMO zamknięta');
     if (state.detail) renderDetail(state.detail);
   }
   const chart = e.target.closest('[data-chart]');
@@ -1812,12 +2061,73 @@ search.addEventListener('blur', () => setTimeout(() => ($('#searchResults').hidd
 document.addEventListener('keydown', (e) => {
   const typing = /input|select|textarea/i.test(document.activeElement?.tagName || '');
   if (e.key === 'Escape' && state.selected) closeDetail();
+  else if (e.key === 'Escape' && document.body.classList.contains('sheet-open')) closeSheets();
   if (typing) return;
   if (e.key === '/') {
     e.preventDefault();
     search.focus();
   } else if (e.key.toLowerCase() === 'p') togglePause();
 });
+
+// ---------- bottom bar ----------
+$('#bottombar').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-nav]');
+  if (!b) return;
+  if (SHEETS[b.dataset.nav]) openSheet(b.dataset.nav);
+  else {
+    closeSheets();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+});
+$('#walletSheet').addEventListener('click', (e) => {
+  if (e.target.closest('[data-sheet-close]')) return closeSheets();
+  const quick = e.target.closest('[data-wallet-amt]');
+  const act = e.target.closest('[data-wallet]')?.dataset.wallet;
+  if (quick || act === 'topup') {
+    const amount = quick ? Number(quick.dataset.walletAmt) : Number($('#topUp').value);
+    if (!(amount > 0) || amount > 1e12) return toast('Wpisz kwotę doładowania');
+    deposit(amount);
+    if (!quick) $('#topUp').value = '';
+    toast(`👛 Doładowano ${fmt.usd(amount)} — saldo ${fmt.usd(state.wallet.cash)}`);
+    renderWallet();
+  } else if (act === 'reset') {
+    if (!confirm('Wyzerować wallet DEMO? Saldo i historia zostaną wyczyszczone (otwarte pozycje zostają).')) return;
+    state.wallet = { cash: 0, deposits: 0, tx: [] };
+    walletTx('reset', 0);
+    // Open positions stop counting against the wallet after a reset.
+    for (const p of Object.values(state.positions)) p.w = false;
+    LS.set('positions', state.positions);
+    saveWallet();
+    renderWallet();
+    toast('Wallet DEMO wyzerowany');
+  }
+});
+$('#posSheet').addEventListener('click', (e) => {
+  if (e.target.closest('[data-sheet-close]')) return closeSheets();
+  if (e.target.closest('[data-sheet-wallet]')) return openSheet('wallet');
+  const card = e.target.closest('[data-pos]');
+  if (!card) return;
+  const mint = card.dataset.pos;
+  if (e.target.closest('[data-pos-close]')) {
+    const x = positionList().find((p) => p.m === mint);
+    const msg = x?.stale
+      ? `Ta pozycja jest na innej sieci — zamknie się po ostatniej znanej cenie (sprzed ${x.p.last?.at ? fmt.ago(x.p.last.at) : '—'}). Żeby zamknąć po aktualnej, przełącz sieć i otwórz token. Zamknąć teraz?`
+      : 'Zamknąć tę pozycję DEMO po obecnej cenie?';
+    if (!confirm(msg)) return;
+    closePosition(mint, x?.r?.p || x?.p.last?.p);
+    toast('Pozycja DEMO zamknięta');
+    renderPositions();
+    return;
+  }
+  // Open the token (switching network first if needed); the drawer opens above the sheet.
+  if (ENGINE && card.dataset.chain !== ENGINE.chain) setChain(card.dataset.chain);
+  openDetail(mint);
+});
+setInterval(() => {
+  // Server / snapshot modes don't tick through the engine loop.
+  if (!ENGINE && sheetOpen('pos')) renderPositions();
+  if (!ENGINE && sheetOpen('wallet')) renderWallet();
+}, 2000);
 
 // ---------- boot ----------
 renderChains();

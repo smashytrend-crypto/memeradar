@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=mutkg1ca" />
+  <link rel="stylesheet" href="styles.css?v=mutkyp9h" />
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -53,7 +53,6 @@
     <button role="tab" data-view="graduated"><span class="ti">🎓</span>Po graduacji</button>
     <button role="tab" data-view="social"><span class="ti">𝕏</span>Social</button>
     <button role="tab" data-view="watch"><span class="ti">★</span>Obserwowane<span class="tc" id="c-watch"></span></button>
-    <button role="tab" data-view="pos"><span class="ti">💼</span>Pozycje<span class="tc" id="c-pos"></span></button>
   </nav>
 
   <section class="toolbar">
@@ -153,10 +152,35 @@
 
   <div class="toast" id="toast" role="status"></div>
 
+  <!-- Open demo positions (from the bottom bar) -->
+  <section class="sheet" id="posSheet" hidden aria-label="Otwarte pozycje DEMO">
+    <div class="sheet-head">
+      <h2>💼 Otwarte pozycje <span class="demo-tag">DEMO</span></h2>
+      <button class="d-close" data-sheet-close aria-label="Zamknij">✕</button>
+    </div>
+    <div class="sheet-body" id="posBody"></div>
+  </section>
+
+  <!-- Demo wallet (from the bottom bar) -->
+  <section class="sheet" id="walletSheet" hidden aria-label="Wallet DEMO">
+    <div class="sheet-head">
+      <h2>👛 Wallet <span class="demo-tag">DEMO</span></h2>
+      <button class="d-close" data-sheet-close aria-label="Zamknij">✕</button>
+    </div>
+    <div class="sheet-body" id="walletBody"></div>
+  </section>
+
+  <!-- Bottom bar: more options will land here over time -->
+  <nav class="bottombar" id="bottombar" aria-label="Menu">
+    <button data-nav="radar" class="on"><span class="bi">📡</span><span>Radar</span></button>
+    <button data-nav="pos"><span class="bi">💼</span><span>Otwarte pozycje</span><span class="bb-count" id="c-pos"></span></button>
+    <button data-nav="wallet"><span class="bi">👛</span><span>Wallet</span></button>
+  </nav>
+
   <footer class="foot">
     Dane: PumpPortal (on-chain), DexScreener, GeckoTerminal, Jupiter, RugCheck, GoPlus, X API. To nie jest porada inwestycyjna — memecoiny są skrajnie ryzykowne.
   </footer>
 
-  <script type="module" src="boot.js?v=mutkg1ca"></script>
+  <script type="module" src="boot.js?v=mutkyp9h"></script>
 </body>
 </html>

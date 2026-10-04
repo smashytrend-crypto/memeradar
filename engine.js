@@ -3,15 +3,15 @@
 // cross-origin reads). One engine per network, created the first time the viewer opens it; only
 // the network on screen polls its sources, the others pause (and keep their data for a quick
 // switch back).
-import { Store } from './server/store.js?v=mutkg1ca';
-import { every, getJSON, num } from './server/util.js?v=mutkg1ca';
-import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=mutkg1ca';
-import { startPumpPortal } from './server/sources/pumpportal.js?v=mutkg1ca';
-import { startDexScreener } from './server/sources/dexscreener.js?v=mutkg1ca';
-import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=mutkg1ca';
-import { startJupiter } from './server/sources/jupiter.js?v=mutkg1ca';
-import { startRugCheck } from './server/sources/rugcheck.js?v=mutkg1ca';
-import { startGoPlus } from './server/sources/goplus.js?v=mutkg1ca';
+import { Store } from './server/store.js?v=mutkyp9h';
+import { every, getJSON, num } from './server/util.js?v=mutkyp9h';
+import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=mutkyp9h';
+import { startPumpPortal } from './server/sources/pumpportal.js?v=mutkyp9h';
+import { startDexScreener } from './server/sources/dexscreener.js?v=mutkyp9h';
+import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=mutkyp9h';
+import { startJupiter } from './server/sources/jupiter.js?v=mutkyp9h';
+import { startRugCheck } from './server/sources/rugcheck.js?v=mutkyp9h';
+import { startGoPlus } from './server/sources/goplus.js?v=mutkyp9h';
 
 const baseConfig = {
   demo: false,
@@ -86,6 +86,8 @@ function createEngine(chainId) {
       return { t: Date.now(), view, rows: store.list(view, filters, limit, mints), stats: store.stats(), sources: store.sources };
     },
     feed: () => store.feed.slice(0, 60),
+    /** Keep these tokens loaded and protected from pruning (watchlist, demo positions). */
+    track: ensureWatched,
     async detail(mint) {
       if (!isAddressOn(chain, mint)) return null;
       mint = normAddr(chain, mint);
@@ -142,5 +144,16 @@ export const engine = {
   feed: () => current.feed(),
   onFeed: (fn) => feedHandlers.add(fn),
   detail: (mint) => current.detail(mint),
+  /** Load / pin tokens on the network on screen (demo positions). */
+  track: (mints) => current.track(mints),
+  /**
+   * Live rows of tokens on any network whose engine has run this session (a paused network's
+   * data is as of when it was last on screen). Missing tokens are left out.
+   */
+  rowsFor(chainId, mints) {
+    const e = engines.get(chainId);
+    if (!e) return [];
+    return mints.map((m) => e.store.get(m)).filter(Boolean).map((t) => e.store.row(t));
+  },
   search: (q) => current.search(q),
 };
