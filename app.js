@@ -2069,7 +2069,49 @@ document.addEventListener('keydown', (e) => {
   } else if (e.key.toLowerCase() === 'p') togglePause();
 });
 
+// ---------- auto-update ----------
+// Safari may show a cached page after a deploy: check the live version now and then (and when
+// the app comes back to the foreground) and reload into the new one.
+async function checkVersion() {
+  const mine = window.__MR_VERSION;
+  if (!mine || document.activeElement?.matches('input, select, textarea')) return;
+  try {
+    const res = await fetch(`version.json?_=${Date.now()}`, { cache: 'no-store' });
+    const { v } = await res.json();
+    if (v && v !== mine) {
+      toast('Nowa wersja aplikacji — odświeżam…');
+      setTimeout(() => location.reload(), 1200);
+    }
+  } catch {
+    /* offline or not deployed with a version file */
+  }
+}
+if (window.__MR_VERSION) {
+  setInterval(checkVersion, 3 * 60_000);
+  document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && checkVersion());
+  setTimeout(checkVersion, 5000);
+}
+
 // ---------- bottom bar ----------
+// Shrinks while scrolling down (more room for the list) and grows back when scrolling up.
+// Reacts only to a deliberate scroll (40 px one way), not to the small shifts live list
+// updates cause.
+let lastY = window.scrollY;
+let scrollAcc = 0;
+window.addEventListener(
+  'scroll',
+  () => {
+    const y = window.scrollY;
+    const dy = y - lastY;
+    lastY = y;
+    scrollAcc = Math.sign(dy) === Math.sign(scrollAcc) ? scrollAcc + dy : dy;
+    const bar = $('#bottombar');
+    if (y < 80) bar.classList.remove('mini');
+    else if (scrollAcc > 40) bar.classList.add('mini');
+    else if (scrollAcc < -40) bar.classList.remove('mini');
+  },
+  { passive: true },
+);
 $('#bottombar').addEventListener('click', (e) => {
   const b = e.target.closest('[data-nav]');
   if (!b) return;

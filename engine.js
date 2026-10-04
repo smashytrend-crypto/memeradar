@@ -3,15 +3,15 @@
 // cross-origin reads). One engine per network, created the first time the viewer opens it; only
 // the network on screen polls its sources, the others pause (and keep their data for a quick
 // switch back).
-import { Store } from './server/store.js?v=mutkyp9h';
-import { every, getJSON, num } from './server/util.js?v=mutkyp9h';
-import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=mutkyp9h';
-import { startPumpPortal } from './server/sources/pumpportal.js?v=mutkyp9h';
-import { startDexScreener } from './server/sources/dexscreener.js?v=mutkyp9h';
-import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=mutkyp9h';
-import { startJupiter } from './server/sources/jupiter.js?v=mutkyp9h';
-import { startRugCheck } from './server/sources/rugcheck.js?v=mutkyp9h';
-import { startGoPlus } from './server/sources/goplus.js?v=mutkyp9h';
+import { Store } from './server/store.js?v=mutlbs4f';
+import { every, getJSON, num } from './server/util.js?v=mutlbs4f';
+import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=mutlbs4f';
+import { startPumpPortal } from './server/sources/pumpportal.js?v=mutlbs4f';
+import { startDexScreener } from './server/sources/dexscreener.js?v=mutlbs4f';
+import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=mutlbs4f';
+import { startJupiter } from './server/sources/jupiter.js?v=mutlbs4f';
+import { startRugCheck } from './server/sources/rugcheck.js?v=mutlbs4f';
+import { startGoPlus } from './server/sources/goplus.js?v=mutlbs4f';
 
 const baseConfig = {
   demo: false,

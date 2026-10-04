@@ -829,3 +829,12 @@ body.sheet-open { overflow: hidden; }
 .wallet-sub b small { font-size: 10.5px; }
 .quick-amt { display: flex; gap: 6px; margin-top: 8px; }
 .quick-amt button { flex: 1; height: 34px; border-radius: 9px; border: 1px solid var(--line2); background: var(--panel2); color: var(--text); font: 600 13px/1 var(--mono); cursor: pointer; }
+
+/* Bottom bar shrinks while scrolling down, grows back on scroll up. */
+.bottombar, .bottombar button, .bottombar .bi { transition: padding 0.25s ease, font-size 0.25s ease, gap 0.25s ease; }
+.bottombar button > span:not(.bi):not(.bb-count) { transition: opacity 0.2s ease, max-height 0.25s ease; max-height: 20px; overflow: hidden; }
+.bottombar.mini { padding-top: 3px; padding-bottom: calc(3px + env(safe-area-inset-bottom, 0px)); }
+.bottombar.mini button { padding: 4px; gap: 0; }
+.bottombar.mini .bi { font-size: 16px; }
+.bottombar.mini button > span:not(.bi):not(.bb-count) { opacity: 0; max-height: 0; }
+.bottombar.mini .bb-count { top: -2px; }
