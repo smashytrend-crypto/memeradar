@@ -991,7 +991,10 @@ const sellRow = (attr) =>
 const EXITS = {
   sl: { name: 'Stop loss', icon: '🛑', sign: '−', presets: [10, 20, 30, 50], max: 99, attr: 'sl' },
   tp: { name: 'Take profit', icon: '🎯', sign: '+', presets: [50, 100, 200, 500], max: 100000, attr: 'tp' },
+  be: { name: 'Break even', icon: '🛡️' },
 };
+// Break even: once the position has been above +BE_PCT, sell everything if it falls back there.
+const BE_PCT = 5;
 
 function setExit(kind, mint, pct) {
   const p = state.positions[mint];
@@ -1034,7 +1037,11 @@ const exitRow = (kind, p, attr) => {
     ? `<small class="sl-est ${kind}">${kind === 'tp' ? `Przewidywany zysk: <b>+${fmt.usd(est)}</b>${share < 1 ? ` (sprzeda ${Math.round(share * 100)}% za ${fmt.usd(p.usd * share + est)})` : ` (wypłata ${fmt.usd(p.usd + est)})`}` : `Przewidywana strata: <b>−${fmt.usd(est)}</b> (wróci ${fmt.usd(p.usd - est)})`}</small>`
     : '';
   return `<div class="sl-row ${kind}"><span>${k.icon} ${k.name}${v ? ` <b>${k.sign}${fmt.n(v)}%</b>${mcAt ? ` <small>MC ${fmt.usd(mcAt)}</small>` : ''}` : ' <small>wyłączony</small>'}</span>${estLine}
-    <div>${k.presets.map((x) => `<button ${attr}="${kind}:${x}" class="${v === x ? 'on' : ''}">${k.sign}${x}%</button>`).join('')}<button ${attr}="${kind}:custom" class="${v && !k.presets.includes(v) ? 'on' : ''}">Własny</button>${v ? `<button ${attr}="${kind}:off" class="off" aria-label="Wyłącz">✕</button>` : ''}</div>${
+    <div>${k.presets.map((x) => `<button ${attr}="${kind}:${x}" class="${v === x ? 'on' : ''}">${k.sign}${x}%</button>`).join('')}<button ${attr}="${kind}:custom" class="${v && !k.presets.includes(v) ? 'on' : ''}">Własny</button>${kind === 'sl' ? `<button ${attr}="be:toggle" class="be ${p.be ? 'on' : ''}" title="Break even: sprzeda całość, gdy cena spadnie do +${BE_PCT}% od wejścia">🛡️ BE · Break even (+${BE_PCT}%)</button>` : ''}${v ? `<button ${attr}="${kind}:off" class="off" aria-label="Wyłącz">✕</button>` : ''}</div>${
+      kind === 'sl' && p.be
+        ? `<small class="sl-est be">🛡️ BE ${p.bea ? `aktywny — sprzeda całość przy <b>+${BE_PCT}%</b>${p.mc > 0 ? ` (MC ${fmt.usd(p.mc * (1 + BE_PCT / 100))})` : ''}${p.usd > 0 ? `, zysk <b>+${fmt.usd((p.usd * BE_PCT) / 100)}</b>` : ''}` : `czeka, aż zysk przekroczy +${BE_PCT}% — potem pilnuje ceny +${BE_PCT}%`}</small>`
+        : ''
+    }${
       kind === 'tp'
         ? `<span class="sl-sub">Ile pozycji sprzedać</span><div>${[25, 50, 75, 100].map((x) => `<button ${attr}="tpf:${x}" class="${(p.tpf || 100) === x ? 'on' : ''}">${x}%</button>`).join('')}</div>`
         : ''
@@ -1043,6 +1050,22 @@ const exitRow = (kind, p, attr) => {
 const exitRows = (p, attr) => exitRow('tp', p, attr) + exitRow('sl', p, attr);
 function exitClick(mint, value) {
   const [kind, v] = value.split(':');
+  if (kind === 'be') {
+    const p = state.positions[mint];
+    if (!p) return;
+    if (p.be) {
+      delete p.be;
+      delete p.bea;
+      LS.set('positions', state.positions);
+      return toast('Break even wyłączony');
+    }
+    const x = positionList().find((y) => y.m === mint);
+    p.be = true;
+    // Armed right away when already above +BE_PCT; otherwise once the price gets there.
+    p.bea = x?.pct > BE_PCT;
+    LS.set('positions', state.positions);
+    return toast(p.bea ? `🛡️ Break even: sprzeda całość, gdy cena spadnie do +${BE_PCT}%` : `🛡️ Break even włączy się, gdy zysk przekroczy +${BE_PCT}%`);
+  }
   if (kind === 'tpf') {
     // Share of the position the take profit sells (the rest stays open).
     const p = state.positions[mint];
@@ -1058,11 +1081,16 @@ function exitClick(mint, value) {
 
 /** Sells every position whose live price reached its stop loss or take profit (while the app is open). */
 function checkExits() {
-  if (!Object.values(state.positions).some((p) => p.sl || p.tp)) return;
+  if (!Object.values(state.positions).some((p) => p.sl || p.tp || p.be)) return;
   let hit = false;
   for (const x of positionList()) {
     if (x.stale || x.pct == null) continue;
-    const kind = x.p.sl && x.pct <= -x.p.sl ? 'sl' : x.p.tp && x.pct >= x.p.tp ? 'tp' : null;
+    if (x.p.be && !x.p.bea && x.pct > BE_PCT) {
+      x.p.bea = true;
+      LS.set('positions', state.positions);
+      hit = true;
+    }
+    const kind = x.p.sl && x.pct <= -x.p.sl ? 'sl' : x.p.tp && x.pct >= x.p.tp ? 'tp' : x.p.be && x.p.bea && x.pct <= BE_PCT ? 'be' : null;
     if (!kind) continue;
     const f = kind === 'tp' ? (x.p.tpf || 100) / 100 : 1;
     sellPosition(x.m, f, x.r.p, { [kind]: true });
@@ -1148,9 +1176,9 @@ function pnlWindow(list, ms) {
 
 /** Profitable / losing demo positions: open ones by current P&L, closed trades (a position sold
  *  in parts counts once) by their total result. */
-function winLoss(list) {
+function winLoss(stat, list) {
   const open = { win: 0, loss: 0 };
-  for (const x of list) {
+  for (const x of stat) {
     if (x.pct == null || Math.abs(x.pct) < 1e-9) continue;
     open[x.pct > 0 ? 'win' : 'loss']++;
   }
@@ -1178,19 +1206,21 @@ function winLoss(list) {
 function renderPositions() {
   const body = $('#posBody');
   const list = positionList();
-  const cost = list.reduce((a, x) => a + (x.p.usd || 0), 0);
-  const value = list.reduce((a, x) => a + (x.value ?? x.p.usd ?? 0), 0);
+  // Statistics count the wallet's positions; ones opened before a wallet reset stay listed only.
+  const stat = list.filter((x) => x.p.w !== false);
+  const cost = stat.reduce((a, x) => a + (x.p.usd || 0), 0);
+  const value = stat.reduce((a, x) => a + (x.value ?? x.p.usd ?? 0), 0);
   const pnl = value - cost;
   const sign = (v) => (v >= 0 ? '+' : '−');
   const money = (v) => `${sign(v)}${fmt.usd(Math.abs(v))}`;
-  const w = [['1d', 86400e3], ['7d', 7 * 86400e3], ['30d', 30 * 86400e3]].map(([k, ms]) => [k, pnlWindow(list, ms)]);
+  const w = [['1d', 86400e3], ['7d', 7 * 86400e3], ['30d', 30 * 86400e3]].map(([k, ms]) => [k, pnlWindow(stat, ms)]);
   const summary = `<div class="wallet-line">👛 Saldo walletu DEMO: <b>${fmt.usd(state.wallet.cash)}</b> <button data-sheet-wallet>Wallet</button></div>
     <div class="pos-sum">
       <div><span>Wkład</span><b>${fmt.usd(cost)}</b></div>
       <div><span>Wartość</span><b>${fmt.usd(value)}</b></div>
       <div><span>Zysk / strata</span><b class="${pnl >= 0 ? 'up' : 'down'}">${money(pnl)}${cost > 0 ? ` <small>${fmt.pct((pnl / cost) * 100)}</small>` : ''}</b></div>
     </div>
-    ${winLoss(list)}
+    ${winLoss(stat, list)}
     <div class="pos-pnl">${w
       .map(([k, x]) => `<div><span>PnL ${k}</span><b class="${x.trades ? (x.pnl >= 0 ? 'up' : 'down') : 'muted'}">${x.trades ? money(x.pnl) : '—'}</b><small>${x.trades ? `${x.pct != null ? fmt.pct(x.pct) + ' · ' : ''}${x.trades} ${pl(x.trades, 'pozycja', 'pozycje', 'pozycji')}` : 'brak'}</small></div>`)
       .join('')}</div>
@@ -1201,7 +1231,7 @@ function renderPositions() {
           const d = { m: x.m, n: x.p.n || x.r?.n, s: x.p.s || x.r?.s, i: x.p.i || x.r?.i };
           const ch = ENGINE?.chains?.[x.p.chain || 'solana'];
           return `<div class="pos-card" data-pos="${esc(x.m)}" data-chain="${esc(x.p.chain || 'solana')}">
-            <div class="pos-top">${avatar(d)}<div class="pos-name"><b>${esc(d.n || fmt.short(x.m))}</b><small>$${esc(d.s || '?')}${ch ? ` · ${esc(ch.name)}` : ''} · ${fmt.ago(x.p.t)}${x.stale ? ` · <i>cena sprzed ${x.p.last?.at ? fmt.ago(x.p.last.at) : '—'}</i>` : ''}</small></div>
+            <div class="pos-top">${avatar(d)}<div class="pos-name"><b>${esc(d.n || fmt.short(x.m))}</b><small>$${esc(d.s || '?')}${ch ? ` · ${esc(ch.name)}` : ''} · ${fmt.ago(x.p.t)}${x.p.w === false ? ' · <i>poza statystykami</i>' : ''}${x.stale ? ` · <i>cena sprzed ${x.p.last?.at ? fmt.ago(x.p.last.at) : '—'}</i>` : ''}</small></div>
               <b class="pos-pct ${x.pct >= 0 ? 'up' : 'down'}">${x.pct != null ? `${fmt.pct(x.pct)}<small>${fmtX(x.ratio)}</small>` : '—'}</b></div>
             <div class="pos-grid">
               <div><span>MC wejścia</span><b>${fmt.usd(x.mcIn)}</b></div>
@@ -1219,7 +1249,7 @@ function renderPositions() {
   const recent = state.closed.filter((c) => Date.now() - c.closedAt < 30 * 86400e3).slice(0, 20);
   const history = recent.length
     ? `<h3 class="pos-h">Zamknięte (30 dni)</h3><div class="pos-closed">${recent
-        .map((c) => `<div><span>${esc(c.n || fmt.short(c.m))} <small>${c.sl ? '🛑 SL · ' : c.tp ? '🎯 TP · ' : ''}$${esc(c.s || '?')}${c.f && c.f < 1 ? ` · ${Math.round(c.f * 100)}%` : ''} · ${fmt.ago(c.closedAt)}</small></span><b class="${c.pct >= 0 ? 'up' : 'down'}">${fmt.pct(c.pct)}${c.usd > 0 ? ` · ${money(c.pnl)}` : ''}</b></div>`)
+        .map((c) => `<div><span>${esc(c.n || fmt.short(c.m))} <small>${c.sl ? '🛑 SL · ' : c.tp ? '🎯 TP · ' : c.be ? '🛡️ BE · ' : ''}$${esc(c.s || '?')}${c.f && c.f < 1 ? ` · ${Math.round(c.f * 100)}%` : ''} · ${fmt.ago(c.closedAt)}</small></span><b class="${c.pct >= 0 ? 'up' : 'down'}">${fmt.pct(c.pct)}${c.usd > 0 ? ` · ${money(c.pnl)}` : ''}</b></div>`)
         .join('')}</div>`
     : '';
   const html = summary + `<h3 class="pos-h">Otwarte (${list.length})</h3>` + cards + history;
@@ -2335,12 +2365,15 @@ $('#walletSheet').addEventListener('click', (e) => {
     toast(`👛 Doładowano ${fmt.usd(amount)} — saldo ${fmt.usd(state.wallet.cash)}`);
     renderWallet();
   } else if (act === 'reset') {
-    if (!confirm('Wyzerować wallet DEMO? Saldo i historia zostaną wyczyszczone (otwarte pozycje zostają).')) return;
+    if (!confirm('Wyzerować wallet DEMO? Saldo, historia i statystyki pozycji (PnL, zyskowne / stratne, zamknięte) zostaną wyczyszczone. Otwarte pozycje zostają na liście, ale poza statystykami.')) return;
     state.wallet = { cash: 0, deposits: 0, tx: [] };
     walletTx('reset', 0);
     // Open positions stop counting against the wallet after a reset.
     for (const p of Object.values(state.positions)) p.w = false;
     LS.set('positions', state.positions);
+    // Fresh statistics: closed history goes; earlier open positions no longer count (p.w false).
+    state.closed = [];
+    LS.set('closedPositions', state.closed);
     saveWallet();
     renderWallet();
     toast('Wallet DEMO wyzerowany');

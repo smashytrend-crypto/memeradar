@@ -1,8 +1,8 @@
-import { computeHype } from './scoring.js?v=mutoguvf';
-import { CURVE_DEXES, NON_MEME, NON_MEME_TAGS, PUMP_INITIAL_VTOKENS, PUMP_K, PUMP_TOKENS_FOR_SALE } from './constants.js?v=mutoguvf';
-import { Emitter, clamp } from './util.js?v=mutoguvf';
-import { change4h, freshCandles, sparkPoints } from './candles.js?v=mutoguvf';
-import { EVM_BASE_ASSETS, EVM_NON_MEME_SYMBOLS, evmEligible, getChain, isAddressOn, normAddr } from './chains.js?v=mutoguvf';
+import { computeHype } from './scoring.js?v=mutov394';
+import { CURVE_DEXES, NON_MEME, NON_MEME_TAGS, PUMP_INITIAL_VTOKENS, PUMP_K, PUMP_TOKENS_FOR_SALE } from './constants.js?v=mutov394';
+import { Emitter, clamp } from './util.js?v=mutov394';
+import { change4h, freshCandles, sparkPoints } from './candles.js?v=mutov394';
+import { EVM_BASE_ASSETS, EVM_NON_MEME_SYMBOLS, evmEligible, getChain, isAddressOn, normAddr } from './chains.js?v=mutov394';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;

@@ -1,6 +1,6 @@
 // Jupiter Tokens API v2 (https://dev.jup.ag/docs/tokens): trending / organic lists, holder counts,
 // organic score, audit (mint/freeze authority, top holders) and bonding-curve progress. Also SOL price.
-import { RateLimiter, errMsg, every, getJSON, isMint, num, toMs } from '../util.js?v=mutoguvf';
+import { RateLimiter, errMsg, every, getJSON, isMint, num, toMs } from '../util.js?v=mutov394';
 
 const BASE = 'https://lite-api.jup.ag';
 const NAME = 'jupiter';

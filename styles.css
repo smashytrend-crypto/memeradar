@@ -891,3 +891,7 @@ body.sheet-open { overflow: hidden; }
 .pos-wl small { display: block; margin-top: 2px; font-size: 10.5px; color: var(--muted); }
 .pos-wl .wl-bar { display: block; height: 5px; margin-top: 7px; border-radius: 3px; background: rgba(255, 77, 106, 0.55); overflow: hidden; }
 .pos-wl .wl-bar i { display: block; height: 100%; background: var(--up); }
+.sl-row button.be { order: 10; flex: 1 1 100%; font-family: inherit; }
+.sl-row button.be.on { border-color: #4da3ff; color: #fff; background: rgba(77, 163, 255, 0.35); }
+.sl-row .sl-est.be { margin: 6px 0 0; }
+.sl-row .sl-est.be b { color: #7cbcff; }
