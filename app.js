@@ -2009,7 +2009,6 @@ $('#drawer').addEventListener('click', (e) => {
     toast(`💼 Pozycja DEMO otwarta przy MC ${fmt.usd(mc)}`);
     renderDetail(state.detail);
   } else if (act === 'pos-close' && state.selected) {
-    if (!confirm('Zamknąć tę pozycję DEMO?')) return;
     closePosition(state.selected, state.detail?.p);
     toast('Pozycja DEMO zamknięta');
     if (state.detail) renderDetail(state.detail);
@@ -2152,12 +2151,11 @@ $('#posSheet').addEventListener('click', (e) => {
   const mint = card.dataset.pos;
   if (e.target.closest('[data-pos-close]')) {
     const x = positionList().find((p) => p.m === mint);
-    const msg = x?.stale
-      ? `Ta pozycja jest na innej sieci — zamknie się po ostatniej znanej cenie (sprzed ${x.p.last?.at ? fmt.ago(x.p.last.at) : '—'}). Żeby zamknąć po aktualnej, przełącz sieć i otwórz token. Zamknąć teraz?`
-      : 'Zamknąć tę pozycję DEMO po obecnej cenie?';
-    if (!confirm(msg)) return;
+    const lastAt = x?.p.last?.at;
     closePosition(mint, x?.r?.p || x?.p.last?.p);
-    toast('Pozycja DEMO zamknięta');
+    // Instant close (no confirmation — timing matters); a position on another network closes at
+    // the last price seen there.
+    toast(x?.stale ? `Pozycja DEMO zamknięta po ostatniej znanej cenie (sprzed ${lastAt ? fmt.ago(lastAt) : '—'})` : 'Pozycja DEMO zamknięta');
     renderPositions();
     return;
   }
