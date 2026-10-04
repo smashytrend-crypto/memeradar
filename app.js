@@ -864,8 +864,15 @@ function renderPosCount() {
   $('#c-pos').textContent = n || '';
 }
 
-function savePosition(mint, price, usd) {
-  state.positions[mint] = { p: price, usd: usd > 0 ? usd : 0, t: Date.now(), chain: ENGINE?.chain || 'solana' };
+/** "150k", "1.5m", "2,3M", "$80K", "250000" → number (NaN when unreadable). */
+function parseAmount(text) {
+  const m = String(text || '').trim().replace(/[\s$]/g, '').replace(',', '.').match(/^(\d*\.?\d+)([kmb])?$/i);
+  if (!m) return NaN;
+  return Number(m[1]) * ({ k: 1e3, m: 1e6, b: 1e9 }[(m[2] || '').toLowerCase()] || 1);
+}
+
+function savePosition(mint, price, usd, mc) {
+  state.positions[mint] = { p: price, mc: mc || 0, usd: usd > 0 ? usd : 0, t: Date.now(), chain: ENGINE?.chain || 'solana' };
   LS.set('positions', state.positions);
   renderPosCount();
 }
@@ -1352,8 +1359,8 @@ function renderDetail(d) {
   const posCard = pp
     ? `<div class="card"><h3>💼 Moja pozycja <small>od ${fmt.ago(pp.entry.t)}</small></h3>
       <div class="hstats">
-        <div><span>Cena wejścia</span><b>${fmt.price(pp.entry.p)}</b></div>
-        <div><span>Teraz</span><b>${fmt.price(d.p)}</b></div>
+        <div><span>MC wejścia</span><b>${fmt.usd(pp.entry.mc || (d.mc && d.p ? (pp.entry.p * d.mc) / d.p : null))}</b></div>
+        <div><span>MC teraz</span><b>${fmt.usd(d.mc)}</b></div>
         <div><span>Wynik</span><b class="${pp.cls}">${fmt.pct(pp.pct)} · ${fmtX(d.p / pp.entry.p)}</b></div>
         ${pp.usd != null ? `<div><span>Włożone</span><b>${fmt.usd(pp.entry.usd)}</b></div><div><span>Wartość</span><b>${fmt.usd(pp.value)}</b></div><div><span>Zysk / strata</span><b class="${pp.cls}">${pp.usd >= 0 ? '+' : '−'}${fmt.usd(Math.abs(pp.usd))}</b></div>` : ''}
       </div>
@@ -1362,7 +1369,7 @@ function renderDetail(d) {
       <p class="note" style="margin:0 0 8px">Zapisz zakup, a aplikacja policzy zysk lub stratę na żywo (zakładka „Pozycje”).</p>
       <div class="pos-form">
         <input id="posUsd" type="number" inputmode="decimal" min="0" step="any" placeholder="Kwota w $ (opcjonalnie)" />
-        <input id="posEntry" type="number" inputmode="decimal" min="0" step="any" placeholder="Cena wejścia (puste = obecna)" />
+        <input id="posEntry" type="text" autocomplete="off" autocapitalize="off" placeholder="MC wejścia, np. 150k (puste = obecny)" />
         <button data-act="pos-add">💼 Zapisz pozycję</button>
       </div></div>`;
 
@@ -1741,11 +1748,16 @@ $('#drawer').addEventListener('click', (e) => {
   else if (act === 'hide' && state.selected) hideToken(state.selected);
   else if (act === 'block' && state.detail?.creator) blockCreator(state.detail.creator);
   else if (act === 'pos-add' && state.selected && state.detail) {
+    const d = state.detail;
     const usd = Number($('#posUsd')?.value) || 0;
-    const entry = Number($('#posEntry')?.value) || state.detail.p;
-    if (!(entry > 0)) return toast('Brak ceny — spróbuj za chwilę');
-    savePosition(state.selected, entry, usd);
-    toast(`💼 Zapisano pozycję po ${fmt.price(entry)}`);
+    const raw = ($('#posEntry')?.value || '').trim();
+    // Entry given as market cap (easier than long prices): price scales with market cap.
+    const mc = raw ? parseAmount(raw) : d.mc;
+    if (raw && !(mc > 0)) return toast('Nie rozumiem MC — wpisz np. 150k albo 1.2m');
+    if (!(d.p > 0) || !(d.mc > 0)) return toast('Brak ceny lub MC — spróbuj za chwilę');
+    const entry = d.p * (mc / d.mc);
+    savePosition(state.selected, entry, usd, mc);
+    toast(`💼 Zapisano pozycję przy MC ${fmt.usd(mc)}`);
     renderDetail(state.detail);
   } else if (act === 'pos-close' && state.selected) {
     if (!confirm('Zamknąć (usunąć) tę pozycję?')) return;
