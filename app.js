@@ -3272,8 +3272,8 @@ function drawCandlesLW(d) {
   const tr = state.tr?.m === d.m ? state.tr.list : [];
   const lv = chartLevels(d, mine, tr);
   const levels = [];
-  if (lv.buy) levels.push([lv.buy, `Moje kupno${lv.buyN > 1 ? ` (śr. ${lv.buyN})` : ''}`, '#4da3ff']);
-  if (lv.sell) levels.push([lv.sell, `Moja sprzedaż${lv.sellN > 1 ? ` (śr. ${lv.sellN})` : ''}`, '#ff8a4d']);
+  if (lv.buy) levels.push([lv.buy, 'B', '#4da3ff']);
+  if (lv.sell) levels.push([lv.sell, 'S', '#ff8a4d']);
   if (lv.top) levels.push([lv.top, 'Top 10', '#e4c15a']);
   if (pos?.p > 0) {
     if (pos.sl) levels.push([pos.p * (1 - pos.sl / 100), `SL −${fmt.n(pos.sl)}%`, '#ff4d6a']);
@@ -3303,8 +3303,8 @@ function drawCandlesLW(d) {
   for (const t of mine) {
     if (t.t < first) continue;
     marks.push(t.side === 'buy'
-      ? { time: tOf(t.t), position: 'belowBar', color: '#1fd68f', shape: 'arrowUp', text: 'Kupno' }
-      : { time: tOf(t.t), position: 'aboveBar', color: '#ff4d6a', shape: 'arrowDown', text: 'Sprzedaż' });
+      ? { time: tOf(t.t), position: 'belowBar', color: '#1fd68f', shape: 'arrowUp', text: 'B' }
+      : { time: tOf(t.t), position: 'aboveBar', color: '#ff4d6a', shape: 'arrowDown', text: 'S' });
   }
   marks.sort((a, b) => a.time - b.time);
   // One marker of a kind per candle (a busy candle would stack a tower of them).

@@ -1012,3 +1012,7 @@ svg.candles .th { fill: #e4c15a; stroke: #0b0f17; stroke-width: 1.2; }
 .lw-msg { position: absolute; inset: 40px 0 24px; display: flex; align-items: center; justify-content: center; color: var(--muted); font-weight: 600; pointer-events: none; z-index: 2; }
 .chart-box:has(.lw-box) .c-legend { position: absolute; left: 0; right: 0; bottom: 0; }
 .c-now small { font: 600 9.5px/1 var(--sans); color: var(--muted); margin-left: 2px; }
+/* Live MC readout: source under the value, so it never covers the timeframe buttons. */
+.c-now { top: 4px; font-size: 14px; line-height: 18px; display: grid; grid-template-columns: auto auto; align-items: center; column-gap: 5px; justify-items: end; }
+.c-now small { grid-column: 1 / -1; margin: 0; line-height: 12px; }
+.tf-row button { min-width: 34px; padding: 0 6px; }
