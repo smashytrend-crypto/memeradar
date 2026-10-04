@@ -860,16 +860,3 @@ body.sheet-open { overflow: hidden; }
 .qs-row button { border-color: rgba(255, 77, 106, 0.35); color: var(--down); background: rgba(255, 77, 106, 0.08); }
 .qb-row button:active, .qs-row button:active { transform: scale(0.96); }
 
-/* Creator warning on the list: icon only, highlighted. */
-.chip.warnc.ico {
-  padding: 1px 5px; background: rgba(255, 77, 106, 0.22); box-shadow: 0 0 0 1px rgba(255, 77, 106, 0.55), 0 0 8px rgba(255, 77, 106, 0.35);
-}
-
-/* Dev icon highlighted for a serial creator / honeypot deployer. */
-.hs.alert { color: #ff8095; }
-.hs.alert svg {
-  box-sizing: content-box; padding: 2px; margin: -2px; border-radius: 6px; color: #fff;
-  background: rgba(255, 77, 106, 0.85); box-shadow: 0 0 8px rgba(255, 77, 106, 0.6);
-}
-/* Phones: hype-freshness chip as an icon only (its label didn't fit). */
-@container board (max-width: 703px) { .chip.fz .fz-t { display: none; } .chip.fz { padding: 1px 5px; } }

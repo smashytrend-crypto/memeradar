@@ -511,8 +511,9 @@ function updateRow(entry, d, idx) {
   else if (d.gr) chips.push('<span class="chip grad">🎓 DEX</span>');
   const pos = posPnl(d);
   if (pos) chips.push(`<span class="chip pos ${pos.cls}" title="Twoja pozycja DEMO: ${fmt.pct(pos.pct)}${pos.usd != null ? ` (${pos.usd >= 0 ? '+' : ''}${fmt.usd(pos.usd)})` : ''}">💼 DEMO ${fmt.pct(pos.pct)}</span>`);
-  if (d.fz && FRESH[d.fz]) chips.push(`<span class="chip fz ${FRESH[d.fz][2]}" title="Hype teraz: ${FRESH[d.fz][1]}">${FRESH[d.fz][0]}<span class="fz-t"> ${FRESH[d.fz][1]}</span></span>`);
-  // Creator warning: shown on the list as the highlighted dev icon (see holderIcons).
+  if (d.fz && FRESH[d.fz]) chips.push(`<span class="chip fz ${FRESH[d.fz][2]}" title="Hype teraz: ${FRESH[d.fz][1]}">${FRESH[d.fz][0]} ${FRESH[d.fz][1]}</span>`);
+  const serial = creatorWarning(d);
+  if (serial) chips.push(`<span class="chip warnc" title="${esc(serial.tip)}">${serial.short}</span>`);
   if (d.vs >= 2) chips.push(`<span class="chip surge" title="Wolumen 5 min względem własnej średniej">🚀 ${d.vs.toFixed(1)}×</span>`);
   if (d.ai) chips.push(`<span class="chip ai" title="${esc(d.ai)}">🤖</span>`);
   if (d.bo) chips.push(`<span class="chip boost">⚡${d.bo}</span>`);
@@ -847,9 +848,9 @@ const plTokens = (n) => pl(n, 'token', 'tokeny', 'tokenów');
 
 /** Warning for a creator with a bad track record (serial launcher / honeypot deployer), or null. */
 function creatorWarning(d) {
-  if (d.dhp > 0) return { icon: '☠️', short: '☠️ twórca honeypotów', tip: `Ten twórca wdrożył już ${d.dhp} honeypot(y) (GoPlus)` };
+  if (d.dhp > 0) return { short: '☠️ twórca honeypotów', tip: `Ten twórca wdrożył już ${d.dhp} honeypot(y) (GoPlus)` };
   if (d.dm >= 20 && (d.dmg || 0) / d.dm < 0.05)
-    return { icon: '🧑‍🍳', short: '🧑‍🍳 seryjny twórca', tip: `Seryjny twórca: stworzył ${fmt.n(d.dm)} tokenów, graduację przeszło ${fmt.n(d.dmg || 0)}` };
+    return { short: '🧑‍🍳 seryjny twórca', tip: `Twórca stworzył ${fmt.n(d.dm)} tokenów, graduację przeszło ${fmt.n(d.dmg || 0)}` };
   return null;
 }
 
@@ -1191,8 +1192,7 @@ function holderIcons(d, compact = false) {
   const evm = chainCfg().evm;
   const cells = [
     ['top10', tone(d.t10, 30, 50), shortPct(d.t10), `Top 10 holderów: ${shortPct(d.t10)}`],
-    // Serial creator / honeypot deployer: the dev icon lights up red.
-    ((cw) => ['dev', `${tone(d.dv, 5, 15)}${cw ? ' alert' : ''}`, shortPct(d.dv), `Dev trzyma: ${shortPct(d.dv)}${cw ? ` · ⚠️ ${cw.tip}` : ''}`])(creatorWarning(d)),
+    ['dev', tone(d.dv, 5, 15), shortPct(d.dv), `Dev trzyma: ${shortPct(d.dv)}`],
     evm ? null : ['insiders', tone(d.ins, 5, 15), shortPct(d.ins), `Insiderzy: ${shortPct(d.ins)}`],
     ['lp', tone(d.lpb, 50, 90, true), shortPct(d.lpb), `LP spalone: ${shortPct(d.lpb)}`],
     ['paid', d.dp == null ? 'na' : d.dp ? 'up' : 'down', d.dp == null ? '—' : d.dp ? (compact ? '✓' : 'Paid') : compact ? '✗' : 'Unpaid', `DEX paid: ${d.dp == null ? 'nie sprawdzono' : d.dp ? 'tak' : 'nie'}`],
