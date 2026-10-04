@@ -1876,12 +1876,14 @@ function renderDetail(d) {
     state.detailHtml = { ...sections };
     state.chartHist = null;
     const sec = (k) => `<div data-sec="${k}">${sections[k]}</div>`;
-    body.innerHTML = `${sec('head')}${sec('pos')}${sec('holders')}${sec('ai')}${sec('grid')}
+    // Chart first, right under the token header (above the position and the Hype Score).
+    body.innerHTML = `${sec('head')}
+    <div class="card d-chart"><h3>Wykres <span class="chart-tabs">
+        ${hasPair ? `<button data-chart="dex" class="${chartTab === 'dex' ? 'active' : ''}">Cena (DexScreener)</button>` : ''}
+        <button data-chart="hype" class="${chartTab === 'hype' ? 'active' : ''}">Hype i cena (radar)</button></span></h3>
+      <div class="chart-box" id="chartBox"></div></div>
+    ${sec('pos')}${sec('holders')}${sec('ai')}${sec('grid')}
     <div class="d-stack">
-      <div class="card"><h3>Wykres <span class="chart-tabs">
-          ${hasPair ? `<button data-chart="dex" class="${chartTab === 'dex' ? 'active' : ''}">Cena (DexScreener)</button>` : ''}
-          <button data-chart="hype" class="${chartTab === 'hype' ? 'active' : ''}">Hype i cena (radar)</button></span></h3>
-        <div class="chart-box" id="chartBox"></div></div>
       ${sec('market')}${sec('risk')}${sec('x')}${sec('trades')}${sec('desc')}
     </div>`;
     renderChart(d, chartTab);

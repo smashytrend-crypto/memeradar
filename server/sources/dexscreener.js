@@ -1,9 +1,9 @@
 // DexScreener public API (https://docs.dexscreener.com/api/reference):
 // discovery (profiles / boosts) + batched market data for every tracked token.
-import { RateLimiter, errMsg, every, getJSON, num, sleep, toMs } from '../util.js?v=mutov394';
-import { Store } from '../store.js?v=mutov394';
-import { isCurvePair } from '../constants.js?v=mutov394';
-import { isAddressOn, normAddr } from '../chains.js?v=mutov394';
+import { RateLimiter, errMsg, every, getJSON, num, sleep, toMs } from '../util.js?v=mutpbd0j';
+import { Store } from '../store.js?v=mutpbd0j';
+import { isCurvePair } from '../constants.js?v=mutpbd0j';
+import { isAddressOn, normAddr } from '../chains.js?v=mutpbd0j';
 
 const BASE = 'https://api.dexscreener.com';
 const NAME = 'dexscreener';
