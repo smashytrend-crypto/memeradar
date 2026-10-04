@@ -3274,7 +3274,7 @@ function drawCandlesLW(d) {
   const levels = [];
   if (lv.buy) levels.push([lv.buy, `Moje kupno${lv.buyN > 1 ? ` (śr. ${lv.buyN})` : ''}`, '#4da3ff']);
   if (lv.sell) levels.push([lv.sell, `Moja sprzedaż${lv.sellN > 1 ? ` (śr. ${lv.sellN})` : ''}`, '#ff8a4d']);
-  if (lv.top) levels.push([lv.top, `Top 10 ${lv.topKind === 'holders' ? 'holderów' : 'kupujących'}`, '#e4c15a']);
+  if (lv.top) levels.push([lv.top, 'Top 10', '#e4c15a']);
   if (pos?.p > 0) {
     if (pos.sl) levels.push([pos.p * (1 - pos.sl / 100), `SL −${fmt.n(pos.sl)}%`, '#ff4d6a']);
     if (pos.tp) levels.push([pos.p * (1 + pos.tp / 100), `TP +${fmt.n(pos.tp)}%`, '#1fd68f']);
@@ -3320,7 +3320,8 @@ function drawCandlesLW(d) {
     lw.marksKey = marksKey;
   }
   const now = box.querySelector('.c-now');
-  const nowHtml = `<i class="${live ? 'on' : ''}"></i>${lw.K ? `MC ${fmt.usd(nowP * lw.K)}` : fmt.price(nowP)}`;
+  const SRC = { chain: '⚡ on-chain', jupiter: 'Jupiter', dexscreener: 'DexScreener' };
+  const nowHtml = `<i class="${live ? 'on' : ''}"></i>${lw.K ? `MC ${fmt.usd(nowP * lw.K)}` : fmt.price(nowP)}${live?.source ? `<small>${SRC[live.source] || ''}</small>` : ''}`;
   if (now.innerHTML !== nowHtml) now.innerHTML = nowHtml;
   const SYN = { trades: 'świece z ostatnich transakcji', radar: 'świece z cen radaru', live: 'świece z ceny na żywo' };
   const legend = `${c.synth ? `<span class="muted">ⓘ ${SYN[c.synth]}</span>` : ''}<span>Przesuń palcem · powiększ dwoma palcami</span>`;
@@ -3372,7 +3373,7 @@ async function liveTick() {
   try {
     const r = await ENGINE.live(d.m);
     if (r?.p > 0 && state.selected === d.m) {
-      state.live = { m: d.m, p: r.p, mc: r.mc, at: r.at };
+      state.live = { m: d.m, p: r.p, mc: r.mc, at: r.at, source: r.source };
       applyLive(r.p, r.at);
       // The TradingView chart updates in place (no rebuild), so it moves even under a finger;
       // the SVG fallback skips frames while the drawer is touched (iOS would lose the tap).

@@ -1,5 +1,5 @@
 // RugCheck (https://api.rugcheck.xyz/swagger/index.html): safety report for top tokens.
-import { RateLimiter, errMsg, every, getJSON } from '../util.js?v=muu8d6ti';
+import { RateLimiter, errMsg, every, getJSON } from '../util.js?v=muu8pwir';
 
 const BASE = 'https://api.rugcheck.xyz/v1';
 const NAME = 'rugcheck';
@@ -16,6 +16,15 @@ export function rugToReport(r) {
     insidersPct: r.topHolders ? insiders.reduce((a, h) => a + (Number(h.pct) || 0), 0) : null,
     insiders: r.graphInsidersDetected ?? insiders.length,
     creator: typeof r.creator === 'string' ? r.creator : undefined,
+    // Main constant-product pool's vaults (token / quote reserves): the chart reads them straight
+    // from the chain for a real-time price.
+    pool: ((m) => {
+      if (!m || !['pump_fun_amm', 'raydium', 'raydium_cpmm'].includes(m.marketType)) return null;
+      const tokenIsA = m.mintA === r.mint;
+      if (!tokenIsA && m.mintB !== r.mint) return null;
+      const pool = { id: m.pubkey, type: m.marketType, base: tokenIsA ? m.liquidityA : m.liquidityB, quote: tokenIsA ? m.liquidityB : m.liquidityA, quoteMint: tokenIsA ? m.mintB : m.mintA };
+      return typeof pool.base === 'string' && typeof pool.quote === 'string' ? pool : null;
+    })(main),
     // Top holder wallets (owners), leaving out pools / AMMs / lockers: for the chart's "top 10
     // holders" entry level.
     holders: Array.isArray(r.topHolders)
@@ -47,6 +56,7 @@ export function startRugCheck(store) {
     t.rug = { ...rep, at: Date.now() };
     if (rep.devTokens) t.devTokens = rep.devTokens;
     if (rep.holders) t.topHolders = rep.holders;
+    if (rep.pool) t.chainPool = rep.pool;
     if (rep.creator && !t.creator) store.upsert(t.mint, { creator: rep.creator }, NAME);
     store.setSource(NAME, 'ok', `OK · ${++okCount} raportów`);
   }

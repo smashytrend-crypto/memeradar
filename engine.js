@@ -3,15 +3,15 @@
 // cross-origin reads). One engine per network, created the first time the viewer opens it; only
 // the network on screen polls its sources, the others pause (and keep their data for a quick
 // switch back).
-import { Store } from './server/store.js?v=muu8d6ti';
-import { every, getJSON, num } from './server/util.js?v=muu8d6ti';
-import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=muu8d6ti';
-import { startPumpPortal } from './server/sources/pumpportal.js?v=muu8d6ti';
-import { startDexScreener } from './server/sources/dexscreener.js?v=muu8d6ti';
-import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=muu8d6ti';
-import { startJupiter } from './server/sources/jupiter.js?v=muu8d6ti';
-import { startRugCheck } from './server/sources/rugcheck.js?v=muu8d6ti';
-import { startGoPlus } from './server/sources/goplus.js?v=muu8d6ti';
+import { Store } from './server/store.js?v=muu8pwir';
+import { RateLimiter, every, getJSON, num } from './server/util.js?v=muu8pwir';
+import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=muu8pwir';
+import { startPumpPortal } from './server/sources/pumpportal.js?v=muu8pwir';
+import { startDexScreener } from './server/sources/dexscreener.js?v=muu8pwir';
+import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=muu8pwir';
+import { startJupiter } from './server/sources/jupiter.js?v=muu8pwir';
+import { startRugCheck } from './server/sources/rugcheck.js?v=muu8pwir';
+import { startGoPlus } from './server/sources/goplus.js?v=muu8pwir';
 
 const baseConfig = {
   demo: false,
@@ -182,8 +182,50 @@ function createEngine(chainId) {
       }
       return store.detail(t);
     },
-    /** Live price + market cap of the open token, straight from DexScreener (chart, every second). */
-    live: (mint) => (isAddressOn(chain, mint) ? src.dex.live(mint) : null),
+    /**
+     * Live price + market cap of the open token (the chart asks every second): Solana pools read
+     * on chain (constant-product pools: PumpSwap / Raydium), else Jupiter's price, else DexScreener.
+     */
+    async live(mint) {
+      if (!isAddressOn(chain, mint)) return null;
+      const t = store.get(normAddr(chain, mint));
+      if (!t) return null;
+      const k = t.mcap > 0 && t.priceUsd > 0 ? t.mcap / t.priceUsd : 0; // MC per unit of price
+      let p = null;
+      let source = '';
+      const pool = t.chainPool;
+      if (!chain.evm && pool && pool.id === t.pairAddress && !t.chainBad && store.solPrice > 0) {
+        const v = await rpcVaults(pool);
+        const usd = pool.quoteMint === SOL_MINT ? store.solPrice : STABLES.has(pool.quoteMint) ? 1 : 0;
+        if (v && usd) {
+          const cp = (v.q / v.b) * usd;
+          // Sanity check against the aggregators (a pool type whose vaults don't give the price).
+          const r = t.priceUsd > 0 ? cp / t.priceUsd : 1;
+          if (r > 0.6 && r < 1.7) {
+            p = cp;
+            source = 'chain';
+          } else if ((t.chainMiss = (t.chainMiss || 0) + 1) > 5) t.chainBad = true;
+        }
+      }
+      if (!p && !chain.evm) {
+        try {
+          const j = await jupLim.run(() => getJSON(`https://lite-api.jup.ag/price/v3?ids=${t.mint}`, { timeout: 3000 }));
+          const jp = num(j?.[t.mint]?.usdPrice);
+          if (jp > 0) {
+            p = jp;
+            source = 'jupiter';
+          }
+        } catch {
+          /* fall back to DexScreener */
+        }
+      }
+      if (!p) {
+        const r = await src.dex.live(mint);
+        return r && { ...r, source: 'dexscreener' };
+      }
+      if (k > 0) store.upsert(t.mint, { priceUsd: p, mcap: p * k }, 'live');
+      return { p, mc: k > 0 ? p * k : null, at: Date.now(), source };
+    },
     /** Latest trades of the token's main pool (cached 25 s), newest first; null without a pool. */
     trades: (mint) => trades(mint, true),
     /** Candles [ms, o, h, l, c, vol] for the chart (cached 50 s per timeframe). */
@@ -232,6 +274,40 @@ const WHALE_USD = { solana: 1000, bsc: 1000, base: 1000, robinhood: 500, ethereu
 const wallets = new Map();
 const candleCache = new Map();
 const altPool = new Map(); // mint -> GeckoTerminal pool used for candles when the main one isn't known there
+
+// ---- real-time price for the open chart (Solana) ----
+// Free public RPC nodes: the pool's two vault balances, read every second (a new block every
+// ~0.4 s), give the price on chain — far fresher than the aggregators' cached prices.
+const RPCS = ['https://solana-rpc.publicnode.com', 'https://api.mainnet-beta.solana.com'];
+let rpcIdx = 0;
+const SOL_MINT = 'So11111111111111111111111111111111111111112';
+const STABLES = new Set(['EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB']);
+async function rpcVaults(pool) {
+  for (let i = 0; i < RPCS.length; i++) {
+    const url = RPCS[(rpcIdx + i) % RPCS.length];
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 2500);
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getMultipleAccounts', params: [[pool.base, pool.quote], { encoding: 'jsonParsed', commitment: 'processed' }] }),
+        signal: ctrl.signal,
+      }).finally(() => clearTimeout(timer));
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      const amt = (v) => num(v?.data?.parsed?.info?.tokenAmount?.uiAmountString ?? v?.data?.parsed?.info?.tokenAmount?.uiAmount);
+      const [b, q] = (json?.result?.value || []).map(amt);
+      if (!(b > 0) || !(q > 0)) throw new Error('no reserves');
+      rpcIdx = (rpcIdx + i) % RPCS.length; // stick to the node that answered
+      return { b, q };
+    } catch {
+      /* next node */
+    }
+  }
+  return null;
+}
+const jupLim = new RateLimiter(50);
 
 const engines = new Map();
 const feedHandlers = new Set();
