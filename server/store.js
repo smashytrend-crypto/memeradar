@@ -1,8 +1,8 @@
-import { computeHype } from './scoring.js?v=mutniqlo';
-import { CURVE_DEXES, NON_MEME, NON_MEME_TAGS, PUMP_INITIAL_VTOKENS, PUMP_K, PUMP_TOKENS_FOR_SALE } from './constants.js?v=mutniqlo';
-import { Emitter, clamp } from './util.js?v=mutniqlo';
-import { change4h, freshCandles, sparkPoints } from './candles.js?v=mutniqlo';
-import { EVM_BASE_ASSETS, EVM_NON_MEME_SYMBOLS, evmEligible, getChain, isAddressOn, normAddr } from './chains.js?v=mutniqlo';
+import { computeHype } from './scoring.js?v=mutnqo4b';
+import { CURVE_DEXES, NON_MEME, NON_MEME_TAGS, PUMP_INITIAL_VTOKENS, PUMP_K, PUMP_TOKENS_FOR_SALE } from './constants.js?v=mutnqo4b';
+import { Emitter, clamp } from './util.js?v=mutnqo4b';
+import { change4h, freshCandles, sparkPoints } from './candles.js?v=mutnqo4b';
+import { EVM_BASE_ASSETS, EVM_NON_MEME_SYMBOLS, evmEligible, getChain, isAddressOn, normAddr } from './chains.js?v=mutnqo4b';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;

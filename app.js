@@ -1027,12 +1027,30 @@ const exitRow = (kind, p, attr) => {
   const k = EXITS[kind];
   const v = p[kind];
   const mcAt = v && p.mc > 0 ? p.mc * (kind === 'sl' ? 1 - v / 100 : 1 + v / 100) : null;
-  return `<div class="sl-row ${kind}"><span>${k.icon} ${k.name}${v ? ` <b>${k.sign}${fmt.n(v)}%</b>${mcAt ? ` <small>MC ${fmt.usd(mcAt)}</small>` : ''}` : ' <small>wyłączony</small>'}</span>
-    <div>${k.presets.map((x) => `<button ${attr}="${kind}:${x}" class="${v === x ? 'on' : ''}">${k.sign}${x}%</button>`).join('')}<button ${attr}="${kind}:custom" class="${v && !k.presets.includes(v) ? 'on' : ''}">Własny</button>${v ? `<button ${attr}="${kind}:off" class="off" aria-label="Wyłącz">✕</button>` : ''}</div></div>`;
+  // Expected result of this level: TP on the share it sells, SL on the whole position.
+  const share = kind === 'tp' ? (p.tpf || 100) / 100 : 1;
+  const est = v && p.usd > 0 ? p.usd * share * (v / 100) : null;
+  const estLine = est != null
+    ? `<small class="sl-est ${kind}">${kind === 'tp' ? `Przewidywany zysk: <b>+${fmt.usd(est)}</b>${share < 1 ? ` (sprzeda ${Math.round(share * 100)}% za ${fmt.usd(p.usd * share + est)})` : ` (wypłata ${fmt.usd(p.usd + est)})`}` : `Przewidywana strata: <b>−${fmt.usd(est)}</b> (wróci ${fmt.usd(p.usd - est)})`}</small>`
+    : '';
+  return `<div class="sl-row ${kind}"><span>${k.icon} ${k.name}${v ? ` <b>${k.sign}${fmt.n(v)}%</b>${mcAt ? ` <small>MC ${fmt.usd(mcAt)}</small>` : ''}` : ' <small>wyłączony</small>'}</span>${estLine}
+    <div>${k.presets.map((x) => `<button ${attr}="${kind}:${x}" class="${v === x ? 'on' : ''}">${k.sign}${x}%</button>`).join('')}<button ${attr}="${kind}:custom" class="${v && !k.presets.includes(v) ? 'on' : ''}">Własny</button>${v ? `<button ${attr}="${kind}:off" class="off" aria-label="Wyłącz">✕</button>` : ''}</div>${
+      kind === 'tp'
+        ? `<span class="sl-sub">Ile pozycji sprzedać</span><div>${[25, 50, 75, 100].map((x) => `<button ${attr}="tpf:${x}" class="${(p.tpf || 100) === x ? 'on' : ''}">${x}%</button>`).join('')}</div>`
+        : ''
+    }</div>`;
 };
 const exitRows = (p, attr) => exitRow('tp', p, attr) + exitRow('sl', p, attr);
 function exitClick(mint, value) {
   const [kind, v] = value.split(':');
+  if (kind === 'tpf') {
+    // Share of the position the take profit sells (the rest stays open).
+    const p = state.positions[mint];
+    if (!p) return;
+    p.tpf = Number(v);
+    LS.set('positions', state.positions);
+    return toast(`🎯 Take profit sprzeda ${p.tpf}% pozycji`);
+  }
   if (!EXITS[kind]) return;
   if (v === 'custom') askExit(kind, mint);
   else setExit(kind, mint, v === 'off' ? null : Number(v));
@@ -1046,8 +1064,15 @@ function checkExits() {
     if (x.stale || x.pct == null) continue;
     const kind = x.p.sl && x.pct <= -x.p.sl ? 'sl' : x.p.tp && x.pct >= x.p.tp ? 'tp' : null;
     if (!kind) continue;
-    sellPosition(x.m, 1, x.r.p, { [kind]: true });
-    toast(`${EXITS[kind].icon} ${EXITS[kind].name}: sprzedano ${x.p.s ? '$' + x.p.s : 'pozycję'} przy ${fmt.pct(x.pct)}`);
+    const f = kind === 'tp' ? (x.p.tpf || 100) / 100 : 1;
+    sellPosition(x.m, f, x.r.p, { [kind]: true });
+    // A partial take profit fires once; the rest of the position stays open without it.
+    const left = state.positions[x.m];
+    if (left) {
+      delete left.tp;
+      LS.set('positions', state.positions);
+    }
+    toast(`${EXITS[kind].icon} ${EXITS[kind].name}: sprzedano ${f < 1 ? `${Math.round(f * 100)}% ` : ''}${x.p.s ? '$' + x.p.s : f < 1 ? 'pozycji' : 'pozycję'} przy ${fmt.pct(x.pct)}`);
     hit = true;
   }
   if (!hit) return;
