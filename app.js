@@ -45,6 +45,8 @@ const state = {
   closed: LS.get('closedPositions', []), // closed demo trades (last 90 days) for the 1d / 7d / 30d P&L
   wallet: { cash: 0, deposits: 0, tx: [], ...LS.get('wallet', {}) }, // demo wallet funding the demo positions
   quickBuy: LS.get('quickBuy', [50, 100, 250, 500]), // the viewer's quick-buy amounts in $
+  fees: LS.get('fees', true) !== false, // demo trades pay realistic fees
+  nativeUsd: {}, // network -> native coin price in $ (for network / priority fees)
   presets: LS.get('presets', []), // saved filter sets [{ name, f }]
   feedFilter: 'all',
   paused: false,
@@ -741,6 +743,7 @@ function applySnapshot(snap) {
   $('#feedChips [data-f="whale"]').hidden = !snap.stats.liveTrades;
   snap.rows = viewerFilter(snap.rows, snap.view);
   if (snap.view === 'hype') state.hypeRows = snap.rows;
+  if (snap.stats.solPrice > 0) state.nativeUsd[ENGINE?.chain || 'solana'] = snap.stats.solPrice;
   renderStats(snap.stats);
   renderSources(snap.sources);
   $('#liveBadge').className = `live-badge${state.paused ? ' paused' : ''}`;
@@ -903,8 +906,41 @@ function deposit(amount) {
   saveWallet();
 }
 
+// ---------- realistic demo fees ----------
+// Every demo buy and sell pays what a real trade costs: the trading platform's fee (Axiom /
+// Photon / BullX / GMGN take 1%), the DEX pool's swap fee (~0.3% on PumpSwap / Raydium /
+// Uniswap / PancakeSwap) and the network fee — on Solana the base fee + priority fee / tip,
+// ~0.001 SOL per transaction; gas on the EVM networks.
+const FEES = {
+  platform: 0.01,
+  pool: 0.003,
+  solTx: 0.001, // SOL per Solana transaction (priority fee + tip + base fee)
+  gasUsd: { ethereum: 3, base: 0.05, bsc: 0.1, robinhood: 0.05 }, // $ per EVM transaction
+};
+/** Network fee of one transaction in $. */
+function networkFee(chain = ENGINE?.chain || 'solana') {
+  if (chain === 'solana') return FEES.solTx * (state.nativeUsd.solana || 150);
+  return FEES.gasUsd[chain] ?? 0.1;
+}
+/** All fees of one trade worth `usd` on `chain` (0 with fees turned off). */
+function tradeFee(usd, chain) {
+  if (!state.fees || !(usd > 0)) return 0;
+  return usd * (FEES.platform + FEES.pool) + networkFee(chain);
+}
+/** Fee amounts with cents ($1.42, $0.17) — fmt.usd rounds small values to whole dollars. */
+const feeUsd = (v) => (v >= 1000 ? fmt.usd(v) : `$${(v || 0).toFixed(2)}`);
+const feeNote = (fee) => (fee > 0 ? ` · opłaty ${feeUsd(fee)}` : '');
+
+/** Buy price after fees: `usd` buys only (usd − fee) worth of tokens, so the entry is higher.
+ *  null when the fees would eat most of the amount. */
+function entryAfterFees(price, usd) {
+  const fee = tradeFee(usd);
+  if (fee >= usd * 0.5) return null;
+  return { price: price * (usd / (usd - fee)), fee };
+}
+
 /** Saves a demo buy; false when it can't be added to the existing position (nothing is charged). */
-function savePosition(mint, price, usd, mc, d = {}) {
+function savePosition(mint, price, usd, mc, d = {}, fee = 0) {
   const prev = state.positions[mint];
   if (prev && prev.p > 0 && prev.usd > 0) {
     // The same EVM address can be a different token on another network.
@@ -921,7 +957,7 @@ function savePosition(mint, price, usd, mc, d = {}) {
   }
   // Funded from the demo wallet: the stake leaves the balance now and returns (with P&L) on close.
   state.wallet.cash -= usd;
-  walletTx('open', usd, { n: d.n || '', s: d.s || '' });
+  walletTx('open', usd, { n: d.n || '', s: d.s || '', ...(fee > 0 ? { fee } : {}) });
   saveWallet();
   if (prev && prev.p > 0 && prev.usd > 0) {
     // Buying more: one position with the average entry (weighted by tokens bought).
@@ -929,6 +965,7 @@ function savePosition(mint, price, usd, mc, d = {}) {
     prev.p = (prev.usd + usd) / tokens;
     prev.mc = prev.mc && mc ? (prev.usd + usd) / (prev.usd / prev.mc + usd / mc) : prev.mc || mc;
     prev.usd += usd;
+    prev.fees = (prev.fees || 0) + fee;
     // Break even is measured from the new average entry: armed only if still above +BE_PCT.
     if (prev.be) prev.bea = (price / prev.p - 1) * 100 > BE_PCT;
     LS.set('positions', state.positions);
@@ -940,6 +977,7 @@ function savePosition(mint, price, usd, mc, d = {}) {
     p: price,
     mc: mc || 0,
     usd: usd > 0 ? usd : 0,
+    fees: fee, // fees paid so far ($), shown with the position
     t: Date.now(),
     chain: ENGINE?.chain || 'solana',
     // Name / icon and last seen price, for the positions list when the token isn't loaded.
@@ -961,20 +999,24 @@ function sellPosition(mint, fraction, price, extra = {}) {
   const f = p.usd > 0 ? Math.min(1, Math.max(0, fraction)) : 1;
   const exit = price > 0 ? price : p.last?.p;
   const part = (p.usd || 0) * f;
-  // Wallet-funded positions pay the sold part's current value back into the demo balance.
+  // The sold part's value, minus the sale's fees (platform + pool + network).
+  const gross = part > 0 ? (exit > 0 && p.p > 0 ? part * (exit / p.p) : part) : 0;
+  const fee = Math.min(gross, tradeFee(gross, p.chain || 'solana'));
+  const back = gross - fee;
+  if (part > 0) p.fees = (p.fees || 0) + fee;
+  // Wallet-funded positions pay it back into the demo balance.
   if (p.w && part > 0) {
-    const back = exit > 0 && p.p > 0 ? part * (exit / p.p) : part;
     state.wallet.cash += back;
-    walletTx('close', back, { n: p.n, s: p.s, pnl: back - part, f });
+    walletTx('close', back, { n: p.n, s: p.s, pnl: back - part, f, ...(fee > 0 ? { fee } : {}) });
     saveWallet();
   }
   if (exit > 0 && p.p > 0) {
-    const pct = (exit / p.p - 1) * 100;
+    const pct = part > 0 ? (back / part - 1) * 100 : (exit / p.p - 1) * 100;
     state.closed.unshift({
       m: mint, n: p.n, s: p.s, chain: p.chain, usd: part, pct, f,
       // Positions outside the wallet (opened before a reset) stay out of the statistics.
       w: p.w !== false,
-      pnl: part > 0 ? part * (exit / p.p - 1) : 0, openedAt: p.t, closedAt: Date.now(), ...extra,
+      pnl: part > 0 ? back - part : 0, fee, openedAt: p.t, closedAt: Date.now(), ...extra,
     });
     state.closed = state.closed.filter((c) => Date.now() - c.closedAt < 90 * 86400e3).slice(0, 500);
     LS.set('closedPositions', state.closed);
@@ -983,6 +1025,7 @@ function sellPosition(mint, fraction, price, extra = {}) {
   else p.usd -= part;
   LS.set('positions', state.positions);
   renderPosCount();
+  return fee;
 }
 const closePosition = (mint, price) => sellPosition(mint, 1, price);
 
@@ -997,8 +1040,10 @@ function quickBuy(usd) {
   }
   if (!(d.p > 0) || !(d.mc > 0)) return toast('Brak ceny lub MC — spróbuj za chwilę');
   const had = !!posHere(state.selected);
-  if (!savePosition(state.selected, d.p, usd, d.mc, d)) return;
-  toast(`💼 ${had ? 'Dokupiono' : 'Kupiono'} DEMO za ${fmt.usd(usd)} przy MC ${fmt.usd(d.mc)}`);
+  const buy = entryAfterFees(d.p, usd);
+  if (!buy) return toast(`Za mała kwota — opłaty transakcji (${feeUsd(tradeFee(usd))}) zjadłyby większość`);
+  if (!savePosition(state.selected, buy.price, usd, d.mc, d, buy.fee)) return;
+  toast(`💼 ${had ? 'Dokupiono' : 'Kupiono'} DEMO za ${fmt.usd(usd)} przy MC ${fmt.usd(d.mc)}${feeNote(buy.fee)}`);
   renderDetail(d);
 }
 
@@ -1024,7 +1069,12 @@ const EXITS = {
   sl: { name: 'Stop loss', icon: '🛑', sign: '−', presets: [10, 20, 30, 50], max: 99, attr: 'sl' },
   tp: { name: 'Take profit', icon: '🎯', sign: '+', presets: [50, 100, 200, 500], max: 100000, attr: 'tp' },
   be: { name: 'Break even', icon: '🛡️' },
+  safe: { name: 'SAFE', icon: '🔒' },
 };
+// SAFE: at +SAFE_PCT sell SAFE_PART of the position — at +100% half of it is worth the whole
+// stake, so the stake comes back and the rest stays in play with nothing left to lose.
+const SAFE_PCT = 100;
+const SAFE_PART = 0.5;
 // Break even: once the position has been above +BE_PCT, sell everything if it falls back there.
 const BE_PCT = 5;
 
@@ -1061,17 +1111,26 @@ function askExit(kind, mint) {
 const exitRow = (kind, p, attr) => {
   const k = EXITS[kind];
   const v = p[kind];
-  const mcAt = v && p.mc > 0 ? p.mc * (kind === 'sl' ? 1 - v / 100 : 1 + v / 100) : null;
+  // Market cap at the trigger price (the entry price includes the buy fees; MC moves with price).
+  const mcEntry = p.last?.p > 0 && p.last?.mc > 0 ? (p.last.mc * p.p) / p.last.p : p.mc;
+  const mcAt = v && mcEntry > 0 ? mcEntry * (kind === 'sl' ? 1 - v / 100 : 1 + v / 100) : null;
   // Expected result of this level: TP on the share it sells, SL on the whole position.
   const share = kind === 'tp' ? (p.tpf || 100) / 100 : 1;
-  const est = v && p.usd > 0 ? p.usd * share * (v / 100) : null;
+  // After the sale's fees.
+  const gross = v && p.usd > 0 ? p.usd * share * (kind === 'sl' ? 1 - v / 100 : 1 + v / 100) : null;
+  const back = gross != null ? gross - Math.min(gross, tradeFee(gross, p.chain || 'solana')) : null;
+  const est = back != null ? Math.abs(back - p.usd * share) : null;
   const estLine = est != null
-    ? `<small class="sl-est ${kind}">${kind === 'tp' ? `Przewidywany zysk: <b>+${fmt.usd(est)}</b>${share < 1 ? ` (sprzeda ${Math.round(share * 100)}% za ${fmt.usd(p.usd * share + est)})` : ` (wypłata ${fmt.usd(p.usd + est)})`}` : `Przewidywana strata: <b>−${fmt.usd(est)}</b> (wróci ${fmt.usd(p.usd - est)})`}</small>`
+    ? `<small class="sl-est ${kind}">${kind === 'tp' ? `Przewidywany zysk: <b>${back >= p.usd * share ? '+' : '−'}${fmt.usd(est)}</b>${share < 1 ? ` (sprzeda ${Math.round(share * 100)}% za ${fmt.usd(back)})` : ` (wypłata ${fmt.usd(back)})`}` : `Przewidywana strata: <b>−${fmt.usd(est)}</b> (wróci ${fmt.usd(back)})`}${state.fees ? ' · po opłatach' : ''}</small>`
     : '';
   return `<div class="sl-row ${kind}"><span>${k.icon} ${k.name}${v ? ` <b>${k.sign}${fmt.n(v)}%</b>${mcAt ? ` <small>MC ${fmt.usd(mcAt)}</small>` : ''}` : ' <small>wyłączony</small>'}</span>${estLine}
-    <div>${k.presets.map((x) => `<button ${attr}="${kind}:${x}" class="${v === x ? 'on' : ''}">${k.sign}${x}%</button>`).join('')}<button ${attr}="${kind}:custom" class="${v && !k.presets.includes(v) ? 'on' : ''}">Własny</button>${kind === 'sl' ? `<button ${attr}="be:toggle" class="be ${p.be ? 'on' : ''}" title="Break even: sprzeda całość, gdy cena spadnie do +${BE_PCT}% od wejścia">🛡️ BE · Break even (+${BE_PCT}%)</button>` : ''}${v ? `<button ${attr}="${kind}:off" class="off" aria-label="Wyłącz">✕</button>` : ''}</div>${
+    <div>${k.presets.map((x) => `<button ${attr}="${kind}:${x}" class="${v === x ? 'on' : ''}">${k.sign}${x}%</button>`).join('')}<button ${attr}="${kind}:custom" class="${v && !k.presets.includes(v) ? 'on' : ''}">Własny</button>${kind === 'sl' ? `<button ${attr}="safe:toggle" class="safe ${p.safe ? 'on' : ''}" title="SAFE: sprzeda ${SAFE_PART * 100}% pozycji przy +${SAFE_PCT}% — wkład wraca, reszta zostaje w grze">🔒 SAFE · wyjmij wkład (+${SAFE_PCT}%)</button>` : ''}${kind === 'sl' ? `<button ${attr}="be:toggle" class="be ${p.be ? 'on' : ''}" title="Break even: sprzeda całość, gdy cena spadnie do +${BE_PCT}% od wejścia">🛡️ BE · Break even (+${BE_PCT}%)</button>` : ''}${v ? `<button ${attr}="${kind}:off" class="off" aria-label="Wyłącz">✕</button>` : ''}</div>${
       kind === 'sl' && p.be
-        ? `<small class="sl-est be">🛡️ BE ${p.bea ? `aktywny — sprzeda całość przy <b>+${BE_PCT}%</b>${p.mc > 0 ? ` (MC ${fmt.usd(p.mc * (1 + BE_PCT / 100))})` : ''}${p.usd > 0 ? `, zysk <b>+${fmt.usd((p.usd * BE_PCT) / 100)}</b>` : ''}` : `czeka, aż zysk przekroczy +${BE_PCT}% — potem pilnuje ceny +${BE_PCT}%`}</small>`
+        ? `<small class="sl-est be">🛡️ BE ${p.bea ? `aktywny — sprzeda całość przy <b>+${BE_PCT}%</b>${mcEntry > 0 ? ` (MC ${fmt.usd(mcEntry * (1 + BE_PCT / 100))})` : ''}${p.usd > 0 ? `, zysk <b>+${fmt.usd((p.usd * BE_PCT) / 100)}</b>` : ''}` : `czeka, aż zysk przekroczy +${BE_PCT}% — potem pilnuje ceny +${BE_PCT}%`}</small>`
+        : ''
+    }${
+      kind === 'sl' && p.safe
+        ? `<small class="sl-est safe">🔒 SAFE — sprzeda <b>${SAFE_PART * 100}%</b> przy <b>+${SAFE_PCT}%</b>${mcEntry > 0 ? ` (MC ${fmt.usd(mcEntry * (1 + SAFE_PCT / 100))})` : ''}${p.usd > 0 ? ((g) => `: wróci <b>${fmt.usd(g - Math.min(g, tradeFee(g, p.chain || 'solana')))}</b> (${state.fees ? 'wkład minus opłata sprzedaży' : 'cały wkład'}), a ${SAFE_PART * 100}% zostanie w grze`)(p.usd * SAFE_PART * (1 + SAFE_PCT / 100)) : ''}</small>`
         : ''
     }${
       kind === 'tp'
@@ -1082,6 +1141,14 @@ const exitRow = (kind, p, attr) => {
 const exitRows = (p, attr) => exitRow('tp', p, attr) + exitRow('sl', p, attr);
 function exitClick(mint, value) {
   const [kind, v] = value.split(':');
+  if (kind === 'safe') {
+    const p = state.positions[mint];
+    if (!p) return;
+    if (p.safe) delete p.safe;
+    else p.safe = true;
+    LS.set('positions', state.positions);
+    return toast(p.safe ? `🔒 SAFE: przy +${SAFE_PCT}% sprzeda ${SAFE_PART * 100}% i wyjmie wkład` : 'SAFE wyłączony');
+  }
   if (kind === 'be') {
     const p = state.positions[mint];
     if (!p) return;
@@ -1113,7 +1180,7 @@ function exitClick(mint, value) {
 
 /** Sells every position whose live price reached its stop loss or take profit (while the app is open). */
 function checkExits() {
-  if (!Object.values(state.positions).some((p) => p.sl || p.tp || p.be)) return;
+  if (!Object.values(state.positions).some((p) => p.sl || p.tp || p.be || p.safe)) return;
   let hit = false;
   for (const x of positionList()) {
     if (x.stale || x.pct == null) continue;
@@ -1122,17 +1189,22 @@ function checkExits() {
       LS.set('positions', state.positions);
       hit = true;
     }
-    const kind = x.p.sl && x.pct <= -x.p.sl ? 'sl' : x.p.tp && x.pct >= x.p.tp ? 'tp' : x.p.be && x.p.bea && x.pct <= BE_PCT ? 'be' : null;
+    const kind =
+      x.p.sl && x.pct <= -x.p.sl ? 'sl'
+      : x.p.safe && x.pct >= SAFE_PCT ? 'safe'
+      : x.p.tp && x.pct >= x.p.tp ? 'tp'
+      : x.p.be && x.p.bea && x.pct <= BE_PCT ? 'be'
+      : null;
     if (!kind) continue;
-    const f = kind === 'tp' ? (x.p.tpf || 100) / 100 : 1;
-    sellPosition(x.m, f, x.r.p, { [kind]: true });
-    // A partial take profit fires once; the rest of the position stays open without it.
+    const f = kind === 'tp' ? (x.p.tpf || 100) / 100 : kind === 'safe' ? SAFE_PART : 1;
+    const fee = sellPosition(x.m, f, x.r.p, { [kind]: true });
+    // A partial take profit / SAFE fires once; the rest of the position stays open without it.
     const left = state.positions[x.m];
     if (left) {
-      delete left.tp;
+      delete left[kind];
       LS.set('positions', state.positions);
     }
-    toast(`${EXITS[kind].icon} ${EXITS[kind].name}: sprzedano ${f < 1 ? `${Math.round(f * 100)}% ` : ''}${x.p.s ? '$' + x.p.s : f < 1 ? 'pozycji' : 'pozycję'} przy ${fmt.pct(x.pct)}`);
+    toast(`${EXITS[kind].icon} ${EXITS[kind].name}: sprzedano ${f < 1 ? `${Math.round(f * 100)}% ` : ''}${x.p.s ? '$' + x.p.s : f < 1 ? 'pozycji' : 'pozycję'} przy ${fmt.pct(x.pct)}${feeNote(fee)}`);
     hit = true;
   }
   if (!hit) return;
@@ -1280,6 +1352,7 @@ function renderPositions() {
               <div><span>MC teraz</span><b>${fmt.usd(x.mcNow)}</b></div>
               <div><span>Wkład → wartość</span><b>${x.p.usd > 0 ? `${fmt.usd(x.p.usd)} → ${fmt.usd(x.value)}` : '—'}</b></div>
               <div><span>Zysk / strata</span><b class="${(x.pnl ?? 0) >= 0 ? 'up' : 'down'}">${x.pnl != null ? money(x.pnl) : '—'}</b></div>
+              ${x.p.fees > 0 ? `<div><span>Zapłacone opłaty</span><b>${feeUsd(x.p.fees)}</b></div>` : ''}
             </div>
             ${x.p.usd > 0 ? sellRow('data-pos-sell') : '<div class="qs-row"><button data-pos-sell="100">✖ Zamknij</button></div>'}
             ${exitRows(x.p, 'data-pos-exit')}
@@ -1291,7 +1364,7 @@ function renderPositions() {
   const recent = state.closed.filter((c) => Date.now() - c.closedAt < 30 * 86400e3).slice(0, 20);
   const history = recent.length
     ? `<h3 class="pos-h">Zamknięte (30 dni)</h3><div class="pos-closed">${recent
-        .map((c) => `<div><span>${esc(c.n || fmt.short(c.m))} <small>${c.sl ? '🛑 SL · ' : c.tp ? '🎯 TP · ' : c.be ? '🛡️ BE · ' : ''}$${esc(c.s || '?')}${c.f && c.f < 1 ? ` · ${Math.round(c.f * 100)}%` : ''} · ${fmt.ago(c.closedAt)}</small></span><b class="${c.pct >= 0 ? 'up' : 'down'}">${fmt.pct(c.pct)}${c.usd > 0 ? ` · ${money(c.pnl)}` : ''}</b></div>`)
+        .map((c) => `<div><span>${esc(c.n || fmt.short(c.m))} <small>${c.sl ? '🛑 SL · ' : c.tp ? '🎯 TP · ' : c.be ? '🛡️ BE · ' : c.safe ? '🔒 SAFE · ' : ''}$${esc(c.s || '?')}${c.f && c.f < 1 ? ` · ${Math.round(c.f * 100)}%` : ''} · ${fmt.ago(c.closedAt)}</small></span><b class="${c.pct >= 0 ? 'up' : 'down'}">${fmt.pct(c.pct)}${c.usd > 0 ? ` · ${money(c.pnl)}` : ''}</b></div>`)
         .join('')}</div>`
     : '';
   const html = summary + `<h3 class="pos-h">Otwarte (${list.length})</h3>` + cards + history;
@@ -1329,12 +1402,20 @@ function renderWallet() {
   const hist = `<p class="note">Wpłacono łącznie ${fmt.usd(w.deposits)}.</p><h3 class="pos-h">Historia</h3>
     <div class="pos-closed">${
       tx.length
-        ? tx.map((t) => `<div><span>${TX[t.type]?.[0] || '•'} ${TX[t.type]?.[1] || t.type}${t.s ? ` <small>$${esc(t.s)}</small>` : ''} <small>· ${fmt.ago(t.t)}</small></span><b class="${t.type === 'open' ? 'down' : t.type === 'reset' ? '' : 'up'}">${t.type === 'open' ? '−' : t.type === 'reset' ? '' : '+'}${fmt.usd(t.amount)}${t.pnl != null ? ` <small class="${t.pnl >= 0 ? 'up' : 'down'}">(${sign(t.pnl)}${fmt.usd(Math.abs(t.pnl))})</small>` : ''}</b></div>`).join('')
+        ? tx.map((t) => `<div><span>${TX[t.type]?.[0] || '•'} ${TX[t.type]?.[1] || t.type}${t.s ? ` <small>$${esc(t.s)}</small>` : ''} <small>· ${fmt.ago(t.t)}</small></span><b class="${t.type === 'open' ? 'down' : t.type === 'reset' ? '' : 'up'}">${t.type === 'open' ? '−' : t.type === 'reset' ? '' : '+'}${fmt.usd(t.amount)}${t.pnl != null ? ` <small class="${t.pnl >= 0 ? 'up' : 'down'}">(${sign(t.pnl)}${fmt.usd(Math.abs(t.pnl))})</small>` : ''}${t.fee > 0 ? `<small class="muted tx-fee">opłaty ${feeUsd(t.fee)}</small>` : ''}</b></div>`).join('')
         : '<div><span class="muted">Brak operacji — doładuj wallet, żeby zacząć grać pozycjami DEMO.</span></div>'
     }</div>`;
+  const paid = w.tx.reduce((a, t) => a + (t.fee > 0 ? t.fee : 0), 0);
+  const ex = 100;
+  const feesCard = `<div class="card wallet-fees"><h3>Opłaty transakcji <small>jak na prawdziwym rynku</small></h3>
+      <label class="toggle-row"><input type="checkbox" data-wallet="fees" ${state.fees ? 'checked' : ''} /> <span>Realistyczne opłaty przy kupnie i sprzedaży</span></label>
+      <p class="note">Każda transakcja: <b>${FEES.platform * 100}%</b> opłaty platformy (jak Axiom / Photon / BullX) + <b>${(FEES.pool * 100).toFixed(1)}%</b> opłaty puli DEX + opłata sieci: na Solanie ~${FEES.solTx} SOL (priority fee + tip, teraz ≈ ${feeUsd(networkFee('solana'))}), na sieciach EVM gas (ETH ≈ ${feeUsd(FEES.gasUsd.ethereum)}, Base ≈ ${feeUsd(FEES.gasUsd.base)}, BNB ≈ ${feeUsd(FEES.gasUsd.bsc)}, Robinhood ≈ ${feeUsd(FEES.gasUsd.robinhood)}).
+      Przykład na Solanie: kupno za ${fmt.usd(ex)} kosztuje ≈ ${feeUsd(ex * (FEES.platform + FEES.pool) + networkFee('solana'))} opłat, a sprzedaż drugie tyle — pozycja musi urosnąć ok. +${(((1 + (FEES.platform + FEES.pool) + networkFee('solana') / ex) / (1 - (FEES.platform + FEES.pool) - networkFee('solana') / ex) - 1) * 100).toFixed(1)}%, żeby wyjść na zero.</p>
+      <p class="note">Zapłacone opłaty (od ostatniego resetu): <b>${feeUsd(paid)}</b></p>
+    </div>`;
   const body = $('#walletBody');
   if (!body.querySelector('#wCard')) {
-    body.innerHTML = `<div id="wCard"></div>${form}<div id="wHist"></div>
+    body.innerHTML = `<div id="wCard"></div>${form}<div id="wFees"></div><div id="wHist"></div>
       <div class="d-acts" style="margin-top:16px"><button data-wallet="reset">♻️ Wyzeruj wallet DEMO</button></div>`;
   }
   const put = (id, html) => {
@@ -1345,6 +1426,7 @@ function renderWallet() {
     }
   };
   put('#wCard', card);
+  put('#wFees', feesCard);
   put('#wHist', hist);
 }
 
@@ -2320,9 +2402,10 @@ $('#drawer').addEventListener('click', (e) => {
     const mc = raw ? parseAmount(raw) : d.mc;
     if (raw && !(mc > 0)) return toast('Nie rozumiem MC — wpisz np. 150k albo 1.2m');
     if (!(d.p > 0) || !(d.mc > 0)) return toast('Brak ceny lub MC — spróbuj za chwilę');
-    const entry = d.p * (mc / d.mc);
-    if (!savePosition(state.selected, entry, usd, mc, d)) return;
-    toast(`💼 Pozycja DEMO otwarta przy MC ${fmt.usd(mc)}`);
+    const buy = entryAfterFees(d.p * (mc / d.mc), usd);
+    if (!buy) return toast(`Za mała kwota — opłaty transakcji (${feeUsd(tradeFee(usd))}) zjadłyby większość`);
+    if (!savePosition(state.selected, buy.price, usd, mc, d, buy.fee)) return;
+    toast(`💼 Pozycja DEMO otwarta przy MC ${fmt.usd(mc)}${feeNote(buy.fee)}`);
     renderDetail(state.detail);
   } else if (act === 'qbuy') {
     quickBuy(Number(e.target.closest('[data-usd]').dataset.usd));
@@ -2337,8 +2420,8 @@ $('#drawer').addEventListener('click', (e) => {
   const sell = e.target.closest('[data-sell]');
   if (sell && state.selected && posHere(state.selected)) {
     const f = Number(sell.dataset.sell) / 100;
-    sellPosition(state.selected, f, state.detail?.p);
-    toast(f >= 1 ? 'Pozycja DEMO zamknięta' : `Sprzedano ${Math.round(f * 100)}% pozycji DEMO`);
+    const fee = sellPosition(state.selected, f, state.detail?.p);
+    toast(`${f >= 1 ? 'Pozycja DEMO zamknięta' : `Sprzedano ${Math.round(f * 100)}% pozycji DEMO`}${feeNote(fee)}`);
     if (state.detail) renderDetail(state.detail);
   }
   const chart = e.target.closest('[data-chart]');
@@ -2450,6 +2533,13 @@ $('#bottombar').addEventListener('click', (e) => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 });
+$('#walletSheet').addEventListener('change', (e) => {
+  if (e.target.dataset?.wallet !== 'fees') return;
+  state.fees = e.target.checked;
+  LS.set('fees', state.fees);
+  toast(state.fees ? 'Opłaty transakcji włączone' : 'Opłaty transakcji wyłączone');
+  renderWallet();
+});
 $('#walletSheet').addEventListener('click', (e) => {
   if (e.target.closest('[data-sheet-close]')) return closeSheets();
   const quick = e.target.closest('[data-wallet-amt]');
@@ -2493,11 +2583,11 @@ $('#posSheet').addEventListener('click', (e) => {
     const x = positionList().find((p) => p.m === mint);
     const lastAt = x?.p.last?.at;
     const f = Number(sellBtn.dataset.posSell) / 100;
-    sellPosition(mint, f, x?.r?.p || x?.p.last?.p);
+    const fee = sellPosition(mint, f, x?.r?.p || x?.p.last?.p);
     // Instant (no confirmation — timing matters); a position on another network sells at the
     // last price seen there.
     const what = f >= 1 ? 'Pozycja DEMO zamknięta' : `Sprzedano ${Math.round(f * 100)}% pozycji DEMO`;
-    toast(x?.stale ? `${what} po ostatniej znanej cenie (sprzed ${lastAt ? fmt.ago(lastAt) : '—'})` : what);
+    toast(`${x?.stale ? `${what} po ostatniej znanej cenie (sprzed ${lastAt ? fmt.ago(lastAt) : '—'})` : what}${feeNote(fee)}`);
     renderPositions();
     return;
   }

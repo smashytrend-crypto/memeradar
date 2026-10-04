@@ -909,3 +909,14 @@ html { padding-left: env(safe-area-inset-left, 0px); padding-right: env(safe-are
 @media (orientation: landscape) and (max-height: 500px) {
   .drawer-inner, .sheet { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
 }
+/* SAFE button (above BE): sells half at +100%, taking the stake out. */
+.sl-row button.safe { order: 9; flex: 1 1 100%; font-family: inherit; }
+.sl-row button.safe.on { border-color: #f5b83d; color: #fff; background: rgba(245, 184, 61, 0.32); }
+.sl-row .sl-est.safe { margin: 6px 0 0; }
+.sl-row .sl-est.safe b { color: #ffd27a; }
+/* Demo fees card in the wallet sheet. */
+.wallet-fees { margin-top: 14px; }
+.wallet-fees .toggle-row { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 600; margin: 4px 0 8px; cursor: pointer; }
+.wallet-fees .toggle-row input { width: 20px; height: 20px; accent-color: var(--accent); }
+.wallet-fees .note b { color: var(--text); }
+.tx-fee { display: block; font-size: 10.5px; text-align: right; }
