@@ -879,3 +879,15 @@ body.sheet-open { overflow: hidden; }
 .sl-row .sl-est { display: block; margin: -2px 0 6px; font-size: 11px; color: var(--muted); }
 .sl-row .sl-est.tp b { color: var(--up); }
 .sl-row .sl-est.sl b { color: var(--down); }
+/* Profitable / losing positions counter. */
+.pos-wl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 8px; }
+.pos-wl > div { padding: 10px 12px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line2); min-width: 0; }
+.pos-wl > div.win { border-color: rgba(31, 214, 143, 0.35); background: rgba(31, 214, 143, 0.06); }
+.pos-wl > div.loss { border-color: rgba(255, 77, 106, 0.35); background: rgba(255, 77, 106, 0.06); }
+.pos-wl span { display: block; font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.pos-wl b { display: block; margin-top: 3px; font: 700 18px/1.2 var(--mono); }
+.pos-wl .win b { color: var(--up); }
+.pos-wl .loss b { color: var(--down); }
+.pos-wl small { display: block; margin-top: 2px; font-size: 10.5px; color: var(--muted); }
+.pos-wl .wl-bar { display: block; height: 5px; margin-top: 7px; border-radius: 3px; background: rgba(255, 77, 106, 0.55); overflow: hidden; }
+.pos-wl .wl-bar i { display: block; height: 100%; background: var(--up); }

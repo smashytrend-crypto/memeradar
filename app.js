@@ -1146,6 +1146,35 @@ function pnlWindow(list, ms) {
   return { pnl, pct: cost > 0 ? (pnl / cost) * 100 : null, trades };
 }
 
+/** Profitable / losing demo positions: open ones by current P&L, closed trades (a position sold
+ *  in parts counts once) by their total result. */
+function winLoss(list) {
+  const open = { win: 0, loss: 0 };
+  for (const x of list) {
+    if (x.pct == null || Math.abs(x.pct) < 1e-9) continue;
+    open[x.pct > 0 ? 'win' : 'loss']++;
+  }
+  const trades = new Map();
+  for (const c of state.closed) {
+    const k = `${c.m}:${c.openedAt}`;
+    trades.set(k, (trades.get(k) ?? 0) + (c.usd > 0 ? c.pnl : c.pct));
+  }
+  // Partly sold positions still open are counted with the open ones.
+  for (const x of list) trades.delete(`${x.m}:${x.p.t}`);
+  const closed = { win: 0, loss: 0 };
+  for (const v of trades.values()) if (v) closed[v > 0 ? 'win' : 'loss']++;
+  const win = open.win + closed.win;
+  const loss = open.loss + closed.loss;
+  const rate = win + loss ? (win / (win + loss)) * 100 : null;
+  const sub = (o, c) => `${o} ${pl(o, 'otwarta', 'otwarte', 'otwartych')} · ${c} ${pl(c, 'zamknięta', 'zamknięte', 'zamkniętych')}`;
+  return `<div class="pos-wl">
+      <div class="win"><span>Zyskowne</span><b>${win}</b><small>${sub(open.win, closed.win)}</small></div>
+      <div class="loss"><span>Stratne</span><b>${loss}</b><small>${sub(open.loss, closed.loss)}</small></div>
+      <div><span>Skuteczność</span><b class="${rate == null ? 'muted' : rate >= 50 ? 'up' : 'down'}">${rate == null ? '—' : `${Math.round(rate)}%`}</b>
+        <i class="wl-bar"><i style="width:${rate ?? 0}%"></i></i></div>
+    </div>`;
+}
+
 function renderPositions() {
   const body = $('#posBody');
   const list = positionList();
@@ -1161,6 +1190,7 @@ function renderPositions() {
       <div><span>Wartość</span><b>${fmt.usd(value)}</b></div>
       <div><span>Zysk / strata</span><b class="${pnl >= 0 ? 'up' : 'down'}">${money(pnl)}${cost > 0 ? ` <small>${fmt.pct((pnl / cost) * 100)}</small>` : ''}</b></div>
     </div>
+    ${winLoss(list)}
     <div class="pos-pnl">${w
       .map(([k, x]) => `<div><span>PnL ${k}</span><b class="${x.trades ? (x.pnl >= 0 ? 'up' : 'down') : 'muted'}">${x.trades ? money(x.pnl) : '—'}</b><small>${x.trades ? `${x.pct != null ? fmt.pct(x.pct) + ' · ' : ''}${x.trades} ${pl(x.trades, 'pozycja', 'pozycje', 'pozycji')}` : 'brak'}</small></div>`)
       .join('')}</div>
