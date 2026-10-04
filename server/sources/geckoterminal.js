@@ -1,8 +1,8 @@
 // GeckoTerminal public API (https://www.geckoterminal.com/dex-api): trending + new pools per network,
 // and 15-minute price candles (OHLCV) for the top tokens — used for the 4h change and the
 // mini charts, since DexScreener only reports 5m / 1h / 6h / 24h changes.
-import { IS_BROWSER, RateLimiter, errMsg, every, getJSON, num, toMs } from '../util.js?v=muu8yg5w';
-import { gtCurve, isAddressOn, normAddr } from '../chains.js?v=muu8yg5w';
+import { IS_BROWSER, RateLimiter, errMsg, every, getJSON, num, toMs } from '../util.js?v=muua81b1';
+import { gtCurve, isAddressOn, normAddr } from '../chains.js?v=muua81b1';
 
 const API = 'https://api.geckoterminal.com/api/v2/networks';
 const NAME = 'geckoterminal';
@@ -223,7 +223,8 @@ export function startGeckoTerminal(store) {
       if (chain.evm && store.ranked.length < 40) return;
       // A token window is open: its trades / candles get the budget (they are what the viewer
       // is looking at); background candles wait.
-      if (now - (store.focusAt || 0) < 15_000) return;
+      // While a token window is open (polled every 4 s) its chart / trades come first.
+      if (now - (store.viewingAt || 0) < 8_000 || now - (store.focusAt || 0) < 15_000) return;
       const [t] = store.pickForRefresh('ohlcv', 1, now, {
         intervals: { top: 5 * MIN, hot: 15 * MIN, young: 20 * MIN, rest: 6 * 60 * MIN },
         filter: (tok) => !!tok.pairAddress && ((store.rank.get(tok.mint) || Infinity) <= 150 || tok.pinnedUntil > now),

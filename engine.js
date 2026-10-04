@@ -3,15 +3,15 @@
 // cross-origin reads). One engine per network, created the first time the viewer opens it; only
 // the network on screen polls its sources, the others pause (and keep their data for a quick
 // switch back).
-import { Store } from './server/store.js?v=muu8yg5w';
-import { RateLimiter, every, getJSON, num } from './server/util.js?v=muu8yg5w';
-import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=muu8yg5w';
-import { startPumpPortal } from './server/sources/pumpportal.js?v=muu8yg5w';
-import { startDexScreener } from './server/sources/dexscreener.js?v=muu8yg5w';
-import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=muu8yg5w';
-import { startJupiter } from './server/sources/jupiter.js?v=muu8yg5w';
-import { startRugCheck } from './server/sources/rugcheck.js?v=muu8yg5w';
-import { startGoPlus } from './server/sources/goplus.js?v=muu8yg5w';
+import { Store } from './server/store.js?v=muua81b1';
+import { RateLimiter, every, getJSON, num } from './server/util.js?v=muua81b1';
+import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=muua81b1';
+import { startPumpPortal } from './server/sources/pumpportal.js?v=muua81b1';
+import { startDexScreener } from './server/sources/dexscreener.js?v=muua81b1';
+import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=muua81b1';
+import { startJupiter } from './server/sources/jupiter.js?v=muua81b1';
+import { startRugCheck } from './server/sources/rugcheck.js?v=muua81b1';
+import { startGoPlus } from './server/sources/goplus.js?v=muua81b1';
 
 const baseConfig = {
   demo: false,
@@ -170,6 +170,7 @@ function createEngine(chainId) {
       // A token window opened: its data gets the GeckoTerminal budget first (15 s, renewed once a
       // minute while it stays open), background candles / watched trades the rest.
       const now = Date.now();
+      store.viewingAt = now;
       if (store.focusMint !== mint || now - (store.focusAt || 0) > 60_000) {
         store.focusMint = mint;
         store.focusAt = now;

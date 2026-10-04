@@ -1753,6 +1753,7 @@ async function openDetail(mint, push = true) {
   state.live = null;
   state.tr = null;
   state.candles = null;
+  state.openedAt = Date.now();
   state.detailLayout = null;
   $('#drawer').classList.add('open');
   $('#drawer').setAttribute('aria-hidden', 'false');
@@ -2795,7 +2796,9 @@ let tradesBusy = false;
 /** Loads the open token's latest trades (the engine caches them for 25 s). */
 async function loadTrades(mint) {
   if (!ENGINE?.trades || tradesBusy) return;
-  if (state.tr?.m === mint && Date.now() - state.tr.at < 25_000) return;
+  // The chart's history goes first on the shared free API budget (up to ~10 s after opening).
+  if (state.chartTab === 'candles' && !(state.candles?.key?.startsWith(`${mint}|`) && state.candles.at > 0 && !state.candles.err) && Date.now() - (state.openedAt || 0) < 10_000) return;
+  if (state.tr?.m === mint && Date.now() - state.tr.at < 40_000) return;
   tradesBusy = true;
   try {
     const list = await ENGINE.trades(mint);
@@ -2913,23 +2916,40 @@ async function loadCandles(d) {
   const key = `${d.m}|${tf}`;
   if (candlesBusy || !ENGINE?.candles) return;
   if (state.candles?.key === key && Date.now() - state.candles.at < 50_000) return;
+  // Built from what we have: the latest trades, else the prices the radar recorded (every 15 s).
+  const synthesize = () => {
+    const fromTrades = state.tr?.m === d.m ? candlesFrom(state.tr.list.filter((t) => t.price > 0).map((t) => [t.t, t.price, t.usd]), tf) : [];
+    const fromHist = candlesFrom((d.hist || []).filter((h) => h[2] > 0).map((h) => [h[0], h[2], 0]), tf);
+    const list = fromTrades.length >= fromHist.length ? fromTrades : fromHist;
+    return { list, synth: list.length ? (list === fromTrades ? 'trades' : 'radar') : 'live' };
+  };
   candlesBusy = key;
   const wanted = () => key === `${state.selected}|${state.candleTf}`;
+  // Seen this token before: its saved history shows at once while fresh candles load.
+  if (state.candles?.key !== key) {
+    // …or, the first time, a provisional chart from the prices the radar has recorded.
+    const cached = readCandleCache(key);
+    const prov = cached ? null : synthesize();
+    if (cached || prov.list.length > 1) {
+      state.candles = cached ? { key, list: cached, at: 0, synth: 'cache' } : { key, list: prov.list, at: 0, synth: prov.synth };
+      if (state.chartTab === 'candles' && state.detail?.m === d.m) drawCandles(state.detail);
+    }
+  }
   try {
     let list = await ENGINE.candles(d.m, tf);
     let synth = null;
-    // No candles from GeckoTerminal: build them from the latest trades, else from the prices the
-    // radar has recorded (every 15 s); the live price keeps them moving either way.
-    if (!list?.length) {
-      const fromTrades = state.tr?.m === d.m ? candlesFrom(state.tr.list.filter((t) => t.price > 0).map((t) => [t.t, t.price, t.usd]), tf) : [];
-      const fromHist = candlesFrom((d.hist || []).filter((h) => h[2] > 0).map((h) => [h[0], h[2], 0]), tf);
-      list = fromTrades.length >= fromHist.length ? fromTrades : fromHist;
-      synth = list.length ? (list === fromTrades ? 'trades' : 'radar') : 'live';
-    }
+    if (!list?.length) ({ list, synth } = synthesize());
+    else saveCandleCache(key, list);
     if (wanted()) state.candles = { key, list: list || [], at: Date.now(), synth };
   } catch (e) {
-    if (wanted())
-      state.candles = e?.status === 404 ? { key, list: [], at: Date.now() } : { key, list: state.candles?.key === key ? state.candles.list : [], at: Date.now() - 35_000, err: true };
+    if (wanted()) {
+      // Rate limited: keep the history we have (cached / previous) and try again in ~8 s; only
+      // without any build one from trades / radar prices.
+      const prev = state.candles?.key === key && state.candles.list.length ? state.candles : null;
+      const cached = prev ? null : readCandleCache(key);
+      const base = prev ? { list: prev.list, synth: prev.synth } : cached ? { list: cached, synth: 'cache' } : synthesize();
+      state.candles = { key, ...base, at: Date.now() - (e?.status === 404 ? 0 : 42_000), err: e?.status !== 404 };
+    }
   } finally {
     candlesBusy = null;
   }
@@ -2937,6 +2957,21 @@ async function loadCandles(d) {
   // The timeframe or token changed while loading: load what is wanted now.
   if (!wanted()) return loadCandles(state.detail);
   drawCandles(state.detail);
+}
+
+// Candle history cache (last 24 token / timeframe sets): reopening a token shows its chart at once.
+function readCandleCache(key) {
+  const all = LS.get('cc', null);
+  const e = all && typeof all === 'object' ? all[key] : null;
+  return e && Date.now() - e.at < 24 * 3600e3 && Array.isArray(e.list) && e.list.length ? e.list.map((k) => [...k]) : null;
+}
+function saveCandleCache(key, list) {
+  let all = LS.get('cc', {});
+  if (!all || typeof all !== 'object') all = {};
+  all[key] = { at: Date.now(), list: list.slice(-200) };
+  const keys = Object.keys(all).sort((a, b) => all[b].at - all[a].at);
+  for (const k of keys.slice(24)) delete all[k];
+  LS.set('cc', all);
 }
 
 /** Points [ms, price, volumeUsd] → candles [start, o, h, l, c, vol] for the timeframe. */
@@ -3147,7 +3182,7 @@ function drawCandlesSvg(d) {
   // Time labels.
   const hhmm = (ts) => new Date(ts).toLocaleString('pl-PL', tf === '1h' || tf === '4h' ? { day: '2-digit', month: '2-digit', hour: '2-digit' } : { hour: '2-digit', minute: '2-digit' });
   for (const i of [0, Math.floor(n / 2), n - 1]) svg += `<text x="${Math.min(W - PR - 30, Math.max(PL, x(i) - 20)).toFixed(1)}" y="${H - 6}" class="cl">${hhmm(list[i][0])}</text>`;
-  const SYN = { trades: 'świece z ostatnich transakcji', radar: 'świece z cen radaru', live: 'świece z ceny na żywo' };
+  const SYN = { trades: 'świece z ostatnich transakcji', radar: 'świece z cen radaru', live: 'świece z ceny na żywo', cache: 'zapisana historia — odświeżam' };
   const legend = `<div class="c-legend">${c.synth ? `<span class="muted">ⓘ ${SYN[c.synth]}</span>` : ''}<span><i class="lg-mb"></i>Twoje kupno</span><span><i class="lg-ms"></i>Twoja sprzedaż</span><span><i class="lg-w"></i>🐋 Wieloryb</span><span><i class="lg-th"></i>Top 10</span>${state.wallets.length ? '<span><i class="lg-tw"></i>Śledzony</span>' : ''}</div>`;
   // Current market cap, big, next to the timeframes; the live dot shows the 1-second refresh.
   const head = `<div class="c-now"><i class="${live ? 'on' : ''}"></i>${mcK ? `MC ${fmt.usd(nowP * mcK)}` : fmt.price(nowP)}</div>`;
@@ -3250,11 +3285,13 @@ function drawCandlesLW(d) {
     const K = lw.K || 1;
     lw.candle.setData(c.list.map((k) => toBar(k, K)));
     lw.vol.setData(c.list.map(volBar));
-    if (lw.tf !== tf) {
-      // A new timeframe / token: show the latest ~70 candles.
+    if (lw.tf !== tf || lw.prov !== !!c.synth) {
+      // A new timeframe / token, or the real history replacing a provisional one: show the
+      // latest ~70 candles.
       const n = c.list.length;
       lw.chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, n - 70), to: n + 3 });
       lw.tf = tf;
+      lw.prov = !!c.synth;
     }
     lw.dataKey = dataKey;
     lw.linesKey = '';
@@ -3323,7 +3360,7 @@ function drawCandlesLW(d) {
   const SRC = { chain: '⚡ on-chain', jupiter: 'Jupiter', dexscreener: 'DexScreener' };
   const nowHtml = `<i class="${live ? 'on' : ''}"></i>${lw.K ? `MC ${fmt.usd(nowP * lw.K)}` : fmt.price(nowP)}${live?.source ? `<small>${SRC[live.source] || ''}</small>` : ''}`;
   if (now.innerHTML !== nowHtml) now.innerHTML = nowHtml;
-  const SYN = { trades: 'świece z ostatnich transakcji', radar: 'świece z cen radaru', live: 'świece z ceny na żywo' };
+  const SYN = { trades: 'świece z ostatnich transakcji', radar: 'świece z cen radaru', live: 'świece z ceny na żywo', cache: 'zapisana historia — odświeżam' };
   const legend = `${c.synth ? `<span class="muted">ⓘ ${SYN[c.synth]}</span>` : ''}<span>Przesuń palcem · powiększ dwoma palcami</span>`;
   const lg = box.querySelector('.c-legend');
   if (lg.dataset.html !== legend) {
@@ -3350,8 +3387,9 @@ function applyLive(p, at) {
   if (!c?.list || !c.key.startsWith(`${state.selected}|`)) return;
   const ms = TF_MS[state.candleTf] || 300e3;
   if (!c.list.length) {
-    // Nothing to download for this pool: the chart starts from the live price.
-    c.list.push([Math.floor(at / ms) * ms, p, p, p, p, 0]);
+    // Nothing to download for this pool: the chart starts from the live price (never while the
+    // history is just delayed by the rate limit).
+    if (c.synth === 'live') c.list.push([Math.floor(at / ms) * ms, p, p, p, p, 0]);
     return;
   }
   const last = c.list[c.list.length - 1];
