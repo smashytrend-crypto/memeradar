@@ -754,32 +754,35 @@ a { color: inherit; text-decoration: none; }
 .pos-form button { grid-column: 1 / -1; height: 40px; background: var(--grad); border: 0; color: #fff; }
 .sel.preset select { max-width: 140px; }
 
-/* ---------- bottom bar ---------- */
-body { padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px)); }
+/* ---------- bottom bar: floating pill (Instagram-style), monochrome line icons ---------- */
+body { padding-bottom: calc(96px + env(safe-area-inset-bottom, 0px)); }
 .bottombar {
-  position: fixed; left: 0; right: 0; bottom: 0; z-index: 35; display: flex; justify-content: center; gap: 4px;
-  padding: 6px 12px calc(6px + env(safe-area-inset-bottom, 0px));
-  background: rgba(10, 13, 19, 0.94); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
-  border-top: 1px solid var(--line2);
+  position: fixed; left: 50%; bottom: calc(12px + env(safe-area-inset-bottom, 0px)); z-index: 35;
+  transform: translateX(-50%); width: min(340px, calc(100vw - 32px));
+  display: flex; justify-content: space-around; gap: 2px; padding: 6px;
+  border-radius: 28px; border: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(16, 20, 28, 0.84); backdrop-filter: blur(22px) saturate(160%); -webkit-backdrop-filter: blur(20px) saturate(160%);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55), 0 1px 0 rgba(255, 255, 255, 0.05) inset;
 }
 .bottombar button {
-  position: relative; flex: 1; max-width: 200px; display: flex; flex-direction: column; align-items: center; gap: 2px;
-  padding: 6px 4px; border: 0; border-radius: 12px; background: transparent; color: var(--muted);
-  font: 600 11.5px/1.2 var(--sans); cursor: pointer;
+  position: relative; flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+  min-height: 50px; padding: 6px 4px; border: 0; border-radius: 22px; background: transparent; color: #8a93a3;
+  font: 600 10.5px/1 var(--sans); letter-spacing: 0.01em; cursor: pointer; -webkit-tap-highlight-color: transparent;
 }
-.bottombar .bi { font-size: 20px; line-height: 1; filter: grayscale(0.6); }
-.bottombar button.on { color: var(--text); background: var(--panel2); }
-.bottombar button.on .bi { filter: none; }
+.bottombar .bi { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.bottombar .bi .dot { fill: currentColor; stroke: none; }
+.bottombar button.on { color: #fff; background: rgba(255, 255, 255, 0.09); }
+.bottombar button:active { transform: scale(0.96); }
 .bb-count {
-  position: absolute; top: 2px; right: calc(50% - 26px); min-width: 17px; height: 17px; padding: 0 5px; border-radius: 9px;
-  background: var(--grad); color: #fff; font: 700 10.5px/17px var(--mono);
+  position: absolute; top: 4px; left: calc(50% + 6px); min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px;
+  background: #fff; color: #0b0e14; font: 700 10px/16px var(--mono); text-align: center;
 }
 .bb-count:empty { display: none; }
 
 /* ---------- open demo positions sheet ---------- */
 .sheet {
-  position: fixed; inset: 0; bottom: calc(64px + env(safe-area-inset-bottom, 0px)); z-index: 34; overflow-y: auto;
-  background: var(--bg); padding: 14px 16px 24px; overscroll-behavior: contain;
+  position: fixed; inset: 0; z-index: 34; overflow-y: auto;
+  background: var(--bg); padding: 14px 16px calc(110px + env(safe-area-inset-bottom, 0px)); overscroll-behavior: contain;
 }
 .sheet[hidden] { display: none; }
 body.sheet-open { overflow: hidden; }
@@ -831,10 +834,10 @@ body.sheet-open { overflow: hidden; }
 .quick-amt button { flex: 1; height: 34px; border-radius: 9px; border: 1px solid var(--line2); background: var(--panel2); color: var(--text); font: 600 13px/1 var(--mono); cursor: pointer; }
 
 /* Bottom bar shrinks while scrolling down, grows back on scroll up. */
-.bottombar, .bottombar button, .bottombar .bi { transition: padding 0.25s ease, font-size 0.25s ease, gap 0.25s ease; }
-.bottombar button > span:not(.bi):not(.bb-count) { transition: opacity 0.2s ease, max-height 0.25s ease; max-height: 20px; overflow: hidden; }
-.bottombar.mini { padding-top: 3px; padding-bottom: calc(3px + env(safe-area-inset-bottom, 0px)); }
-.bottombar.mini button { padding: 4px; gap: 0; }
-.bottombar.mini .bi { font-size: 16px; }
-.bottombar.mini button > span:not(.bi):not(.bb-count) { opacity: 0; max-height: 0; }
-.bottombar.mini .bb-count { top: -2px; }
+.bottombar { transition: width 0.3s ease, padding 0.3s ease, border-radius 0.3s ease, bottom 0.3s ease; }
+.bottombar button { transition: min-height 0.3s ease, padding 0.3s ease, background 0.2s, color 0.2s; }
+.bottombar .bl { transition: opacity 0.2s ease, max-height 0.3s ease; max-height: 14px; overflow: hidden; }
+.bottombar.mini { width: min(220px, calc(100vw - 32px)); padding: 4px; }
+.bottombar.mini button { min-height: 36px; padding: 4px; gap: 0; }
+.bottombar.mini .bl { opacity: 0; max-height: 0; }
+.bottombar.mini .bb-count { top: 1px; }
