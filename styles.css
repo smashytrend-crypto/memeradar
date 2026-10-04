@@ -860,3 +860,18 @@ body.sheet-open { overflow: hidden; }
 .qs-row button { border-color: rgba(255, 77, 106, 0.35); color: var(--down); background: rgba(255, 77, 106, 0.08); }
 .qb-row button:active, .qs-row button:active { transform: scale(0.96); }
 
+
+/* ---------- stop loss / take profit ---------- */
+.sl-row { margin-top: 8px; }
+.sl-row > span { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.sl-row > span b { color: var(--down); font-family: var(--mono); }
+.sl-row > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.sl-row button { white-space: nowrap;
+  flex: 1; min-width: 52px; height: 34px; padding: 0 8px; border-radius: 10px; border: 1px solid var(--line2);
+  background: var(--panel2); color: var(--text); font: 700 13px/1 var(--mono); cursor: pointer;
+}
+.sl-row button.on { border-color: var(--down); color: #fff; background: rgba(255, 77, 106, 0.35); }
+.sl-row button.off { flex: 0 0 36px; min-width: 36px; color: var(--muted); }
+.sl-row button:active { transform: scale(0.96); }
+.sl-row.tp > span b { color: var(--up); }
+.sl-row.tp button.on { border-color: var(--up); background: rgba(31, 214, 143, 0.3); }

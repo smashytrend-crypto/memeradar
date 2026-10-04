@@ -925,7 +925,7 @@ function savePosition(mint, price, usd, mc, d = {}) {
 
 /** Closes a demo position at `price` (its current price), keeping the result for the P&L history. */
 /** Sells `fraction` (0–1] of a demo position at `price`; 1 closes it. */
-function sellPosition(mint, fraction, price) {
+function sellPosition(mint, fraction, price, extra = {}) {
   const p = state.positions[mint];
   if (!p) return;
   const f = p.usd > 0 ? Math.min(1, Math.max(0, fraction)) : 1;
@@ -942,7 +942,7 @@ function sellPosition(mint, fraction, price) {
     const pct = (exit / p.p - 1) * 100;
     state.closed.unshift({
       m: mint, n: p.n, s: p.s, chain: p.chain, usd: part, pct, f,
-      pnl: part > 0 ? part * (exit / p.p - 1) : 0, openedAt: p.t, closedAt: Date.now(),
+      pnl: part > 0 ? part * (exit / p.p - 1) : 0, openedAt: p.t, closedAt: Date.now(), ...extra,
     });
     state.closed = state.closed.filter((c) => Date.now() - c.closedAt < 90 * 86400e3).slice(0, 500);
     LS.set('closedPositions', state.closed);
@@ -985,6 +985,77 @@ const quickBuyRow = (label) =>
   `<div class="qb-row"><span>${label}</span>${state.quickBuy.map((v) => `<button data-act="qbuy" data-usd="${v}">+$${fmt.n(v)}</button>`).join('')}<button class="qb-edit" data-act="qbuy-edit" aria-label="Ustaw kwoty szybkiego zakupu" title="Ustaw kwoty">⚙︎</button></div>`;
 const sellRow = (attr) =>
   `<div class="qs-row">${[25, 50, 75, 100].map((v) => `<button ${attr}="${v}">${v === 100 ? 'Sprzedaj 100%' : `${v}%`}</button>`).join('')}</div>`;
+
+// ---------- stop loss / take profit ----------
+// Each position can carry p.sl (sell everything once down that %) and p.tp (once up that %).
+const EXITS = {
+  sl: { name: 'Stop loss', icon: '🛑', sign: '−', presets: [10, 20, 30, 50], max: 99, attr: 'sl' },
+  tp: { name: 'Take profit', icon: '🎯', sign: '+', presets: [50, 100, 200, 500], max: 100000, attr: 'tp' },
+};
+
+function setExit(kind, mint, pct) {
+  const p = state.positions[mint];
+  const k = EXITS[kind];
+  if (!p) return;
+  if (pct > 0) p[kind] = Math.min(k.max, pct);
+  else delete p[kind];
+  LS.set('positions', state.positions);
+  toast(pct > 0 ? `${k.icon} ${k.name} ustawiony: ${k.sign}${fmt.n(p[kind])}%` : `${k.name} wyłączony`);
+}
+
+/** Manual level: a % ("25") or the market cap to sell at ("80k", "1.2m"). */
+function askExit(kind, mint) {
+  const p = state.positions[mint];
+  const k = EXITS[kind];
+  if (!p) return;
+  const ex = kind === 'sl' ? 'stratę w % (np. 25) albo MC, przy którym sprzedać (np. 80k)' : 'zysk w % (np. 150) albo MC, przy którym sprzedać (np. 2m)';
+  const text = prompt(`${k.name}: wpisz ${ex}:`, p[kind] ? String(p[kind]) : '');
+  if (text == null) return;
+  const raw = text.trim().replace(/[%+\-−]/g, '');
+  const v = parseAmount(raw);
+  if (!(v > 0)) return toast(kind === 'sl' ? 'Nie rozumiem — wpisz np. 25 albo 80k' : 'Nie rozumiem — wpisz np. 150 albo 2m');
+  // With k / m / b it is a market cap; a bare number is a % (for stop loss only below 100).
+  const isMc = /[kmb]$/i.test(raw) || (kind === 'sl' ? v >= 100 : v >= 100000);
+  if (!isMc) return setExit(kind, mint, v);
+  if (!(p.mc > 0)) return toast('Brak MC wejścia — wpisz wartość w %');
+  const pct = kind === 'sl' ? (1 - v / p.mc) * 100 : (v / p.mc - 1) * 100;
+  if (!(pct > 0 && pct < k.max)) return toast(`MC musi być ${kind === 'sl' ? 'niższe' : 'wyższe'} niż MC wejścia (${fmt.usd(p.mc)})`);
+  setExit(kind, mint, Math.round(pct * 10) / 10);
+}
+
+const exitRow = (kind, p, attr) => {
+  const k = EXITS[kind];
+  const v = p[kind];
+  const mcAt = v && p.mc > 0 ? p.mc * (kind === 'sl' ? 1 - v / 100 : 1 + v / 100) : null;
+  return `<div class="sl-row ${kind}"><span>${k.icon} ${k.name}${v ? ` <b>${k.sign}${fmt.n(v)}%</b>${mcAt ? ` <small>MC ${fmt.usd(mcAt)}</small>` : ''}` : ' <small>wyłączony</small>'}</span>
+    <div>${k.presets.map((x) => `<button ${attr}="${kind}:${x}" class="${v === x ? 'on' : ''}">${k.sign}${x}%</button>`).join('')}<button ${attr}="${kind}:custom" class="${v && !k.presets.includes(v) ? 'on' : ''}">Własny</button>${v ? `<button ${attr}="${kind}:off" class="off" aria-label="Wyłącz">✕</button>` : ''}</div></div>`;
+};
+const exitRows = (p, attr) => exitRow('tp', p, attr) + exitRow('sl', p, attr);
+function exitClick(mint, value) {
+  const [kind, v] = value.split(':');
+  if (!EXITS[kind]) return;
+  if (v === 'custom') askExit(kind, mint);
+  else setExit(kind, mint, v === 'off' ? null : Number(v));
+}
+
+/** Sells every position whose live price reached its stop loss or take profit (while the app is open). */
+function checkExits() {
+  if (!Object.values(state.positions).some((p) => p.sl || p.tp)) return;
+  let hit = false;
+  for (const x of positionList()) {
+    if (x.stale || x.pct == null) continue;
+    const kind = x.p.sl && x.pct <= -x.p.sl ? 'sl' : x.p.tp && x.pct >= x.p.tp ? 'tp' : null;
+    if (!kind) continue;
+    sellPosition(x.m, 1, x.r.p, { [kind]: true });
+    toast(`${EXITS[kind].icon} ${EXITS[kind].name}: sprzedano ${x.p.s ? '$' + x.p.s : 'pozycję'} przy ${fmt.pct(x.pct)}`);
+    hit = true;
+  }
+  if (!hit) return;
+  if (sheetOpen('pos')) renderPositions();
+  if (sheetOpen('wallet')) renderWallet();
+  if (state.detail) renderDetail(state.detail);
+}
+setInterval(checkExits, 2000);
 
 // ---------- open demo positions (bottom bar) ----------
 let posSaveAt = 0;
@@ -1084,6 +1155,7 @@ function renderPositions() {
               <div><span>Zysk / strata</span><b class="${(x.pnl ?? 0) >= 0 ? 'up' : 'down'}">${x.pnl != null ? money(x.pnl) : '—'}</b></div>
             </div>
             ${x.p.usd > 0 ? sellRow('data-pos-sell') : '<div class="qs-row"><button data-pos-sell="100">✖ Zamknij</button></div>'}
+            ${exitRows(x.p, 'data-pos-exit')}
             <div class="pos-acts"><button data-pos-open>Otwórz token</button></div>
           </div>`;
         })
@@ -1092,7 +1164,7 @@ function renderPositions() {
   const recent = state.closed.filter((c) => Date.now() - c.closedAt < 30 * 86400e3).slice(0, 20);
   const history = recent.length
     ? `<h3 class="pos-h">Zamknięte (30 dni)</h3><div class="pos-closed">${recent
-        .map((c) => `<div><span>${esc(c.n || fmt.short(c.m))} <small>$${esc(c.s || '?')}${c.f && c.f < 1 ? ` · ${Math.round(c.f * 100)}%` : ''} · ${fmt.ago(c.closedAt)}</small></span><b class="${c.pct >= 0 ? 'up' : 'down'}">${fmt.pct(c.pct)}${c.usd > 0 ? ` · ${money(c.pnl)}` : ''}</b></div>`)
+        .map((c) => `<div><span>${esc(c.n || fmt.short(c.m))} <small>${c.sl ? '🛑 SL · ' : c.tp ? '🎯 TP · ' : ''}$${esc(c.s || '?')}${c.f && c.f < 1 ? ` · ${Math.round(c.f * 100)}%` : ''} · ${fmt.ago(c.closedAt)}</small></span><b class="${c.pct >= 0 ? 'up' : 'down'}">${fmt.pct(c.pct)}${c.usd > 0 ? ` · ${money(c.pnl)}` : ''}</b></div>`)
         .join('')}</div>`
     : '';
   const html = summary + `<h3 class="pos-h">Otwarte (${list.length})</h3>` + cards + history;
@@ -1660,6 +1732,7 @@ function renderDetail(d) {
         ${pp.usd != null ? `<div><span>Włożone</span><b>${fmt.usd(pp.entry.usd)}</b></div><div><span>Wartość</span><b>${fmt.usd(pp.value)}</b></div><div><span>Zysk / strata</span><b class="${pp.cls}">${pp.usd >= 0 ? '+' : '−'}${fmt.usd(Math.abs(pp.usd))}</b></div>` : ''}
       </div>
       ${pp.entry.usd > 0 ? sellRow('data-sell') : '<div class="d-acts"><button data-sell="100">✖ Zamknij pozycję DEMO</button></div>'}
+      ${exitRows(pp.entry, 'data-exit')}
       <div class="wallet-line" style="margin-top:10px">👛 Saldo DEMO: <b>${fmt.usd(state.wallet.cash)}</b> <button data-act="wallet-open">Doładuj</button></div>
       ${quickBuyRow('Dokup')}</div>`
     : `<div class="card"><h3>💼 Pozycja <span class="demo-tag">DEMO</span> <small>treningowa</small></h3>
@@ -2074,6 +2147,11 @@ $('#drawer').addEventListener('click', (e) => {
   } else if (act === 'qbuy-edit') {
     editQuickBuy();
   }
+  const ex = e.target.closest('[data-exit]');
+  if (ex && state.selected) {
+    exitClick(state.selected, ex.dataset.exit);
+    if (state.detail) renderDetail(state.detail);
+  }
   const sell = e.target.closest('[data-sell]');
   if (sell && state.selected) {
     const f = Number(sell.dataset.sell) / 100;
@@ -2219,6 +2297,12 @@ $('#posSheet').addEventListener('click', (e) => {
   const card = e.target.closest('[data-pos]');
   if (!card) return;
   const mint = card.dataset.pos;
+  const exBtn = e.target.closest('[data-pos-exit]');
+  if (exBtn) {
+    exitClick(mint, exBtn.dataset.posExit);
+    renderPositions();
+    return;
+  }
   const sellBtn = e.target.closest('[data-pos-sell]');
   if (sellBtn) {
     const x = positionList().find((p) => p.m === mint);
