@@ -1773,6 +1773,7 @@ function closeDetail() {
   state.selected = null;
   clearInterval(detailTimer);
   stopLive();
+  destroyLW();
   // Stop the hidden DexScreener chart (it keeps streaming); after the slide-out animation.
   setTimeout(() => {
     if (state.selected) return;
@@ -2493,6 +2494,7 @@ $('#drawer').addEventListener('click', (e) => {
     LS.set('chartTab2', state.chartTab);
     if (state.chartTab !== 'candles') stopLive();
     $$('[data-chart]').forEach((b) => b.classList.toggle('active', b === chart));
+    destroyLW();
     $('#chartBox').innerHTML = '';
     renderChart(state.detail, state.chartTab);
   }
@@ -3013,7 +3015,7 @@ function chartLevels(d, mine, tr) {
   return out;
 }
 
-function drawCandles(d) {
+function drawCandlesSvg(d) {
   const box = $('#chartBox');
   if (!box) return;
   const tf = state.candleTf;
@@ -3152,6 +3154,183 @@ function drawCandles(d) {
   box.innerHTML = `${tfRow}${head}<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" class="candles">${svg}</svg>${legend}`;
 }
 
+// ---------- TradingView Lightweight Charts (candle chart) ----------
+// Loaded on first use from the site itself (vendor/), Apache-2.0. Until it is ready (or if it
+// can't load) the built-in SVG chart is drawn instead.
+let lwLoad = null;
+function loadLW() {
+  if (window.LightweightCharts) return Promise.resolve(true);
+  if (lwLoad) return lwLoad;
+  lwLoad = new Promise((resolve) => {
+    const s = document.createElement('script');
+    s.src = `vendor/lightweight-charts.js${window.__MR_VERSION ? `?v=${window.__MR_VERSION}` : ''}`;
+    s.onload = () => resolve(!!window.LightweightCharts);
+    s.onerror = () => resolve(false);
+    document.head.appendChild(s);
+  }).then((ok) => {
+    if (ok && state.chartTab === 'candles' && state.detail) drawCandles(state.detail);
+    return ok;
+  });
+  return lwLoad;
+}
+function destroyLW() {
+  try {
+    state.lw?.chart.remove();
+  } catch {
+    /* already gone */
+  }
+  state.lw = null;
+}
+
+function drawCandles(d) {
+  if (window.LightweightCharts) return drawCandlesLW(d);
+  loadLW();
+  drawCandlesSvg(d);
+}
+
+function drawCandlesLW(d) {
+  const box = $('#chartBox');
+  if (!box) return;
+  const LW = window.LightweightCharts;
+  const tf = state.candleTf;
+  let lw = state.lw;
+  if (!lw || lw.mint !== d.m || !lw.el.isConnected) {
+    destroyLW();
+    box.innerHTML = `<div class="tf-row">${TF_LIST.map((x) => `<button data-tf="${x}">${x}</button>`).join('')}</div><div class="c-now"></div><div class="lw-box"></div><div class="lw-msg" hidden></div><div class="c-legend"></div>`;
+    const el = box.querySelector('.lw-box');
+    const chart = LW.createChart(el, {
+      autoSize: true,
+      layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#7c879a', fontSize: 11, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
+      grid: { vertLines: { color: 'rgba(255,255,255,0.04)' }, horzLines: { color: 'rgba(255,255,255,0.05)' } },
+      rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)' },
+      timeScale: { borderColor: 'rgba(255,255,255,0.08)', timeVisible: true, secondsVisible: false, rightOffset: 4 },
+      crosshair: { mode: LW.CrosshairMode.Normal },
+      // Vertical swipes scroll the token window, horizontal ones move the chart; pinch zooms.
+      handleScroll: { vertTouchDrag: false, horzTouchDrag: true, mouseWheel: true, pressedMouseMove: true },
+      handleScale: { pinch: true, mouseWheel: true, axisPressedMouseMove: true },
+      localization: { locale: 'pl-PL' },
+    });
+    // Below zero is only the empty margin under the candles: no label there.
+    const fmtV = (v) => (v < 0 ? '' : state.lw?.K ? fmt.usd(v) : fmt.price(v));
+    const candle = chart.addCandlestickSeries({
+      upColor: '#1fd68f', downColor: '#ff4d6a', borderVisible: false, wickUpColor: '#1fd68f', wickDownColor: '#ff4d6a',
+      priceFormat: { type: 'custom', minMove: 1e-12, formatter: fmtV },
+    });
+    candle.priceScale().applyOptions({ scaleMargins: { top: 0.1, bottom: 0.22 } });
+    const vol = chart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: 'vol', lastValueVisible: false, priceLineVisible: false });
+    chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+    lw = state.lw = { chart, candle, vol, el, mint: d.m, dataKey: '', linesKey: '', marksKey: '', lines: [], K: 0, tf: '' };
+  }
+  box.querySelectorAll('.tf-row button').forEach((b) => b.classList.toggle('active', b.dataset.tf === tf));
+  const msg = box.querySelector('.lw-msg');
+  const c = state.candles?.key === `${d.m}|${tf}` ? state.candles : null;
+  if (!c || !c.list.length) {
+    msg.hidden = false;
+    msg.textContent = c ? (c.err ? 'Limit darmowego API — spróbuję za chwilę' : 'Czekam na cenę na żywo…') : 'Ładowanie świec…';
+    if (lw.dataKey) {
+      lw.candle.setData([]);
+      lw.vol.setData([]);
+      lw.dataKey = '';
+    }
+    return;
+  }
+  msg.hidden = true;
+  const live = state.live?.m === d.m && Date.now() - state.live.at < 10_000 ? state.live : null;
+  const nowP = live?.p || d.p;
+  const off = -new Date().getTimezoneOffset() * 60; // the chart shows UTC: shift to local time
+  const ms = TF_MS[tf] || 300e3;
+  const tOf = (ts) => Math.floor(ts / ms) * (ms / 1000) + off;
+  const dataKey = `${c.key}|${c.at}|${c.synth || ''}`;
+  const toBar = (k, K) => ({ time: Math.floor(k[0] / 1000) + off, open: k[1] * K, high: k[2] * K, low: k[3] * K, close: k[4] * K });
+  const volBar = (k) => ({ time: Math.floor(k[0] / 1000) + off, value: k[5] || 0, color: k[4] >= k[1] ? 'rgba(31,214,143,0.35)' : 'rgba(255,77,106,0.35)' });
+  if (dataKey !== lw.dataKey) {
+    // Market-cap scale: fixed for this data set (MC moves 1:1 with price), so live updates match.
+    const mc = live?.mc || d.mc;
+    lw.K = mc > 0 && nowP > 0 ? mc / nowP : 0;
+    const K = lw.K || 1;
+    lw.candle.setData(c.list.map((k) => toBar(k, K)));
+    lw.vol.setData(c.list.map(volBar));
+    if (lw.tf !== tf) {
+      // A new timeframe / token: show the latest ~70 candles.
+      const n = c.list.length;
+      lw.chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, n - 70), to: n + 3 });
+      lw.tf = tf;
+    }
+    lw.dataKey = dataKey;
+    lw.linesKey = '';
+    lw.marksKey = '';
+  }
+  // The last candle follows the live price.
+  const K = lw.K || 1;
+  const lastK = c.list[c.list.length - 1];
+  if (nowP > 0) {
+    lw.candle.update({ time: Math.floor(lastK[0] / 1000) + off, open: lastK[1] * K, high: Math.max(lastK[2], nowP) * K, low: Math.min(lastK[3], nowP) * K, close: nowP * K });
+  }
+  // Levels: my buy / sell, top 10 entry, position exits.
+  const pos = posHere(d.m);
+  const mine = myTrades(d.m);
+  const tr = state.tr?.m === d.m ? state.tr.list : [];
+  const lv = chartLevels(d, mine, tr);
+  const levels = [];
+  if (lv.buy) levels.push([lv.buy, `Moje kupno${lv.buyN > 1 ? ` (śr. ${lv.buyN})` : ''}`, '#4da3ff']);
+  if (lv.sell) levels.push([lv.sell, `Moja sprzedaż${lv.sellN > 1 ? ` (śr. ${lv.sellN})` : ''}`, '#ff8a4d']);
+  if (lv.top) levels.push([lv.top, `Top 10 ${lv.topKind === 'holders' ? 'holderów' : 'kupujących'}`, '#e4c15a']);
+  if (pos?.p > 0) {
+    if (pos.sl) levels.push([pos.p * (1 - pos.sl / 100), `SL −${fmt.n(pos.sl)}%`, '#ff4d6a']);
+    if (pos.tp) levels.push([pos.p * (1 + pos.tp / 100), `TP +${fmt.n(pos.tp)}%`, '#1fd68f']);
+    if (pos.safe) levels.push([pos.p * (1 + SAFE_PCT / 100), 'SAFE', '#f5b83d']);
+    if (pos.be) levels.push([pos.p * (1 + BE_PCT / 100), 'BE', '#7cbcff']);
+  }
+  const linesKey = `${K}|${levels.map((l) => `${l[0].toPrecision(6)}${l[1]}`).join(',')}`;
+  if (linesKey !== lw.linesKey) {
+    for (const l of lw.lines) lw.candle.removePriceLine(l);
+    lw.lines = levels.map(([v, title, color]) => lw.candle.createPriceLine({ price: v * K, color, lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title }));
+    lw.linesKey = linesKey;
+  }
+  // Markers: my trades, whales, tracked wallets, top holders, migration.
+  const first = c.list[0][0];
+  const topSet = new Set((d.topHolders || []).map((h) => normWallet(h.a)));
+  const whale = WHALE_USD_UI[ENGINE?.chain] || 1000;
+  const marks = [];
+  if (d.ma && d.ma >= first) marks.push({ time: tOf(d.ma), position: 'belowBar', color: '#c9a7ff', shape: 'square', text: '🎓' });
+  for (const t of tr) {
+    if (t.t < first) continue;
+    const w = walletOf(t.wallet);
+    if (w) marks.push({ time: tOf(t.t), position: t.side === 'buy' ? 'belowBar' : 'aboveBar', color: '#c9a7ff', shape: 'circle', text: `${w.emoji || '👛'} ${w.name}` });
+    else if (topSet.has(normWallet(t.wallet))) marks.push({ time: tOf(t.t), position: t.side === 'buy' ? 'belowBar' : 'aboveBar', color: '#e4c15a', shape: 'circle', text: 'T10' });
+    else if (t.usd >= whale) marks.push({ time: tOf(t.t), position: t.side === 'buy' ? 'belowBar' : 'aboveBar', color: t.side === 'buy' ? '#4da3ff' : '#ffaa4d', shape: 'circle', text: '🐋' });
+  }
+  for (const t of mine) {
+    if (t.t < first) continue;
+    marks.push(t.side === 'buy'
+      ? { time: tOf(t.t), position: 'belowBar', color: '#1fd68f', shape: 'arrowUp', text: 'Kupno' }
+      : { time: tOf(t.t), position: 'aboveBar', color: '#ff4d6a', shape: 'arrowDown', text: 'Sprzedaż' });
+  }
+  marks.sort((a, b) => a.time - b.time);
+  // One marker of a kind per candle (a busy candle would stack a tower of them).
+  const seenMk = new Set();
+  for (let i = marks.length - 1; i >= 0; i--) {
+    const k = `${marks[i].time}|${marks[i].text}|${marks[i].position}`;
+    if (seenMk.has(k)) marks.splice(i, 1);
+    else seenMk.add(k);
+  }
+  const marksKey = `${dataKey}|${marks.length}|${marks.map((m) => m.time + m.text).join(',').length}`;
+  if (marksKey !== lw.marksKey) {
+    lw.candle.setMarkers(marks);
+    lw.marksKey = marksKey;
+  }
+  const now = box.querySelector('.c-now');
+  const nowHtml = `<i class="${live ? 'on' : ''}"></i>${lw.K ? `MC ${fmt.usd(nowP * lw.K)}` : fmt.price(nowP)}`;
+  if (now.innerHTML !== nowHtml) now.innerHTML = nowHtml;
+  const SYN = { trades: 'świece z ostatnich transakcji', radar: 'świece z cen radaru', live: 'świece z ceny na żywo' };
+  const legend = `${c.synth ? `<span class="muted">ⓘ ${SYN[c.synth]}</span>` : ''}<span>Przesuń palcem · powiększ dwoma palcami</span>`;
+  const lg = box.querySelector('.c-legend');
+  if (lg.dataset.html !== legend) {
+    lg.dataset.html = legend;
+    lg.innerHTML = legend;
+  }
+}
+
 // ---------- live chart (every second) ----------
 let liveTimer = null;
 let liveBusy = false;
@@ -3195,8 +3374,9 @@ async function liveTick() {
     if (r?.p > 0 && state.selected === d.m) {
       state.live = { m: d.m, p: r.p, mc: r.mc, at: r.at };
       applyLive(r.p, r.at);
-      // A finger on the drawer: skip this frame (a rebuild would swallow the tap on iOS).
-      if (state.chartTab === 'candles' && Date.now() >= drawerTouch) drawCandles(state.detail);
+      // The TradingView chart updates in place (no rebuild), so it moves even under a finger;
+      // the SVG fallback skips frames while the drawer is touched (iOS would lose the tap).
+      if (state.chartTab === 'candles' && (window.LightweightCharts || Date.now() >= drawerTouch)) drawCandles(state.detail);
     }
   } catch {
     /* rate limited / offline: the next tick tries again */

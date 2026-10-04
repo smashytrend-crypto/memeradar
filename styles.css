@@ -1005,3 +1005,9 @@ svg.candles .th { fill: #e4c15a; stroke: #0b0f17; stroke-width: 1.2; }
 .c-now { position: absolute; top: 8px; right: 10px; z-index: 2; font: 800 15px/26px var(--mono); color: var(--text); display: flex; align-items: center; gap: 6px; text-shadow: 0 1px 6px rgba(0,0,0,0.8); }
 .c-now i { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
 .c-now i.on { background: var(--up); box-shadow: 0 0 8px var(--up); }
+/* TradingView Lightweight Charts box */
+.chart-box:has(.lw-box) { height: 420px; }
+.lw-box { position: absolute; left: 0; right: 0; top: 40px; bottom: 24px; }
+.lw-box a[href*="tradingview"] { opacity: 0.5; }
+.lw-msg { position: absolute; inset: 40px 0 24px; display: flex; align-items: center; justify-content: center; color: var(--muted); font-weight: 600; pointer-events: none; z-index: 2; }
+.chart-box:has(.lw-box) .c-legend { position: absolute; left: 0; right: 0; bottom: 0; }
