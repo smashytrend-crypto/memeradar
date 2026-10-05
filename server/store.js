@@ -1,8 +1,8 @@
-import { computeHype } from './scoring.js?v=muut7dva';
-import { CURVE_DEXES, NON_MEME, NON_MEME_TAGS, PUMP_INITIAL_VTOKENS, PUMP_K, PUMP_TOKENS_FOR_SALE } from './constants.js?v=muut7dva';
-import { Emitter, clamp } from './util.js?v=muut7dva';
-import { change4h, freshCandles, sparkPoints } from './candles.js?v=muut7dva';
-import { EVM_BASE_ASSETS, EVM_NON_MEME_SYMBOLS, evmEligible, getChain, isAddressOn, normAddr } from './chains.js?v=muut7dva';
+import { computeHype } from './scoring.js?v=muvpa7h6';
+import { CURVE_DEXES, NON_MEME, NON_MEME_TAGS, PUMP_INITIAL_VTOKENS, PUMP_K, PUMP_TOKENS_FOR_SALE } from './constants.js?v=muvpa7h6';
+import { Emitter, clamp } from './util.js?v=muvpa7h6';
+import { change4h, freshCandles, sparkPoints } from './candles.js?v=muvpa7h6';
+import { EVM_BASE_ASSETS, EVM_NON_MEME_SYMBOLS, evmEligible, getChain, isAddressOn, normAddr } from './chains.js?v=muvpa7h6';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -62,6 +62,51 @@ export function devRating({ tokens, devMints, devMigrations, honeypots } = {}) {
     return { score: clampS(50 + 50 * Math.min(1, (g / devMints) * 3) - spam(devMints)), n: devMints, good: g, ok: g, best: null, migrations: true };
   }
   return null;
+}
+
+/**
+ * Safety score 0–100 (like GMGN's): starts at 100, each red flag takes points off, with vetoes —
+ * a honeypot / unsellable token is 0, an unburned / unlocked LP caps the score at 79. Unknown
+ * facts take nothing off but are listed as unchecked. null until any safety data is in.
+ */
+export function safetyScore(t, now = Date.now()) {
+  const a = t.audit || {};
+  const risks = t.rug?.risks || [];
+  if (!t.rug && !t.audit) return null;
+  const items = [];
+  const take = (pts, label) => items.push({ pts: -pts, label });
+  const has = (re) => risks.some((r) => re.test(r.name || ''));
+  if (has(/^honeypot$/i)) return { score: 0, veto: 'honeypot', items: [{ pts: -100, label: 'Honeypot — nie da się sprzedać' }] };
+  const mint = a.mintAuthorityDisabled ?? a.evmMintOff;
+  const freeze = a.freezeAuthorityDisabled ?? a.evmFreezeOff;
+  if (mint === false) take(25, 'Mint aktywny (dodruk tokenów)');
+  if (freeze === false) take(20, 'Freeze aktywny (blokada portfeli)');
+  if (has(/wysoki podatek/i)) take(25, 'Podatek ponad 10%');
+  else if (has(/^podatek od /i)) take(10, 'Podatek 5–10%');
+  if (has(/zmienny podatek/i)) take(5, 'Właściciel może zmieniać podatek');
+  const lpb = t.rug?.lpBurnPct;
+  if (lpb != null && lpb < 50) take(12, `LP spalone / zablokowane tylko ${Math.round(lpb)}%`);
+  const onCurve = t.launchpad && !t.graduated;
+  if (!onCurve && t.liquidity > 0 && t.liquidity < 10_000) take(15, `Płynność poniżej $10k`);
+  const dev = devRating({ tokens: t.devTokens, devMints: a.devMints, devMigrations: a.devMigrations, honeypots: a.honeypotSameCreator });
+  if (dev?.score != null && dev.score < 25) take(18, 'Dev z serią nieudanych tokenów');
+  else if (dev?.score != null && dev.score < 40) take(8, 'Słaba historia deva');
+  if (a.topHoldersPercentage > 50) take(10, 'Top 10 holderów > 50%');
+  else if (a.topHoldersPercentage > 30) take(5, 'Top 10 holderów > 30%');
+  if (t.rug?.insidersPct > 20) take(10, 'Insiderzy > 20% podaży');
+  if (a.devBalancePercentage > 10) take(6, 'Dev trzyma > 10%');
+  const age = t.migratedAt || t.createdAt;
+  if (age && now - age < 15 * 60_000) take(8, 'Bardzo młoda pula (< 15 min)');
+  // Other danger flags (RugCheck / GoPlus) not counted above.
+  const other = risks.filter((r) => r.level === 'danger' && !/honeypot|podatek|mint|freeze|lp|liquidity|płynność|holder|ownership|creator|insider/i.test(r.name || '')).length;
+  if (other) take(Math.min(18, other * 6), `${other} inne poważne ostrzeżenie(a)`);
+  let score = Math.max(0, 100 + items.reduce((x, i) => x + i.pts, 0));
+  if (lpb != null && lpb < 50 && score > 79) score = 79;
+  const unchecked = [];
+  if (mint == null) unchecked.push('mint');
+  if (freeze == null) unchecked.push('freeze');
+  if (lpb == null) unchecked.push('LP');
+  return { score: Math.round(score), items, unchecked };
 }
 
 function blank(mint, now) {
@@ -603,6 +648,9 @@ export class Store extends Emitter {
       ad: t.dsOrders ? t.dsOrders.some((o) => /ad$/i.test(o.type)) : null,
       mad: t.audit?.mintAuthorityDisabled ?? t.audit?.evmMintOff ?? null, // mint authority off (EVM: not mintable)
       fad: t.audit?.freezeAuthorityDisabled ?? t.audit?.evmFreezeOff ?? null, // freeze authority off (EVM: no pause / blacklist)
+      ...((ss) => ({ sc: ss?.score ?? null, hpt: ss?.veto === 'honeypot' || null }))(safetyScore(t, now)),
+      ds: t.devSoldAt || null, // last time the creator was seen selling
+      cp: t.copyInfo && !t.copyInfo.isOg && t.copyInfo.same >= 2 ? t.copyInfo.same : null, // ticker copies (not the OG)
       dr: devRating({ tokens: t.devTokens, devMints: t.audit?.devMints, devMigrations: t.audit?.devMigrations, honeypots: t.audit?.honeypotSameCreator })?.score ?? null,
       cr: t.creator || null,
       dm: t.audit?.devMints ?? null, // tokens the creator launched
@@ -659,10 +707,12 @@ export class Store extends Emitter {
       lpBurnPct: t.rug?.lpBurnPct ?? null,
       dexPaid: t.dexPaid ?? null,
       dsOrders: t.dsOrders || null, // paid DexScreener orders (profile / CTO / ads / boosts) with times
+      safety: safetyScore(t, now),
       dev: devRating({ tokens: t.devTokens, devMints: t.audit?.devMints, devMigrations: t.audit?.devMigrations, honeypots: t.audit?.honeypotSameCreator }),
       devTokens: t.devTokens ? [...t.devTokens].sort((a, b) => b.mc - a.mc).slice(0, 8) : null,
       devInfo: t.devInfo || null, // EVM: GeckoTerminal developer address / holding
-      topHolders: t.topHolders || null, // top 10 holder wallets [{ a, pct }] (RugCheck / GoPlus)
+      topHolders: t.topHolders || null,
+      copyInfo: t.copyInfo || null, // top 10 holder wallets [{ a, pct }] (RugCheck / GoPlus)
       launchedAt: t.createdAt || null,
       risk: t.hype.risk,
       market: t.hype.market,

@@ -3,15 +3,15 @@
 // cross-origin reads). One engine per network, created the first time the viewer opens it; only
 // the network on screen polls its sources, the others pause (and keep their data for a quick
 // switch back).
-import { Store } from './server/store.js?v=muut7dva';
-import { RateLimiter, every, getJSON, num } from './server/util.js?v=muut7dva';
-import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=muut7dva';
-import { startPumpPortal } from './server/sources/pumpportal.js?v=muut7dva';
-import { startDexScreener } from './server/sources/dexscreener.js?v=muut7dva';
-import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=muut7dva';
-import { startJupiter } from './server/sources/jupiter.js?v=muut7dva';
-import { startRugCheck } from './server/sources/rugcheck.js?v=muut7dva';
-import { startGoPlus } from './server/sources/goplus.js?v=muut7dva';
+import { Store } from './server/store.js?v=muvpa7h6';
+import { RateLimiter, every, getJSON, num } from './server/util.js?v=muvpa7h6';
+import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=muvpa7h6';
+import { startPumpPortal } from './server/sources/pumpportal.js?v=muvpa7h6';
+import { startDexScreener } from './server/sources/dexscreener.js?v=muvpa7h6';
+import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=muvpa7h6';
+import { startJupiter } from './server/sources/jupiter.js?v=muvpa7h6';
+import { startRugCheck } from './server/sources/rugcheck.js?v=muvpa7h6';
+import { startGoPlus } from './server/sources/goplus.js?v=muvpa7h6';
 
 const baseConfig = {
   demo: false,
@@ -80,7 +80,10 @@ function createEngine(chainId) {
     }
     let alerts = 0;
     const name = t.symbol ? '$' + t.symbol : t.name || t.mint.slice(0, 6);
+    const dev = t.creator ? normAddr(chain, t.creator) : null;
     for (const tr of [...list].reverse()) {
+      // The creator selling (any trade we see, history included): anti-rug exits on it.
+      if (dev && tr.side === 'sell' && normAddr(chain, tr.wallet) === dev && tr.t > (t.devSoldAt || 0)) t.devSoldAt = tr.t;
       if (!tr.tx || seen.has(tr.tx)) continue;
       seen.add(tr.tx);
       // The first batch is history: mark it seen without alerting (only recent trades alert).
@@ -227,6 +230,60 @@ function createEngine(chainId) {
       if (k > 0) store.upsert(t.mint, { priceUsd: p, mcap: p * k }, 'live');
       return { p, mc: k > 0 ? p * k : null, at: Date.now(), source };
     },
+    /**
+     * Copies: other tokens with the same ticker (DexScreener search, every network — the oldest
+     * is the "OG") and the token's X / Telegram / website links reused by other tokens the radar
+     * knows. Cached 30 min per token.
+     */
+    async copies(mint) {
+      const t = store.get(normAddr(chain, mint));
+      if (!t?.symbol) return null;
+      if (t.copyInfo && Date.now() - t.copyInfo.at < 30 * 60_000) return t.copyInfo;
+      const sym = String(t.symbol).toUpperCase();
+      let pairs;
+      try {
+        pairs = await src.dex.searchRaw(t.symbol);
+      } catch {
+        return t.copyInfo || null; // a failed search isn't "no copies": try again next time
+      }
+      const byToken = new Map();
+      for (const p of pairs) {
+        const b = p?.baseToken;
+        if (!b?.address || String(b.symbol || '').toUpperCase() !== sym) continue;
+        const key = `${p.chainId}:${String(b.address).toLowerCase()}`;
+        const o = byToken.get(key) || { chain: p.chainId, address: b.address, name: b.name, at: Infinity, mc: 0 };
+        o.at = Math.min(o.at, Number(p.pairCreatedAt) || Infinity);
+        o.mc = Math.max(o.mc, Number(p.marketCap || p.fdv) || 0);
+        byToken.set(key, o);
+      }
+      const me = `${chain.dex}:${t.mint.toLowerCase()}`;
+      const list = [...byToken.values()];
+      const others = list.filter((o) => `${o.chain}:${o.address.toLowerCase()}` !== me);
+      // The search returns at most 30 pairs: without our own token among them the list is partial.
+      const partial = !list.some((o) => `${o.chain}:${o.address.toLowerCase()}` === me) || pairs.length >= 30;
+      const og = partial ? null : list.filter((o) => o.at < Infinity).sort((a, b) => a.at - b.at)[0] || null;
+      const top = [...others].sort((a, b) => b.mc - a.mc)[0] || null;
+      // Links reused across tokens the radar holds (same X account / TG / site = likely a copy).
+      const norm = (u) => String(u || '').toLowerCase().replace(/^https?:\/\/(www\.|mobile\.)?/, '').replace(/[?#].*$/, '').replace(/\/+$/, '');
+      const shared = {};
+      for (const k of ['twitter', 'telegram', 'website']) {
+        const mine = norm(t.socials?.[k]);
+        if (!mine) continue;
+        let n = 0;
+        for (const o of store.tokens.values()) if (o !== t && norm(o.socials?.[k]) === mine) n++;
+        if (n) shared[k] = n;
+      }
+      t.copyInfo = {
+        at: Date.now(),
+        same: others.length,
+        partial,
+        isOg: !!og && `${og.chain}:${og.address.toLowerCase()}` === me,
+        og: og && { chain: og.chain, address: og.address, mc: og.mc, at: og.at },
+        top: top && { chain: top.chain, address: top.address, mc: top.mc },
+        shared,
+      };
+      return t.copyInfo;
+    },
     /** Latest trades of the token's main pool (cached 25 s), newest first; null without a pool. */
     trades: (mint) => trades(mint, true),
     /** Candles [ms, o, h, l, c, vol] for the chart (cached 50 s per timeframe). */
@@ -369,6 +426,7 @@ export const engine = {
   },
   search: (q) => current.search(q),
   trades: (mint) => current.trades(mint),
+  copies: (mint) => current.copies(mint),
   live: (mint) => current.live(mint),
   candles: (mint, tf) => current.candles(mint, tf),
   /** The viewer's tracked wallets: [{ a, name, emoji }]. */

@@ -536,6 +536,8 @@ function updateRow(entry, d, idx) {
   if (d.fz && FRESH[d.fz]) chips.push(`<span class="chip fz ${FRESH[d.fz][2]}" title="Hype teraz: ${FRESH[d.fz][1]}">${FRESH[d.fz][0]} ${FRESH[d.fz][1]}</span>`);
   const serial = creatorWarning(d);
   if (serial) chips.push(`<span class="chip warnc" title="${esc(serial.tip)}">${serial.short}</span>`);
+  if (d.sc != null) chips.push(`<span class="chip safe-sc ${scoreCls(d.sc)}" title="Ocena bezpieczeństwa ${d.sc}/100">🛡 ${d.sc}</span>`);
+  if (d.cp) chips.push(`<span class="chip copyc" title="Ten ticker ma jeszcze ${d.cp} innych tokenów — ten nie jest najstarszy (OG)">🧬 kopia</span>`);
   if (d.cto) chips.push('<span class="chip cto" title="Community takeover — społeczność przejęła projekt (opłacone na DexScreenerze)">CTO</span>');
   if (d.ad) chips.push('<span class="chip adc" title="Płatna reklama na DexScreenerze">📣 Ad</span>');
   if (d.dr >= 80) chips.push(`<span class="chip gooddev" title="Ocena deva ${d.dr}/100 — jego wcześniejsze tokeny radziły sobie dobrze">⭐ dev ${d.dr}</span>`);
@@ -636,9 +638,26 @@ function updateRow(entry, d, idx) {
 // list doesn't jump around under the reader's finger.
 const REORDER_MS = 5_000;
 
+// The list also holds still while a finger is on it or it is being scrolled, and for 1.5 s after
+// (no tapping the wrong token because the rows moved).
+let listHoldUntil = 0;
+const listHeld = () => Date.now() < listHoldUntil;
+function holdList(ms) {
+  listHoldUntil = Math.max(listHoldUntil, Date.now() + ms);
+  showHold();
+}
+let holdTimer = null;
+function showHold() {
+  const b = $('#holdBadge');
+  if (!b) return;
+  b.hidden = !listHeld();
+  clearTimeout(holdTimer);
+  if (listHeld()) holdTimer = setTimeout(showHold, listHoldUntil - Date.now() + 50);
+}
+
 function displayOrder(rows) {
   const now = Date.now();
-  if (!state.order || state.firstSnapshot || now - (state.lastReorder || 0) >= REORDER_MS) {
+  if (!state.order || state.firstSnapshot || (!listHeld() && now - (state.lastReorder || 0) >= REORDER_MS)) {
     state.lastReorder = now;
     state.order = rows.map((d) => d.m);
     return { list: rows, reordered: true };
@@ -1473,7 +1492,7 @@ function renderWallet() {
     </div>`;
   const body = $('#walletBody');
   if (!body.querySelector('#wCard')) {
-    body.innerHTML = `<div id="wCard"></div>${form}<div id="wFees"></div><div id="wTrack"></div><div id="wHist"></div>
+    body.innerHTML = `<div id="wCard"></div>${form}<div id="wFees"></div><div id="wTrack"></div><div id="wDisc"></div><div id="wHist"></div>
       <div class="d-acts" style="margin-top:16px"><button data-wallet="reset">♻️ Wyzeruj wallet DEMO</button></div>`;
   }
   const put = (id, html) => {
@@ -1486,6 +1505,7 @@ function renderWallet() {
   put('#wCard', card);
   put('#wFees', feesCard);
   put('#wTrack', walletTrackerCard());
+  put('#wDisc', discoveryCard());
   put('#wHist', hist);
 }
 
@@ -1800,6 +1820,7 @@ async function openDetail(mint, push = true) {
   state.live = null;
   state.tr = null;
   state.candles = null;
+  state.copiesFor = null;
   state.openedAt = Date.now();
   state.detailLayout = null;
   $('#drawer').classList.add('open');
@@ -1858,6 +1879,10 @@ async function loadDetail(mint) {
     detailMiss = 0;
     state.detail = d;
     loadTrades(mint);
+    if (state.copiesFor !== mint && ENGINE.copies) {
+      state.copiesFor = mint;
+      ENGINE.copies(mint).catch(() => {});
+    }
     // A finger on the drawer: wait, so a live re-render doesn't swallow the tap (iOS).
     if (Date.now() < drawerTouch) return;
     renderDetail(d);
@@ -2046,6 +2071,7 @@ function renderDetail(d) {
     <div class="hstats">${hstats.map(([k, v, tip]) => `<div title="${esc(tip)}"><span>${k}</span>${v}</div>`).join('')}</div>
     <div class="creator ${cw ? 'bad' : ''}">🧑‍🍳 Twórca ${creatorLink} · ${history}${cw ? ` <span class="chip warnc">${cw.short}</span>` : ''}</div>
     ${devSection(d)}
+    ${copySection(d)}
     <div class="d-acts">
       <button data-act="hide">🙈 Ukryj token</button>
       ${d.creator ? '<button data-act="block">⛔ Blokuj twórcę</button>' : ''}
@@ -2103,7 +2129,7 @@ function renderDetail(d) {
     market: `<div class="card"><h3>Rynek</h3><div class="kv">${kv.map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join('')}</div>
         ${ranks.length ? `<h3 style="margin-top:14px">Obecność na listach trendów</h3><div class="ranks">${ranks.map(([k, r]) => `<span class="chip">${esc(RANK_LABEL[k] || k)} · #${r}</span>`).join('')}</div>` : ''}
       </div>`,
-    risk: `<div class="card"><h3>Bezpieczeństwo <small>${RISK_TXT[d.risk?.level] || ''}</small></h3><div class="flags">${flags}</div></div>`,
+    risk: `<div class="card"><h3>Bezpieczeństwo <small>${RISK_TXT[d.risk?.level] || ''}</small></h3>${safetyBlock(d.safety)}<div class="flags">${flags}</div></div>`,
     x: `<div class="card"><h3>𝕏 — ostatnia godzina ${x?.lastPoll ? `<small>aktualizacja ${fmt.ago(x.lastPoll)} temu</small>` : ''}</h3>
         ${x ? `<div class="kv" style="margin-bottom:12px">
           <div><span>Wzmianki / 1h</span><b>${x.mentions1h}${x.capped ? '+' : ''}</b></div>
@@ -2452,6 +2478,17 @@ function togglePause() {
 }
 $('#pauseBtn').addEventListener('click', togglePause);
 
+const releaseList = () => {
+  if (listHoldUntil > Date.now() + 1500) listHoldUntil = Date.now() + 1500;
+  showHold();
+};
+$('#rows').addEventListener('touchstart', (e) => {
+  holdList(60_000);
+  // The touched row can be replaced mid-touch: its own touchend still arrives.
+  for (const ev of ['touchend', 'touchcancel']) e.target.addEventListener(ev, releaseList, { once: true, passive: true });
+}, { passive: true });
+for (const ev of ['touchend', 'touchcancel']) $('#rows').addEventListener(ev, releaseList, { passive: true });
+window.addEventListener('scroll', () => holdList(1500), { passive: true });
 $('#rows').addEventListener('click', (e) => {
   const star = e.target.closest('.star');
   const row = e.target.closest('.row[data-m]');
@@ -2685,6 +2722,13 @@ $('#walletSheet').addEventListener('click', (e) => {
     if (walletOf(a)) renderWallet();
     return;
   }
+  const wd = e.target.closest('[data-wd-track]');
+  if (wd) {
+    const name = prompt(`Nazwa dla portfela ${fmt.short(wd.dataset.wdTrack)}:`, 'Smart');
+    if (name == null) return;
+    trackWallet(wd.dataset.wdTrack, name || 'Smart', '🧠');
+    return renderWallet();
+  }
   const del = e.target.closest('[data-wt-del]');
   if (del) {
     untrackWallet(del.dataset.wtDel);
@@ -2859,6 +2903,63 @@ function askTrackWallet(a) {
   trackWallet(a, name, w?.emoji || '👛');
 }
 
+// ---------- wallet discovery ----------
+// Every token window's top traders are remembered locally; wallets that were in profit on several
+// different tokens (best: getting in early) are suggested for the wallet tracker.
+function recordTraders(mint, list) {
+  const d = state.detail?.m === mint ? state.detail : null;
+  const price = d?.p;
+  if (!(price > 0) || list.length < 20) return;
+  const t0 = list[list.length - 1].t;
+  const span = list[0].t - t0 || 1;
+  // 'Early' = first buy within the token's first hour (or first tenth of its life), from launch;
+  // without a launch time, the first 30% of the visible trades.
+  const ca = d?.ca > 0 ? d.ca : 0;
+  const isEarly = (fb) => fb != null && (ca ? fb - ca <= Math.max(3600e3, (list[0].t - ca) * 0.1) : fb - t0 <= span * 0.3);
+  const firstBuy = new Map();
+  for (const t of list) if (t.side === 'buy' && t.wallet && (!firstBuy.has(t.wallet) || t.t < firstBuy.get(t.wallet))) firstBuy.set(t.wallet, t.t);
+  let disc = LS.get('disc', {});
+  if (!disc || typeof disc !== 'object') disc = {};
+  const now = Date.now();
+  for (const o of topTraders(list, price)) {
+    if (o.pnl == null || !o.w) continue;
+    const e = (disc[o.w] ??= { n: {}, at: 0 });
+    delete e.n[mint]; // re-insert = most recent
+    e.n[mint] = [Math.round(o.pnl), isEarly(firstBuy.get(o.w)) ? 1 : 0, d?.s ? String(d.s).slice(0, 12) : '', Math.round(o.bUsd)];
+    const nk = Object.keys(e.n);
+    if (nk.length > 40) for (const k of nk.slice(0, nk.length - 40)) delete e.n[k];
+    e.at = now;
+    e.c = ENGINE?.chain || 'solana';
+  }
+  const keys = Object.keys(disc);
+  if (keys.length > 800) for (const k of keys.sort((a, b) => disc[a].at - disc[b].at).slice(0, keys.length - 800)) delete disc[k];
+  LS.set('disc', disc);
+}
+/** Wallets in profit on 3+ different tokens, best first. */
+function discoveredWallets() {
+  const disc = LS.get('disc', {}) || {};
+  return Object.entries(disc)
+    .map(([w, e]) => {
+      const toks = Object.values(e.n || {});
+      // A win: at least $50 and 20% of what they bought (not a few cents of unrealised gain).
+      const win = (x) => x[0] >= Math.max(50, 0.2 * (x[3] || 0));
+      const wins = toks.filter(win);
+      return { w, c: e.c, wins: wins.length, early: wins.filter((x) => x[1]).length, pnl: toks.reduce((a, x) => a + x[0], 0), n: toks.length, syms: Object.values(e.n || {}).filter(win).map((x) => x[2]).filter(Boolean).slice(0, 4) };
+    })
+    .filter((x) => x.wins >= 3 && !walletOf(x.w))
+    .sort((a, b) => b.wins - a.wins || b.early - a.early || b.pnl - a.pnl)
+    .slice(0, 15);
+}
+function discoveryCard() {
+  const list = discoveredWallets();
+  const seen = Object.keys(LS.get('disc', {}) || {}).length;
+  return `<div class="card wallet-disc"><h3>🔍 Odkryte portfele <small>${seen} zapamiętanych</small></h3>
+    ${list.length
+      ? list.map((x) => `<div class="wd-row"><div><b class="mono">${esc(fmt.short(x.w))}</b><small>na plusie w ${x.wins}/${x.n} tokenach${x.early ? ` · ${x.early}× wcześnie` : ''} · ${x.pnl >= 0 ? '+' : '−'}${fmt.usd(Math.abs(x.pnl))}${x.syms.length ? ` · ${x.syms.map((s) => '$' + esc(s)).join(' ')}` : ''}</small></div><button data-wd-track="${esc(x.w)}">Śledź</button></div>`).join('')
+      : '<p class="note">Jeszcze nic — DMN zapamiętuje top traderów z każdego tokena, który otwierasz. Portfele na plusie w co najmniej 3 różnych tokenach pojawią się tutaj.</p>'}
+  </div>`;
+}
+
 // ---------- live trades / top traders (open token) ----------
 const WHALE_USD_UI = { solana: 1000, bsc: 1000, base: 1000, robinhood: 500, ethereum: 5000 };
 let tradesBusy = false;
@@ -2873,6 +2974,7 @@ async function loadTrades(mint) {
     const list = await ENGINE.trades(mint);
     if (state.selected !== mint) return;
     state.tr = { m: mint, list: list || [], at: Date.now(), none: list == null };
+    if (list?.length) recordTraders(mint, list);
     if (state.detail && Date.now() >= drawerTouch) renderDetail(state.detail);
   } catch {
     // Keep what we had and wait the usual 25 s before trying again.
@@ -2945,6 +3047,46 @@ function tradesSection(d) {
     <div class="card"><h3>Top traderzy <small>z ostatnich ${tr.list.length} transakcji</small></h3>
       <div class="tr-wrap"><table class="trades top"><tr class="th"><td>Portfel</td><td>Kupił / sprzedał</td><td>Wynik</td></tr>${topRows}</table></div>
       <p class="note">Wynik = sprzedaż + wartość tego, co jeszcze trzyma, minus zakupy — tylko z widocznych transakcji (starsze nie są liczone).</p></div>`;
+}
+
+// ---------- copies / reused socials ----------
+/** What an X link points at: a profile, a community, or someone's tweet (a common fake). */
+function xLinkKind(u) {
+  if (!u) return null;
+  if (/\/status\/\d+/.test(u)) return { t: 'cudzy tweet (nie profil projektu)', bad: true };
+  if (/\/i\/communities\//.test(u)) return { t: 'społeczność X', bad: false };
+  if (/\/search\?|\/hashtag\//.test(u)) return { t: 'wyszukiwanie, nie profil', bad: true };
+  return { t: 'profil', bad: false };
+}
+function copySection(d) {
+  const c = d.copyInfo;
+  const x = linkUrl(d.socials?.twitter) ? xLinkKind(d.socials.twitter) : null;
+  const lines = [];
+  if (c) {
+    if (!c.same && !c.partial) lines.push('<span class="up">Jedyny token z tym tickerem</span>');
+    else if (c.same) {
+      lines.push(`Ten ticker ma jeszcze ${c.partial ? 'co najmniej ' : ''}<b>${c.same}</b> ${plTokens(c.same)}${c.isOg ? ' — <b class="up">ten jest najstarszy (OG)</b>' : ''}`);
+      if (!c.isOg && c.og) lines.push(`<span class="warn">OG: ${esc(c.og.chain)} · MC ${fmt.usd(c.og.mc)}${c.og.at < Infinity ? ` · ${fmt.ago(c.og.at)}` : ''}</span>`);
+      if (c.top && c.top.mc > (d.mc || 0)) lines.push(`Największa kopia: MC ${fmt.usd(c.top.mc)} (${esc(c.top.chain)})`);
+    }
+    const SH = { twitter: 'X', telegram: 'Telegram', website: 'Strona' };
+    for (const [k, n] of Object.entries(c.shared || {})) lines.push(`<span class="down">${SH[k]} podpięty pod ${n} ${pl(n, 'inny token', 'inne tokeny', 'innych tokenów')}</span>`);
+  }
+  if (x) lines.push(`Link X: <span class="${x.bad ? 'down' : 'up'}">${x.t}</span>`);
+  if (!lines.length) return '';
+  return `<div class="copies"><b>🧬 Kopie i socjale</b>${lines.map((l) => `<div>${l}</div>`).join('')}</div>`;
+}
+
+// ---------- safety score ----------
+const scoreCls = (v) => (v >= 70 ? 'up' : v >= 40 ? 'warn' : 'down');
+function safetyBlock(sf) {
+  if (!sf) return '<p class="note">Ocena bezpieczeństwa pojawi się po pierwszym raporcie (RugCheck / GoPlus).</p>';
+  const c = scoreCls(sf.score);
+  const items = sf.items.length
+    ? `<div class="sf-items">${sf.items.map((i) => `<div><span>${esc(i.label)}</span><b class="down">${i.pts}</b></div>`).join('')}</div>`
+    : '<p class="note">Bez znanych czerwonych flag.</p>';
+  return `<div class="sf-score"><b class="${c}">${sf.score}</b><span>/100</span><div><b>Ocena bezpieczeństwa</b><small>${sf.veto ? 'weto: honeypot' : sf.score <= 79 && sf.items.some((i) => /^LP/.test(i.label)) ? 'maks. 79 przy niezablokowanym LP' : 'im wyżej, tym bezpieczniej'}</small></div><i class="dev-bar"><i class="${c}" style="width:${sf.score}%"></i></i></div>
+    ${items}${sf.unchecked?.length ? `<p class="note">Nie sprawdzono: ${sf.unchecked.join(', ')}.</p>` : ''}`;
 }
 
 // ---------- dev rating / DexScreener orders (token window) ----------

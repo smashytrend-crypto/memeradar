@@ -1,9 +1,9 @@
 // DexScreener public API (https://docs.dexscreener.com/api/reference):
 // discovery (profiles / boosts) + batched market data for every tracked token.
-import { RateLimiter, errMsg, every, getJSON, num, sleep, toMs } from '../util.js?v=muut7dva';
-import { Store } from '../store.js?v=muut7dva';
-import { isCurvePair } from '../constants.js?v=muut7dva';
-import { isAddressOn, normAddr } from '../chains.js?v=muut7dva';
+import { RateLimiter, errMsg, every, getJSON, num, sleep, toMs } from '../util.js?v=muvpa7h6';
+import { Store } from '../store.js?v=muvpa7h6';
+import { isCurvePair } from '../constants.js?v=muvpa7h6';
+import { isAddressOn, normAddr } from '../chains.js?v=muvpa7h6';
 
 const BASE = 'https://api.dexscreener.com';
 const NAME = 'dexscreener';
@@ -224,6 +224,11 @@ export function startDexScreener(store, config) {
         ...boosts.map((b) => ({ type: 'boost', at: Number(b.paymentTimestamp) || 0, amount: Number(b.amount) || 0 })),
       ].sort((a, b) => a.at - b.at);
       return t.dexPaid;
+    },
+    /** Raw search results (pairs on every network), not added to the radar. */
+    async searchRaw(q) {
+      const data = await fast.run(() => getJSON(`${BASE}/latest/dex/search?q=${encodeURIComponent(q)}`));
+      return Array.isArray(data?.pairs) ? data.pairs : [];
     },
     /** Free-text / CA search across the whole network — adds results to the radar. */
     async search(q) {

@@ -1016,3 +1016,24 @@ svg.candles .th { fill: #e4c15a; stroke: #0b0f17; stroke-width: 1.2; }
 .c-now { top: 4px; font-size: 14px; line-height: 18px; display: grid; grid-template-columns: auto auto; align-items: center; column-gap: 5px; justify-items: end; }
 .c-now small { grid-column: 1 / -1; margin: 0; line-height: 12px; }
 .tf-row button { min-width: 34px; padding: 0 6px; }
+/* Auto-pause of the list under a finger / while scrolling. */
+.hold-badge { position: fixed; top: calc(env(safe-area-inset-top, 0px) + 8px); left: 50%; transform: translateX(-50%); z-index: 45; padding: 5px 12px; border-radius: 999px; background: rgba(20, 26, 36, 0.92); border: 1px solid var(--line2); color: var(--muted); font-size: 12px; font-weight: 600; pointer-events: none; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+.hold-badge[hidden] { display: none; }
+.sf-score { display: grid; grid-template-columns: auto auto 1fr; align-items: center; gap: 2px 8px; margin: 2px 0 8px; }
+.sf-score > b { font: 800 30px/1 var(--mono); }
+.sf-score > span { color: var(--muted); font-size: 12px; align-self: end; margin-bottom: 4px; }
+.sf-score > div b { display: block; font-size: 13px; }
+.sf-score > div small { display: block; color: var(--muted); font-size: 12px; }
+.sf-score .dev-bar { grid-column: 1 / -1; display: block; height: 5px; border-radius: 3px; background: var(--panel3); overflow: hidden; }
+.sf-items { display: grid; gap: 4px; margin-bottom: 10px; }
+.sf-items > div { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; padding: 5px 8px; border-radius: 8px; background: var(--panel2); }
+.sf-items b { font-family: var(--mono); }
+.chip.safe-sc.up { color: var(--up); } .chip.safe-sc.warn { color: #f5b83d; } .chip.safe-sc.down { color: var(--down); }
+.copies { margin: 8px 0; padding: 10px 12px; border-radius: 12px; background: var(--panel2); font-size: 12.5px; line-height: 1.6; }
+.copies > b { display: block; margin-bottom: 2px; }
+.copies .warn { color: #f5b83d; }
+.chip.copyc { color: #f5b83d; }
+.wallet-disc { margin-top: 14px; }
+.wd-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--line); }
+.wd-row small { display: block; color: var(--muted); font-size: 11.5px; margin-top: 2px; }
+.wd-row button { height: 32px; padding: 0 12px; border-radius: 9px; border: 1px solid var(--line2); background: var(--panel2); color: var(--text); font-weight: 600; cursor: pointer; }
