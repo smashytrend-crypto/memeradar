@@ -1,8 +1,8 @@
 // GeckoTerminal public API (https://www.geckoterminal.com/dex-api): trending + new pools per network,
 // and 15-minute price candles (OHLCV) for the top tokens — used for the 4h change and the
 // mini charts, since DexScreener only reports 5m / 1h / 6h / 24h changes.
-import { IS_BROWSER, RateLimiter, errMsg, every, getJSON, num, toMs } from '../util.js?v=muuc3hva';
-import { gtCurve, isAddressOn, normAddr } from '../chains.js?v=muuc3hva';
+import { IS_BROWSER, RateLimiter, errMsg, every, getJSON, num, toMs } from '../util.js?v=muut7dva';
+import { gtCurve, isAddressOn, normAddr } from '../chains.js?v=muut7dva';
 
 const API = 'https://api.geckoterminal.com/api/v2/networks';
 const NAME = 'geckoterminal';
@@ -119,8 +119,11 @@ export function startGeckoTerminal(store) {
   let okCount = 0;
   let lastOk = 0;
 
+  // false when the network went off screen (queued jobs of a paused network are dropped).
   async function fetchPools(path, rankName) {
-    const json = await lim.run(() => getJSON(`${BASE}/${path}`, { headers: HEADERS }));
+    if (!store.active) return false;
+    const json = await lim.run(() => (store.active ? getJSON(`${BASE}/${path}`, { headers: HEADERS }) : null));
+    if (!json) return false;
     const tokensById = new Map((json.included || []).filter((x) => x.type === 'token').map((x) => [x.id, x]));
     const mints = [];
     const now = Date.now();
@@ -154,6 +157,7 @@ export function startGeckoTerminal(store) {
       mints.push(mint);
     }
     if (rankName) store.setRanking(rankName, mints);
+    return true;
   }
 
   // A 429 carries no CORS header, so in the browser it surfaces as a bare TypeError without a
@@ -180,8 +184,8 @@ export function startGeckoTerminal(store) {
   every(
     120_000,
     async () => {
-      await fetchPools('trending_pools?include=base_token&duration=5m', 'gecko:trending5m');
-      await fetchPools('trending_pools?include=base_token&duration=1h', 'gecko:trending1h');
+      if (!(await fetchPools('trending_pools?include=base_token&duration=5m', 'gecko:trending5m'))) return;
+      if (!(await fetchPools('trending_pools?include=base_token&duration=1h', 'gecko:trending1h'))) return;
       ok();
     },
     fail,
@@ -190,8 +194,7 @@ export function startGeckoTerminal(store) {
   every(
     90_000,
     async () => {
-      await fetchPools('new_pools?include=base_token&page=1', null);
-      ok();
+      if (await fetchPools('new_pools?include=base_token&page=1', null)) ok();
     },
     fail,
     active,
@@ -201,10 +204,14 @@ export function startGeckoTerminal(store) {
     every(
       180_000,
       async () => {
-        await fetchPools('pools?include=base_token&sort=h24_tx_count_desc&page=1', 'gecko:busy');
-        await fetchPools('pools?include=base_token&sort=h24_volume_usd_desc&page=1', 'gecko:volume');
-        await fetchPools('trending_pools?include=base_token&duration=6h&page=1', 'gecko:trending6h');
-        await fetchPools('new_pools?include=base_token&page=2', null);
+        for (const [path, rank] of [
+          ['pools?include=base_token&sort=h24_tx_count_desc&page=1', 'gecko:busy'],
+          ['pools?include=base_token&sort=h24_volume_usd_desc&page=1', 'gecko:volume'],
+          ['trending_pools?include=base_token&duration=6h&page=1', 'gecko:trending6h'],
+          ['new_pools?include=base_token&page=2', null],
+        ]) {
+          if (!(await fetchPools(path, rank))) return;
+        }
         ok();
       },
       fail,
@@ -234,8 +241,9 @@ export function startGeckoTerminal(store) {
       let json;
       try {
         json = await lim.run(() =>
-          getJSON(`${BASE}/pools/${pool}/ohlcv/minute?aggregate=15&limit=97&currency=usd&token=${t.mint}`, { headers: HEADERS }),
+          store.active ? getJSON(`${BASE}/pools/${pool}/ohlcv/minute?aggregate=15&limit=97&currency=usd&token=${t.mint}`, { headers: HEADERS }) : null,
         );
+        if (!json) return; // the network went off screen while queued
       } catch (err) {
         // Put the token back in the queue so it is retried soon after the pause.
         if (err?.status !== 404) t.enriched.ohlcv = 0;

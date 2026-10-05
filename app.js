@@ -35,7 +35,7 @@ const chainCfg = () => (ENGINE?.chains && ENGINE.chains[ENGINE.chain]) || { id: 
 if (ENGINE) ENGINE.setChain(LS.get('chain', 'solana'));
 
 const state = {
-  view: ((v) => (v === 'pos' ? 'hype' : v))(LS.get('view', 'hype')), // 'pos' was a tab in an older version
+  view: ((v) => (v === 'pos' ? 'hype' : ENGINE && (v === 'new' || v === 'graduating') ? 'graduated' : v))(LS.get('view', 'hype')), // 'pos' was a tab in an older version
   filters: LS.get('filters', { minMcap: 0, minLiq: 0, maxAgeH: 0, safe: false }),
   watch: new Set(LS.get('watch', [])),
   watchChain: LS.get('watchChain', {}) || {}, // mint -> network it was starred on
@@ -529,7 +529,7 @@ function updateRow(entry, d, idx) {
     : '';
   if (d.ca) chips.push(`<span class="chip ${now - d.ca < 3600e3 ? 'new' : ''}">${fmt.ago(d.ca, now)}</span>`);
   if (sinceChip) chips.push(sinceChip);
-  if (d.bp != null) chips.push(`<span class="chip ${d.lp === 'bonk' ? 'bonk' : 'pump'}">${d.lp === 'bonk' ? 'bonk' : 'pump'}</span><span class="bc"><span class="bc-bar"><i style="width:${d.bp}%"></i></span>${d.bp.toFixed(0)}%</span>`);
+  if (d.bp != null) chips.push(`${lpChip(d.lp)}<span class="bc"><span class="bc-bar"><i style="width:${d.bp}%"></i></span>${d.bp.toFixed(0)}%</span>`);
   else if (d.gr) chips.push('<span class="chip grad">🎓 DEX</span>');
   const pos = posPnl(d);
   if (pos) chips.push(`<span class="chip pos ${pos.cls}" title="Twoja pozycja DEMO: ${fmt.pct(pos.pct)}${pos.usd != null ? ` (${pos.usd >= 0 ? '+' : ''}${fmt.usd(pos.usd)})` : ''}">💼 DEMO ${fmt.pct(pos.pct)}</span>`);
@@ -625,7 +625,7 @@ function updateRow(entry, d, idx) {
 
   q.risk.className = `risk ${d.rk}`;
   q.risk.title = RISK_TXT[d.rk] || '';
-  const watched = state.watch.has(d.m);
+  const watched = isWatched(d.m);
   q.star.classList.toggle('on', watched);
   q.star.textContent = watched ? '★' : '☆';
 
@@ -765,7 +765,7 @@ function applySnapshot(snap) {
   applyMode(snap.stats);
   // Whales come from the trades of watched tokens / positions / the open token (GeckoTerminal).
   $('#feedChips [data-f="whale"]').hidden = !snap.stats.liveTrades && !ENGINE;
-  snap.rows = viewerFilter(snap.rows, snap.view);
+  snap.rows = viewerFilter(snap.rows, snap.view).slice(0, 100);
   if (snap.view === 'hype') state.hypeRows = snap.rows;
   if (snap.stats.solPrice > 0) state.nativeUsd[ENGINE?.chain || 'solana'] = snap.stats.solPrice;
   renderStats(snap.stats);
@@ -809,17 +809,21 @@ function connect() {
     const run = () => {
       state.lastSnapshot = Date.now();
       // The win rate always counts the main Hype list, whichever tab is open.
-      if (state.view !== 'hype') state.hypeRows = viewerFilter(ENGINE.snapshot('hype', filters, 100).rows, 'hype');
+      // Viewer-side filters (hidden, holders, safety…) need more rows than the 100 shown.
+      const vf = state.filters;
+      const lim = state.hidden.size || state.blocked.size || vf.maxDev || vf.minLp || vf.paid || vf.maxTop10 || vf.maxIns || vf.minHolders || vf.auth || vf.social ? 600 : 100;
+      if (state.view !== 'hype') state.hypeRows = viewerFilter(ENGINE.snapshot('hype', filters, lim).rows, 'hype').slice(0, 100);
       // Demo positions on this network stay loaded even when off the list.
       const posHere = Object.keys(state.positions).filter((m) => (state.positions[m].chain || 'solana') === ENGINE.chain);
       // …and with the watched ones, their trades feed the whale / tracked-wallet alerts.
       ENGINE.track([...new Set([...posHere, ...watchedHere()])]);
-      applySnapshot(ENGINE.snapshot(state.view, filters, 100, state.view === 'watch' ? watchedHere() : []));
+      applySnapshot(ENGINE.snapshot(state.view, filters, lim, state.view === 'watch' ? watchedHere() : []));
       if (sheetOpen('pos') && !sheetBusy()) renderPositions();
       if (sheetOpen('wallet') && !sheetBusy()) renderWallet();
     };
-    run();
+    // Interval first: a connect() re-entered from the first run clears it instead of leaking it.
     state.tick = setInterval(run, 2000);
+    run();
     if (!state.feedBound) {
       state.feedBound = true;
       state.feed = ENGINE.feed();
@@ -913,7 +917,13 @@ function renderPosCount() {
 
 /** "150k", "1.5m", "2,3M", "$80K", "250000" → number (NaN when unreadable). */
 function parseAmount(text) {
-  const m = String(text || '').trim().replace(/[\s$]/g, '').replace(',', '.').match(/^(\d*\.?\d+)([kmb])?$/i);
+  // Thousands separators first ("150,000", "1,234,567"), then a decimal comma ("2,5m").
+  const m = String(text || '')
+    .trim()
+    .replace(/[\s$]/g, '')
+    .replace(/,(?=\d{3}(?:,\d{3})*(?:\.\d+)?[kmb]?$)/gi, '')
+    .replace(',', '.')
+    .match(/^(\d*\.?\d+)([kmb])?$/i);
   if (!m) return NaN;
   return Number(m[1]) * ({ k: 1e3, m: 1e6, b: 1e9 }[(m[2] || '').toLowerCase()] || 1);
 }
@@ -994,7 +1004,8 @@ function savePosition(mint, price, usd, mc, d = {}, fee = 0) {
     prev.usd += usd;
     prev.fees = (prev.fees || 0) + fee;
     // Break even is measured from the new average entry: armed only if still above +BE_PCT.
-    if (prev.be) prev.bea = (price / prev.p - 1) * 100 > BE_PCT;
+      // (measured at the market price, like the exit checks — the buy price includes the fees)
+    if (prev.be) prev.bea = ((d.p > 0 ? d.p : price) / prev.p - 1) * 100 > BE_PCT;
     LS.set('positions', state.positions);
     renderPosCount();
     return true;
@@ -1057,9 +1068,24 @@ function sellPosition(mint, fraction, price, extra = {}) {
 const closePosition = (mint, price) => sellPosition(mint, 1, price);
 
 /** Buys `usd` of the token in the drawer at the current price (quick buy). */
+/**
+ * The freshest price for a trade in the open token: the radar's row (live every second while the
+ * chart is open, and what the exit checks use), else the chart's live price, else the detail.
+ * Only fresh: right after a network switch the row may hold a paused network's old price.
+ */
+function tradeQuote(d) {
+  const live = state.live?.m === d.m && Date.now() - state.live.at < 10_000 ? state.live : null;
+  const row = ENGINE?.rowsFor ? ENGINE.rowsFor(ENGINE.chain, [d.m])[0] : null;
+  const rowOk = row?.p > 0 && (!(ENGINE?.since > 0) || row.pa >= ENGINE.since);
+  const p = rowOk ? row.p : live?.p > 0 ? live.p : d.p;
+  const mc = rowOk && row.mc > 0 ? row.mc : live?.p > 0 && live.mc > 0 ? live.mc : d.p > 0 && d.mc > 0 ? d.mc * (p / d.p) : d.mc;
+  return { ...d, p, mc };
+}
+
 function quickBuy(usd) {
-  const d = state.detail;
-  if (!d || !state.selected) return;
+  const d0 = state.detail;
+  if (!d0 || !state.selected) return;
+  const d = tradeQuote(d0);
   if (usd > state.wallet.cash + 1e-9) {
     toast(`Za mało środków w walletcie DEMO (saldo ${fmt.usd(state.wallet.cash)}) — doładuj go`);
     closeDetail();
@@ -1071,7 +1097,7 @@ function quickBuy(usd) {
   if (!buy) return toast(`Za mała kwota — opłaty transakcji (${feeUsd(tradeFee(usd))}) zjadłyby większość`);
   if (!savePosition(state.selected, buy.price, usd, d.mc, d, buy.fee)) return;
   toast(`💼 ${had ? 'Dokupiono' : 'Kupiono'} DEMO za ${fmt.usd(usd)} przy MC ${fmt.usd(d.mc)}${feeNote(buy.fee)}`);
-  renderDetail(d);
+  renderDetail(d0);
 }
 
 function editQuickBuy() {
@@ -1116,6 +1142,9 @@ function setExit(kind, mint, pct) {
 }
 
 /** Manual level: a % ("25") or the market cap to sell at ("80k", "1.2m"). */
+/** A position's entry market cap including the buy fees (MC moves 1:1 with price). */
+const mcEntryOf = (p) => (p.last?.p > 0 && p.last?.mc > 0 ? (p.last.mc * p.p) / p.last.p : p.mc);
+
 function askExit(kind, mint) {
   const p = state.positions[mint];
   const k = EXITS[kind];
@@ -1129,9 +1158,11 @@ function askExit(kind, mint) {
   // With k / m / b it is a market cap; a bare number is a % (for stop loss only below 100).
   const isMc = /[kmb]$/i.test(raw) || (kind === 'sl' ? v >= 100 : v >= 100000);
   if (!isMc) return setExit(kind, mint, v);
-  if (!(p.mc > 0)) return toast('Brak MC wejścia — wpisz wartość w %');
-  const pct = kind === 'sl' ? (1 - v / p.mc) * 100 : (v / p.mc - 1) * 100;
-  if (!(pct > 0 && pct < k.max)) return toast(`MC musi być ${kind === 'sl' ? 'niższe' : 'wyższe'} niż MC wejścia (${fmt.usd(p.mc)})`);
+  // Against the entry MC with the buy fees included (the exits compare prices with that entry).
+  const mcIn = mcEntryOf(p);
+  if (!(mcIn > 0)) return toast('Brak MC wejścia — wpisz wartość w %');
+  const pct = kind === 'sl' ? (1 - v / mcIn) * 100 : (v / mcIn - 1) * 100;
+  if (!(pct > 0 && pct < k.max)) return toast(`MC musi być ${kind === 'sl' ? 'niższe' : 'wyższe'} niż MC wejścia (${fmt.usd(mcIn)})`);
   setExit(kind, mint, Math.round(pct * 10) / 10);
 }
 
@@ -1139,7 +1170,7 @@ const exitRow = (kind, p, attr) => {
   const k = EXITS[kind];
   const v = p[kind];
   // Market cap at the trigger price (the entry price includes the buy fees; MC moves with price).
-  const mcEntry = p.last?.p > 0 && p.last?.mc > 0 ? (p.last.mc * p.p) / p.last.p : p.mc;
+  const mcEntry = mcEntryOf(p);
   const mcAt = v && mcEntry > 0 ? mcEntry * (kind === 'sl' ? 1 - v / 100 : 1 + v / 100) : null;
   // Expected result of this level: TP on the share it sells, SL on the whole position.
   const share = kind === 'tp' ? (p.tpf || 100) / 100 : 1;
@@ -1153,7 +1184,7 @@ const exitRow = (kind, p, attr) => {
   return `<div class="sl-row ${kind}"><span>${k.icon} ${k.name}${v ? ` <b>${k.sign}${fmt.n(v)}%</b>${mcAt ? ` <small>MC ${fmt.usd(mcAt)}</small>` : ''}` : ' <small>wyłączony</small>'}</span>${estLine}
     <div>${k.presets.map((x) => `<button ${attr}="${kind}:${x}" class="${v === x ? 'on' : ''}">${k.sign}${x}%</button>`).join('')}<button ${attr}="${kind}:custom" class="${v && !k.presets.includes(v) ? 'on' : ''}">Własny</button>${kind === 'sl' ? `<button ${attr}="safe:toggle" class="safe ${p.safe ? 'on' : ''}" title="SAFE: sprzeda ${SAFE_PART * 100}% pozycji przy +${SAFE_PCT}% — wkład wraca, reszta zostaje w grze">🔒 SAFE · wyjmij wkład (+${SAFE_PCT}%)</button>` : ''}${kind === 'sl' ? `<button ${attr}="be:toggle" class="be ${p.be ? 'on' : ''}" title="Break even: sprzeda całość, gdy cena spadnie do +${BE_PCT}% od wejścia">🛡️ BE · Break even (+${BE_PCT}%)</button>` : ''}${v ? `<button ${attr}="${kind}:off" class="off" aria-label="Wyłącz">✕</button>` : ''}</div>${
       kind === 'sl' && p.be
-        ? `<small class="sl-est be">🛡️ BE ${p.bea ? `aktywny — sprzeda całość przy <b>+${BE_PCT}%</b>${mcEntry > 0 ? ` (MC ${fmt.usd(mcEntry * (1 + BE_PCT / 100))})` : ''}${p.usd > 0 ? `, zysk <b>+${fmt.usd((p.usd * BE_PCT) / 100)}</b>` : ''}` : `czeka, aż zysk przekroczy +${BE_PCT}% — potem pilnuje ceny +${BE_PCT}%`}</small>`
+        ? `<small class="sl-est be">🛡️ BE ${p.bea ? `aktywny — sprzeda całość przy <b>+${BE_PCT}%</b>${mcEntry > 0 ? ` (MC ${fmt.usd(mcEntry * (1 + BE_PCT / 100))})` : ''}${p.usd > 0 ? ((g) => { const r = g - Math.min(g, tradeFee(g, p.chain || 'solana')) - p.usd; return `, ${r >= 0 ? 'zysk' : 'strata'} <b>${r >= 0 ? '+' : '−'}${fmt.usd(Math.abs(r))}</b>${state.fees ? ' po opłatach' : ''}`; })(p.usd * (1 + BE_PCT / 100)) : ''}` : `czeka, aż zysk przekroczy +${BE_PCT}% — potem pilnuje ceny +${BE_PCT}%`}</small>`
         : ''
     }${
       kind === 'sl' && p.safe
@@ -1519,12 +1550,20 @@ function holderIcons(d, compact = false) {
 }
 
 // ---------- network / launchpad badges ----------
+/** Launchpad chip next to the bonding-curve bar: pump / bonk, or the launchpad's name. */
+function lpChip(lp) {
+  const raw = String(lp || 'pump').toLowerCase();
+  if (raw === 'pump' || raw === 'bonk') return `<span class="chip ${raw}">${raw}</span>`;
+  const hit = LAUNCHPADS.find(([re]) => re.test(raw));
+  return `<span class="chip">${esc(hit ? hit[1] : raw)}</span>`;
+}
 // Small marks before a token's name: the network on EVM chains, the launchpad on Solana.
 // Simplified badges in each platform's colours (not the official artwork).
 const LAUNCHPADS = [
   [/pump/, 'pump.fun', '<rect x="3" y="8" width="18" height="8" rx="4" fill="#fff"/><path d="M12 8h5a4 4 0 0 1 0 8h-5z" fill="#5FCB86"/>', '#1b2a22'],
   [/bonk/, 'bonk.fun', '<circle cx="12" cy="12" r="9" fill="#F7931A"/><path d="M8.5 9.5h4.2a2 2 0 0 1 0 4H8.5zM8.5 13.5h4.8a2 2 0 0 1 0 4H8.5z" fill="none" stroke="#fff" stroke-width="1.6"/>'],
   [/launchlab|raydium/, 'Raydium LaunchLab', '<circle cx="12" cy="12" r="9" fill="#6A3CE0"/><path d="M12 5.5 17.6 8.7v6.6L12 18.5 6.4 15.3V8.7z" fill="none" stroke="#5CE1E6" stroke-width="1.6"/>'],
+  [/metadao/, 'MetaDAO', '<circle cx="12" cy="12" r="9" fill="#111"/><path d="M7 16V8l5 5 5-5v8" fill="none" stroke="#fff" stroke-width="1.8"/>'],
   [/met|dbc|meteora/, 'Meteora', '<circle cx="12" cy="12" r="9" fill="#1d1430"/><path d="M6 16 10 7l3 6 2-3 3 6" fill="none" stroke="#FF6B2C" stroke-width="2" stroke-linejoin="round"/>'],
   [/bags/, 'Bags', '<circle cx="12" cy="12" r="9" fill="#02C076"/><path d="M8 10h8l-1 7H9zM10 10a2 2 0 0 1 4 0" fill="none" stroke="#fff" stroke-width="1.6"/>'],
   [/believe/, 'Believe', '<circle cx="12" cy="12" r="9" fill="#fff"/><path d="M9 7v10h4a2.5 2.5 0 0 0 0-5H9m0 0h3.5a2.5 2.5 0 0 0 0-5H9" fill="none" stroke="#111" stroke-width="1.8"/>'],
@@ -1533,7 +1572,6 @@ const LAUNCHPADS = [
   [/heaven/, 'Heaven', '<circle cx="12" cy="12" r="9" fill="#f4f1e8"/><ellipse cx="12" cy="8" rx="5" ry="1.8" fill="none" stroke="#E0B341" stroke-width="1.5"/><path d="M12 11v7" stroke="#E0B341" stroke-width="1.8"/>'],
   [/boop/, 'boop.fun', '<circle cx="12" cy="12" r="9" fill="#FF5FA2"/><circle cx="12" cy="13" r="3.2" fill="#fff"/>'],
   [/stonk/, 'Stonk.fun', '<circle cx="12" cy="12" r="9" fill="#0f2a1a"/><path d="M6 16l4-4 3 2 5-6" fill="none" stroke="#3CF07A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'],
-  [/metadao/, 'MetaDAO', '<circle cx="12" cy="12" r="9" fill="#111"/><path d="M7 16V8l5 5 5-5v8" fill="none" stroke="#fff" stroke-width="1.8"/>'],
   [/ember/, 'Ember', '<circle cx="12" cy="12" r="9" fill="#2a1208"/><path d="M12 5.5c3 3.5 4.5 5.5 4.5 8a4.5 4.5 0 0 1-9 0c0-1.6.8-3 2-4 0 1.5.7 2.4 1.5 2.8 0-2.6.4-4.6 1-6.8z" fill="#FF6A2B"/>'],
 ];
 
@@ -1601,6 +1639,14 @@ function setChain(id) {
 
 /** Watched tokens of the network on screen: by the network they were starred on (older entries
  *  without one: by address format). */
+/** Watched on the network on screen (an EVM address can be another token elsewhere). */
+function isWatched(m) {
+  if (!state.watch.has(m)) return false;
+  const c = state.watchChain[m];
+  if (c) return c === (ENGINE?.chain || 'solana');
+  return chainCfg().evm ? /^0x[0-9a-fA-F]{40}$/.test(m) : !m.startsWith('0x');
+}
+
 function watchedHere() {
   const evm = chainCfg().evm;
   const chain = ENGINE?.chain || 'solana';
@@ -1659,7 +1705,7 @@ setInterval(() => {
 
 // ---------- watchlist ----------
 function toggleWatch(mint) {
-  if (state.watch.has(mint)) {
+  if (isWatched(mint)) {
     state.watch.delete(mint);
     delete state.watchChain[mint];
   } else {
@@ -1669,11 +1715,11 @@ function toggleWatch(mint) {
   LS.set('watch', [...state.watch]);
   LS.set('watchChain', state.watchChain);
   renderWatchCount();
-  toast(state.watch.has(mint) ? '★ Dodano do obserwowanych' : 'Usunięto z obserwowanych');
+  toast(isWatched(mint) ? '★ Dodano do obserwowanych' : 'Usunięto z obserwowanych');
   const star = state.rows.get(mint)?.el.querySelector('.star');
   if (star) {
-    star.classList.toggle('on', state.watch.has(mint));
-    star.textContent = state.watch.has(mint) ? '★' : '☆';
+    star.classList.toggle('on', isWatched(mint));
+    star.textContent = isWatched(mint) ? '★' : '☆';
   }
   if (state.view === 'watch') connect();
   if (state.selected === mint && state.detail) renderDetail(state.detail);
@@ -1746,6 +1792,7 @@ async function copy(text) {
 
 // ---------- detail drawer ----------
 let detailTimer;
+let detailMiss = 0; // failed detail fetches in a row
 async function openDetail(mint, push = true) {
   state.selected = mint;
   state.detail = null;
@@ -1763,6 +1810,7 @@ async function openDetail(mint, push = true) {
   $('#drawerBody').innerHTML = known ? detailSkeleton(known) : '<div class="empty"><b>Ładowanie…</b></div>';
   if (push) history.replaceState(null, '', `#t=${ENGINE ? `${ENGINE.chain}:` : ''}${mint}`);
   clearInterval(detailTimer);
+  detailMiss = 0;
   await loadDetail(mint);
   // Closed or switched to another token while loading: don't leave a poller behind.
   if (state.selected !== mint) return;
@@ -1772,6 +1820,9 @@ async function openDetail(mint, push = true) {
 
 function closeDetail() {
   state.selected = null;
+  // Nothing re-renders the closed drawer from its old data (charts, iframes, candle loads).
+  state.detail = null;
+  state.detailLayout = null;
   clearInterval(detailTimer);
   stopLive();
   destroyLW();
@@ -1797,10 +1848,14 @@ async function loadDetail(mint) {
     const d = await ENGINE.detail(mint);
     if (state.selected !== mint) return;
     if (!d) {
-      $('#drawerBody').innerHTML = '<div class="empty"><b>Nie znaleziono tokena</b></div>';
-      clearInterval(detailTimer);
+      // A couple of failed fetches (network blip, rate limit) aren't "not found": keep trying ~30 s.
+      if (++detailMiss >= 8) {
+        $('#drawerBody').innerHTML = '<div class="empty"><b>Nie znaleziono tokena</b></div>';
+        clearInterval(detailTimer);
+      } else if (!state.detail) $('#drawerBody').innerHTML = '<div class="empty"><b>Ładowanie…</b></div>';
       return;
     }
+    detailMiss = 0;
     state.detail = d;
     loadTrades(mint);
     // A finger on the drawer: wait, so a live re-render doesn't swallow the tap (iOS).
@@ -1867,7 +1922,7 @@ function renderDetail(d) {
   const scroll = $('#drawer').scrollTop;
   const h = heat(d.hs);
   const m = d.market || {};
-  const watched = state.watch.has(d.m);
+  const watched = isWatched(d.m);
   const ch = chainCfg();
   const dexLink = ['DexScreener', d.dexUrl || `https://dexscreener.com/${ch.dex}/${d.pair || d.m}`, true];
   const chainLinks = ch.evm
@@ -2443,7 +2498,7 @@ $('#drawer').addEventListener('click', (e) => {
   }
   else if (act === 'block' && state.detail?.creator) blockCreator(state.detail.creator);
   else if (act === 'pos-add' && state.selected && state.detail) {
-    const d = state.detail;
+    const d = tradeQuote(state.detail);
     const usd = Number($('#posUsd')?.value) || 0;
     if (!(usd > 0)) return toast('Wpisz kwotę pozycji w $');
     if (usd > state.wallet.cash + 1e-9) {
@@ -2474,7 +2529,7 @@ $('#drawer').addEventListener('click', (e) => {
   const sell = e.target.closest('[data-sell]');
   if (sell && state.selected && posHere(state.selected)) {
     const f = Number(sell.dataset.sell) / 100;
-    const fee = sellPosition(state.selected, f, state.detail?.p);
+    const fee = sellPosition(state.selected, f, state.detail ? tradeQuote(state.detail).p : null);
     toast(`${f >= 1 ? 'Pozycja DEMO zamknięta' : `Sprzedano ${Math.round(f * 100)}% pozycji DEMO`}${feeNote(fee)}`);
     if (state.detail) renderDetail(state.detail);
   }
@@ -2557,8 +2612,22 @@ async function checkVersion() {
     const res = await fetch(`version.json?_=${Date.now()}`, { cache: 'no-store' });
     const { v } = await res.json();
     if (v && v !== mine) {
+      // Once per version per tab (a stale cached page would otherwise reload forever); the ?v=
+      // address skips the CDN's cached copy.
+      let tried = null;
+      try {
+        tried = sessionStorage.getItem('mr:reloadFor');
+      } catch {
+        /* private mode */
+      }
+      if (tried === v) return;
+      try {
+        sessionStorage.setItem('mr:reloadFor', v);
+      } catch {
+        /* private mode */
+      }
       toast('Nowa wersja aplikacji — odświeżam…');
-      setTimeout(() => location.reload(), 1200);
+      setTimeout(() => location.replace(`${location.pathname}?v=${encodeURIComponent(v)}${location.hash}`), 1200);
     }
   } catch {
     /* offline or not deployed with a version file */
@@ -2914,7 +2983,7 @@ let candlesBusy = null; // key of the load in flight
 async function loadCandles(d) {
   const tf = state.candleTf;
   const key = `${d.m}|${tf}`;
-  if (candlesBusy || !ENGINE?.candles) return;
+  if (!ENGINE?.candles) return;
   if (state.candles?.key === key && Date.now() - state.candles.at < 50_000) return;
   // Built from what we have: the latest trades, else the prices the radar recorded (every 15 s).
   const synthesize = () => {
@@ -2923,8 +2992,6 @@ async function loadCandles(d) {
     const list = fromTrades.length >= fromHist.length ? fromTrades : fromHist;
     return { list, synth: list.length ? (list === fromTrades ? 'trades' : 'radar') : 'live' };
   };
-  candlesBusy = key;
-  const wanted = () => key === `${state.selected}|${state.candleTf}`;
   // Seen this token before: its saved history shows at once while fresh candles load.
   if (state.candles?.key !== key) {
     // …or, the first time, a provisional chart from the prices the radar has recorded.
@@ -2935,6 +3002,10 @@ async function loadCandles(d) {
       if (state.chartTab === 'candles' && state.detail?.m === d.m) drawCandles(state.detail);
     }
   }
+  // One download at a time; when it ends it loads whatever is wanted then.
+  if (candlesBusy) return;
+  candlesBusy = key;
+  const wanted = () => key === `${state.selected}|${state.candleTf}`;
   try {
     let list = await ENGINE.candles(d.m, tf);
     let synth = null;
@@ -3294,7 +3365,9 @@ function drawCandlesLW(d) {
   // The last candle follows the live price.
   const K = lw.K || 1;
   const lastK = c.list[c.list.length - 1];
-  if (nowP > 0) {
+  // Only a bar that covers the current interval follows the live price (a cached history can
+  // end hours ago: the next live tick opens a fresh bar instead).
+  if (nowP > 0 && Date.now() < lastK[0] + ms) {
     lw.candle.update({ time: Math.floor(lastK[0] / 1000) + off, open: lastK[1] * K, high: Math.max(lastK[2], nowP) * K, low: Math.min(lastK[3], nowP) * K, close: nowP * K });
   }
   // Levels: my buy / sell, top 10 entry, position exits.
@@ -3353,7 +3426,8 @@ function drawCandlesLW(d) {
   const nowHtml = `<i class="${live ? 'on' : ''}"></i>${lw.K ? `MC ${fmt.usd(nowP * lw.K)}` : fmt.price(nowP)}${live?.source ? `<small>${SRC[live.source] || ''}</small>` : ''}`;
   if (now.innerHTML !== nowHtml) now.innerHTML = nowHtml;
   const SYN = { trades: 'świece z ostatnich transakcji', radar: 'świece z cen radaru', live: 'świece z ceny na żywo', cache: 'zapisana historia — odświeżam' };
-  const legend = `${c.synth ? `<span class="muted">ⓘ ${SYN[c.synth]}</span>` : ''}<span>Przesuń palcem · powiększ dwoma palcami</span>`;
+  // One line only (the legend strip has room for one on a phone).
+  const legend = c.synth ? `<span class="muted">ⓘ ${SYN[c.synth]}</span>` : '<span>Przesuń palcem · powiększ dwoma palcami</span>';
   const lg = box.querySelector('.c-legend');
   if (lg.dataset.html !== legend) {
     lg.dataset.html = legend;
@@ -3376,7 +3450,8 @@ function stopLive() {
  *  interval has passed (the chart moves every second between candle downloads). */
 function applyLive(p, at) {
   const c = state.candles;
-  if (!c?.list || !c.key.startsWith(`${state.selected}|`)) return;
+  // Only the list of the timeframe on screen (another one's bars have a different spacing).
+  if (!c?.list || c.key !== `${state.selected}|${state.candleTf}`) return;
   const ms = TF_MS[state.candleTf] || 300e3;
   if (!c.list.length) {
     // Nothing to download for this pool: the chart starts from the live price (never while the
@@ -3568,8 +3643,10 @@ function openDeepLink() {
   const deep = location.hash.match(/^#t=(?:(\w+):)?([1-9A-HJ-NP-Za-km-z]{32,44}|0x[0-9a-fA-F]{40})$/);
   if (!deep) return;
   const net = deep[1] || (deep[2].startsWith('0x') ? null : 'solana');
-  if (ENGINE && net && ENGINE.chains[net] && net !== ENGINE.chain) setChain(net);
-  openDetail(deep[2].startsWith('0x') ? deep[2].toLowerCase() : deep[2], false);
+  const switched = !!(ENGINE && net && Object.hasOwn(ENGINE.chains, net) && net !== ENGINE.chain);
+  if (switched) setChain(net);
+  // After a network switch the link is written back (setChain cleared it).
+  openDetail(deep[2].startsWith('0x') ? deep[2].toLowerCase() : deep[2], switched);
 }
 openDeepLink();
 // A link opened while the app is already running (the app's own replaceState doesn't fire this).

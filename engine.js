@@ -3,15 +3,15 @@
 // cross-origin reads). One engine per network, created the first time the viewer opens it; only
 // the network on screen polls its sources, the others pause (and keep their data for a quick
 // switch back).
-import { Store } from './server/store.js?v=muuc3hva';
-import { RateLimiter, every, getJSON, num } from './server/util.js?v=muuc3hva';
-import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=muuc3hva';
-import { startPumpPortal } from './server/sources/pumpportal.js?v=muuc3hva';
-import { startDexScreener } from './server/sources/dexscreener.js?v=muuc3hva';
-import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=muuc3hva';
-import { startJupiter } from './server/sources/jupiter.js?v=muuc3hva';
-import { startRugCheck } from './server/sources/rugcheck.js?v=muuc3hva';
-import { startGoPlus } from './server/sources/goplus.js?v=muuc3hva';
+import { Store } from './server/store.js?v=muut7dva';
+import { RateLimiter, every, getJSON, num } from './server/util.js?v=muut7dva';
+import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=muut7dva';
+import { startPumpPortal } from './server/sources/pumpportal.js?v=muut7dva';
+import { startDexScreener } from './server/sources/dexscreener.js?v=muut7dva';
+import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=muut7dva';
+import { startJupiter } from './server/sources/jupiter.js?v=muut7dva';
+import { startRugCheck } from './server/sources/rugcheck.js?v=muut7dva';
+import { startGoPlus } from './server/sources/goplus.js?v=muut7dva';
 
 const baseConfig = {
   demo: false,
@@ -235,27 +235,34 @@ function createEngine(chainId) {
       if (!t?.pairAddress) return null;
       const key = `${t.mint}|${t.pairAddress}|${tf}`;
       const c = candleCache.get(key);
-      if (c && Date.now() - c.at < 50_000) return c.list;
+      if (c && Date.now() - c.at < 50_000) return c.list.map((k) => [...k]); // copies: the chart edits its bars
       // GeckoTerminal doesn't know every pool DexScreener prices by (fresh migrations, some
       // DEXes): then the token's own most liquid pool on GeckoTerminal is used.
+      // The alternative pool stands in only for the pair it replaced, and the main pool gets
+      // another chance after 5 minutes.
       let list = [];
-      const alt = altPool.get(t.mint);
+      const a = altPool.get(t.mint);
+      const alt = a && a.pair === t.pairAddress && Date.now() - a.at < 5 * 60_000 ? a.pool : null;
+      if (a && !alt) altPool.delete(t.mint);
       try {
         list = await src.gt.candles(t, tf, true, alt || t.pairAddress);
       } catch (e) {
         if (e?.status !== 404) throw e;
       }
-      if (!list.length && !alt) {
-        const pools = await src.gt.tokenPools(t, true).catch(() => []);
-        const other = pools.find((p) => p.toLowerCase() !== String(t.pairAddress).toLowerCase()) || null;
-        if (other) {
-          altPool.set(t.mint, other);
-          list = await src.gt.candles(t, tf, true, other).catch(() => []);
+      if (!list.length) {
+        if (alt) altPool.delete(t.mint);
+        else {
+          const pools = await src.gt.tokenPools(t, true).catch(() => []);
+          const other = pools.find((p) => p.toLowerCase() !== String(t.pairAddress).toLowerCase()) || null;
+          if (other) {
+            altPool.set(t.mint, { pool: other, pair: t.pairAddress, at: Date.now() });
+            list = await src.gt.candles(t, tf, true, other).catch(() => []);
+          }
         }
       }
       candleCache.set(key, { at: Date.now(), list });
       if (candleCache.size > 30) candleCache.delete(candleCache.keys().next().value);
-      return list;
+      return list.map((k) => [...k]);
     },
     async search(q) {
       q = q.trim().slice(0, 64);
@@ -274,7 +281,7 @@ const WHALE_USD = { solana: 1000, bsc: 1000, base: 1000, robinhood: 500, ethereu
 // Wallets the viewer tracks (address -> { name, emoji }), shared by every network's engine.
 const wallets = new Map();
 const candleCache = new Map();
-const altPool = new Map(); // mint -> GeckoTerminal pool used for candles when the main one isn't known there
+const altPool = new Map(); // mint -> { pool, pair, at }: GeckoTerminal pool used for candles when the main one isn't known there
 
 // ---- real-time price for the open chart (Solana) ----
 // Free public RPC nodes: the pool's two vault balances, read every second (a new block every

@@ -1,8 +1,8 @@
-import { computeHype } from './scoring.js?v=muuc3hva';
-import { CURVE_DEXES, NON_MEME, NON_MEME_TAGS, PUMP_INITIAL_VTOKENS, PUMP_K, PUMP_TOKENS_FOR_SALE } from './constants.js?v=muuc3hva';
-import { Emitter, clamp } from './util.js?v=muuc3hva';
-import { change4h, freshCandles, sparkPoints } from './candles.js?v=muuc3hva';
-import { EVM_BASE_ASSETS, EVM_NON_MEME_SYMBOLS, evmEligible, getChain, isAddressOn, normAddr } from './chains.js?v=muuc3hva';
+import { computeHype } from './scoring.js?v=muut7dva';
+import { CURVE_DEXES, NON_MEME, NON_MEME_TAGS, PUMP_INITIAL_VTOKENS, PUMP_K, PUMP_TOKENS_FOR_SALE } from './constants.js?v=muut7dva';
+import { Emitter, clamp } from './util.js?v=muut7dva';
+import { change4h, freshCandles, sparkPoints } from './candles.js?v=muut7dva';
+import { EVM_BASE_ASSETS, EVM_NON_MEME_SYMBOLS, evmEligible, getChain, isAddressOn, normAddr } from './chains.js?v=muut7dva';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -22,7 +22,8 @@ export function freshness(vol5, vol1h, vol6h, ageMs = Infinity) {
   if (!(vol1h >= 1000)) return null;
   // A market younger than the window has traded only for part of it: compare paces over the
   // time it actually existed (a 20-minute-old token's "1 h volume" is 20 minutes of trading).
-  const ageMin = Math.max(10, (ageMs > 0 ? ageMs : Infinity) / MIN);
+  const ageMin = Math.max(1, (ageMs > 0 ? ageMs : Infinity) / MIN);
+  if (ageMin < 10) return null; // too young to tell a trend
   const r5 = (vol5 || 0) / Math.min(5, ageMin);
   const r60 = vol1h / Math.min(60, ageMin);
   const r360 = vol6h > 0 ? vol6h / Math.min(360, ageMin) : r60;
@@ -199,6 +200,15 @@ export class Store extends Emitter {
       this.tokens.set(mint, t);
     }
     if (source) t.sources.add(source);
+    // A live price (chart open: on-chain / Jupiter, every second) beats the aggregators' cached
+    // ones for 10 s, so the price doesn't flip between fresh and stale (false SL / TP).
+    if (source === 'live') t.liveAt = now;
+    else if (t.liveAt && now - t.liveAt < 10_000 && (patch.priceUsd != null || patch.mcap != null || patch.fdv != null)) {
+      patch = { ...patch };
+      delete patch.priceUsd;
+      delete patch.mcap;
+      delete patch.fdv;
+    }
     for (const [k, v] of Object.entries(patch)) {
       if (!isClean(v)) continue;
       if (k === 'socials' && typeof v === 'object') {

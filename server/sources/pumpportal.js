@@ -1,6 +1,6 @@
 // On-chain stream of pump.fun / bonk.fun launches, trades and migrations via PumpPortal's
 // free WebSocket (https://pumpportal.fun/data-api/real-time). One connection only — their rule.
-import { num } from '../util.js?v=muuc3hva';
+import { num } from '../util.js?v=muut7dva';
 
 const WS_URL = 'wss://pumpportal.fun/api/data';
 const NAME = 'pumpportal';
@@ -172,9 +172,8 @@ export function startPumpPortal(store, config) {
       const t = store.get(m);
       if (t && (t.launchpad || t.dexId === 'pumpfun' || t.dexId === 'pumpswap')) subscribe(m);
     }
-    // Stale connection watchdog: new launches arrive every few seconds.
-    // Launches arrive every few seconds; migrations alone can be minutes apart.
-    const silence = config.onlyGraduated ? 30 * MIN : 2 * MIN;
+    // Stale connection watchdog: new launches (always subscribed) arrive every few seconds.
+    const silence = 2 * MIN;
     if (ws?.readyState === WebSocket.OPEN && now - lastMsg > silence) {
       store.setSource(NAME, 'error', 'brak danych — restart połączenia');
       ws.close();
