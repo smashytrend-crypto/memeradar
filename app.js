@@ -3156,12 +3156,12 @@ async function loadCandles(d) {
     if (wanted()) state.candles = { key, list: list || [], at: Date.now(), synth };
   } catch (e) {
     if (wanted()) {
-      // Rate limited: keep the history we have (cached / previous) and try again in ~8 s; only
+      // Rate limited: keep the history we have (cached / previous) and try again in ~4 s; only
       // without any build one from trades / radar prices.
       const prev = state.candles?.key === key && state.candles.list.length ? state.candles : null;
       const cached = prev ? null : readCandleCache(key);
       const base = prev ? { list: prev.list, synth: prev.synth } : cached ? { list: cached, synth: 'cache' } : synthesize();
-      state.candles = { key, ...base, at: Date.now() - (e?.status === 404 ? 0 : 42_000), err: e?.status !== 404 };
+      state.candles = { key, ...base, at: Date.now() - (e?.status === 404 ? 0 : 46_000), err: e?.status !== 404 };
     }
   } finally {
     candlesBusy = null;

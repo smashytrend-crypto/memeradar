@@ -70,14 +70,21 @@ export class RateLimiter {
     this.queue = [];
     this.timer = null;
     this.bursts = []; // times of priority jobs let through early
+    this.probeAt = 0; // last chart job let through a pause
   }
 
-  /** Runs fn in the next free slot; `priority` jumps the queue (something the viewer is waiting for). */
+  /**
+   * Runs fn in the next free slot; `priority` jumps the queue (something the viewer is waiting for).
+   * A number ranks priority jobs (higher first: 2 = the chart before 1 = trades and the rest).
+   */
   run(fn, priority = false) {
     return new Promise((resolve, reject) => {
-      const job = { fn, resolve, reject, priority };
-      if (priority) this.queue.unshift(job);
-      else this.queue.push(job);
+      const job = { fn, resolve, reject, priority: Number(priority) || 0 };
+      if (job.priority) {
+        // Newest first within its rank, behind any job of a higher rank.
+        const i = this.queue.findIndex((j) => j.priority <= job.priority);
+        this.queue.splice(i < 0 ? this.queue.length : i, 0, job);
+      } else this.queue.push(job);
       this.#pump();
     });
   }
@@ -85,26 +92,45 @@ export class RateLimiter {
   #pump() {
     if (!this.queue.length) return;
     const now = Date.now();
-    // Something the viewer waits for may jump the spacing (not a pause), at most twice a minute:
+    // Something the viewer waits for may jump the spacing (not a pause), at most three times a minute:
     // the free tiers allow short bursts above the average rate we keep to.
     if (this.queue[0].priority && this.pausedUntil <= now && this.next > now) {
       this.bursts = this.bursts.filter((t) => now - t < 60_000);
-      if (this.bursts.length < 2) {
+      if (this.bursts.length < 3) {
         this.bursts.push(now);
         const job = this.queue.shift();
         Promise.resolve().then(job.fn).then(job.resolve, job.reject);
         return this.#pump();
       }
     }
-    if (this.timer) return;
-    const at = Math.max(this.next, this.pausedUntil, now);
+    // During a back-off pause the chart's request (rank 2) may still go out as a probe every 10 s:
+    // the free tiers count per minute, so a chart should not wait out a pause (up to 2 min) that a
+    // background call caused. A probe that succeeds ends the pause.
+    if (this.queue[0].priority >= 2 && this.pausedUntil > now && now - this.probeAt >= 10_000) {
+      this.probeAt = now;
+      const job = this.queue.shift();
+      Promise.resolve()
+        .then(job.fn)
+        .then((v) => {
+          this.resume();
+          job.resolve(v);
+        }, job.reject);
+      return this.#pump();
+    }
+    let at = Math.max(this.next, this.pausedUntil, now);
+    if (this.queue[0].priority >= 2 && this.pausedUntil > now) at = Math.min(at, this.probeAt + 10_000);
     if (at > now) {
+      // Re-arm when a priority job brings the wake-up forward.
+      if (this.timer && this.timerAt <= at) return;
+      clearTimeout(this.timer);
+      this.timerAt = at;
       this.timer = setTimeout(() => {
         this.timer = null;
         this.#pump();
       }, at - now);
       return;
     }
+    if (this.timer) return;
     this.next = now + this.interval;
     const job = this.queue.shift();
     Promise.resolve()
@@ -116,6 +142,17 @@ export class RateLimiter {
   /** Back off (e.g. after HTTP 429). */
   pause(ms) {
     this.pausedUntil = Math.max(this.pausedUntil, Date.now() + ms);
+  }
+
+  /** Ends a back-off pause early (a request just went through, so the limit is not hit). */
+  resume() {
+    if (this.pausedUntil <= Date.now()) return;
+    this.pausedUntil = 0;
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    this.#pump();
   }
 }
 

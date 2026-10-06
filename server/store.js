@@ -1,8 +1,8 @@
-import { computeHype } from './scoring.js?v=muvpa7h6';
-import { CURVE_DEXES, NON_MEME, NON_MEME_TAGS, PUMP_INITIAL_VTOKENS, PUMP_K, PUMP_TOKENS_FOR_SALE } from './constants.js?v=muvpa7h6';
-import { Emitter, clamp } from './util.js?v=muvpa7h6';
-import { change4h, freshCandles, sparkPoints } from './candles.js?v=muvpa7h6';
-import { EVM_BASE_ASSETS, EVM_NON_MEME_SYMBOLS, evmEligible, getChain, isAddressOn, normAddr } from './chains.js?v=muvpa7h6';
+import { computeHype } from './scoring.js?v=mux6rwf6';
+import { CURVE_DEXES, NON_MEME, NON_MEME_TAGS, PUMP_INITIAL_VTOKENS, PUMP_K, PUMP_TOKENS_FOR_SALE } from './constants.js?v=mux6rwf6';
+import { Emitter, clamp } from './util.js?v=mux6rwf6';
+import { change4h, freshCandles, sparkPoints } from './candles.js?v=mux6rwf6';
+import { EVM_BASE_ASSETS, EVM_NON_MEME_SYMBOLS, evmEligible, getChain, isAddressOn, normAddr } from './chains.js?v=mux6rwf6';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -711,8 +711,8 @@ export class Store extends Emitter {
       dev: devRating({ tokens: t.devTokens, devMints: t.audit?.devMints, devMigrations: t.audit?.devMigrations, honeypots: t.audit?.honeypotSameCreator }),
       devTokens: t.devTokens ? [...t.devTokens].sort((a, b) => b.mc - a.mc).slice(0, 8) : null,
       devInfo: t.devInfo || null, // EVM: GeckoTerminal developer address / holding
-      topHolders: t.topHolders || null,
-      copyInfo: t.copyInfo || null, // top 10 holder wallets [{ a, pct }] (RugCheck / GoPlus)
+      topHolders: t.topHolders || null, // top 10 holder wallets [{ a, pct }] (RugCheck / GoPlus)
+      copyInfo: t.copyInfo || null,
       launchedAt: t.createdAt || null,
       risk: t.hype.risk,
       market: t.hype.market,

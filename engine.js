@@ -3,15 +3,15 @@
 // cross-origin reads). One engine per network, created the first time the viewer opens it; only
 // the network on screen polls its sources, the others pause (and keep their data for a quick
 // switch back).
-import { Store } from './server/store.js?v=muvpa7h6';
-import { RateLimiter, every, getJSON, num } from './server/util.js?v=muvpa7h6';
-import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=muvpa7h6';
-import { startPumpPortal } from './server/sources/pumpportal.js?v=muvpa7h6';
-import { startDexScreener } from './server/sources/dexscreener.js?v=muvpa7h6';
-import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=muvpa7h6';
-import { startJupiter } from './server/sources/jupiter.js?v=muvpa7h6';
-import { startRugCheck } from './server/sources/rugcheck.js?v=muvpa7h6';
-import { startGoPlus } from './server/sources/goplus.js?v=muvpa7h6';
+import { Store } from './server/store.js?v=mux6rwf6';
+import { RateLimiter, every, getJSON, num } from './server/util.js?v=mux6rwf6';
+import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=mux6rwf6';
+import { startPumpPortal } from './server/sources/pumpportal.js?v=mux6rwf6';
+import { startDexScreener } from './server/sources/dexscreener.js?v=mux6rwf6';
+import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=mux6rwf6';
+import { startJupiter } from './server/sources/jupiter.js?v=mux6rwf6';
+import { startRugCheck } from './server/sources/rugcheck.js?v=mux6rwf6';
+import { startGoPlus } from './server/sources/goplus.js?v=mux6rwf6';
 
 const baseConfig = {
   demo: false,
@@ -302,18 +302,18 @@ function createEngine(chainId) {
       const alt = a && a.pair === t.pairAddress && Date.now() - a.at < 5 * 60_000 ? a.pool : null;
       if (a && !alt) altPool.delete(t.mint);
       try {
-        list = await src.gt.candles(t, tf, true, alt || t.pairAddress);
+        list = await src.gt.candles(t, tf, 2, alt || t.pairAddress);
       } catch (e) {
         if (e?.status !== 404) throw e;
       }
       if (!list.length) {
         if (alt) altPool.delete(t.mint);
         else {
-          const pools = await src.gt.tokenPools(t, true).catch(() => []);
+          const pools = await src.gt.tokenPools(t, 2).catch(() => []);
           const other = pools.find((p) => p.toLowerCase() !== String(t.pairAddress).toLowerCase()) || null;
           if (other) {
             altPool.set(t.mint, { pool: other, pair: t.pairAddress, at: Date.now() });
-            list = await src.gt.candles(t, tf, true, other).catch(() => []);
+            list = await src.gt.candles(t, tf, 2, other).catch(() => []);
           }
         }
       }
