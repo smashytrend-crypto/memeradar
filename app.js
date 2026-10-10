@@ -1108,7 +1108,7 @@ function quickBuy(usd) {
   if (usd > state.wallet.cash + 1e-9) {
     toast(`Za mało środków w walletcie DEMO (saldo ${fmt.usd(state.wallet.cash)}) — doładuj go`);
     closeDetail();
-    return openSheet('wallet');
+    return openWallet('spot');
   }
   if (!(d.p > 0) || !(d.mc > 0)) return toast('Brak ceny lub MC — spróbuj za chwilę');
   const had = !!posHere(state.selected);
@@ -1453,6 +1453,12 @@ function renderPositions() {
 
 // ---------- demo wallet screen ----------
 function renderWallet() {
+  // Spot (memecoin positions) or Perpetuals: two separate demo wallets.
+  const perpMode = state.walletMode === 'perps';
+  $('#walletBody').hidden = perpMode;
+  $('#walletPerpBody').hidden = !perpMode;
+  $$('#walletSeg button').forEach((b) => b.classList.toggle('on', (b.dataset.wmode === 'perps') === perpMode));
+  if (perpMode) return perps ? perps.renderWallet($('#walletPerpBody')) : ($('#walletPerpBody').innerHTML = '<p class="note">Perpetuals ładują się…</p>');
   const w = state.wallet;
   const list = positionList();
   const inPos = list.reduce((a, x) => a + (x.p.w ? x.value ?? x.p.usd ?? 0 : 0), 0);
@@ -1509,11 +1515,11 @@ function renderWallet() {
   put('#wHist', hist);
 }
 
-const SHEETS = { pos: ['#posSheet', renderPositions], wallet: ['#walletSheet', renderWallet] };
+const SHEETS = { pos: ['#posSheet', renderPositions], wallet: ['#walletSheet', renderWallet], perps: ['#perpSheet', () => perps?.render()] };
 // While a finger is on a sheet, live re-renders wait: replacing a button mid-tap loses the tap
 // on iOS Safari.
 let sheetTouch = 0;
-for (const sel of ['#posSheet', '#walletSheet']) {
+for (const sel of ['#posSheet', '#walletSheet', '#perpSheet']) {
   $(sel).addEventListener('touchstart', () => (sheetTouch = Date.now() + 60_000), { passive: true });
   for (const ev of ['touchend', 'touchcancel']) $(sel).addEventListener(ev, () => (sheetTouch = Date.now() + 400), { passive: true });
 }
@@ -1533,6 +1539,38 @@ function openSheet(name) {
   SHEETS[name][1]();
   $(SHEETS[name][0]).scrollTop = 0;
 }
+// Perpetuals DEMO (live Hyperliquid data; own wallet).
+state.walletMode = LS.get('walletMode', 'spot') === 'perps' ? 'perps' : 'spot';
+// Loaded as its own module: if it can't load (e.g. the single-file preview), only perps are off.
+let perps = null;
+import('./perps.js?v=mv29k8ss')
+  .then(({ createPerps }) => {
+    perps = createPerps({
+      toast: (m) => toast(m),
+      loadLW: () => loadLW(),
+      onChange: () => ($('#c-perp').textContent = perps?.count() || ''),
+      nav: (where) => (where === 'wallet' ? openWallet('perps') : openSheet(where)),
+    });
+    $('#c-perp').textContent = perps.count() || '';
+    if (sheetOpen('perps')) perps.render();
+    if (sheetOpen('wallet')) renderWallet();
+  })
+  .catch(() => {
+    $('#perpBody').innerHTML = '<div class="empty"><b>Perpetuals niedostępne</b>Nie udało się wczytać modułu.</div>';
+  });
+/** Opens the wallet on its Spot (memecoins) or Perpetuals side. */
+function openWallet(mode) {
+  state.walletMode = mode === 'perps' ? 'perps' : 'spot';
+  LS.set('walletMode', state.walletMode);
+  openSheet('wallet');
+}
+$('#walletSeg').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-wmode]');
+  if (!b) return;
+  state.walletMode = b.dataset.wmode === 'perps' ? 'perps' : 'spot';
+  LS.set('walletMode', state.walletMode);
+  renderWallet();
+});
 function closeSheets() {
   for (const [sel] of Object.values(SHEETS)) $(sel).hidden = true;
   document.body.classList.remove('sheet-open');
@@ -2531,7 +2569,7 @@ $('#drawer').addEventListener('click', (e) => {
   else if (act === 'hide' && state.selected) hideToken(state.selected);
   else if (act === 'wallet-open') {
     closeDetail();
-    openSheet('wallet');
+    openWallet('spot');
   }
   else if (act === 'block' && state.detail?.creator) blockCreator(state.detail.creator);
   else if (act === 'pos-add' && state.selected && state.detail) {
@@ -2541,7 +2579,7 @@ $('#drawer').addEventListener('click', (e) => {
     if (usd > state.wallet.cash + 1e-9) {
       toast(`Za mało środków w walletcie DEMO (saldo ${fmt.usd(state.wallet.cash)}) — doładuj go`);
       closeDetail();
-      return openSheet('wallet');
+      return openWallet('spot');
     }
     const raw = ($('#posEntry')?.value || '').trim();
     // Entry given as market cap (easier than long prices): price scales with market cap.
@@ -2759,9 +2797,12 @@ $('#walletSheet').addEventListener('click', (e) => {
     toast('Wallet DEMO wyzerowany');
   }
 });
+$('#perpSheet').addEventListener('click', (e) => {
+  if (e.target.closest('[data-sheet-close]')) closeSheets();
+});
 $('#posSheet').addEventListener('click', (e) => {
   if (e.target.closest('[data-sheet-close]')) return closeSheets();
-  if (e.target.closest('[data-sheet-wallet]')) return openSheet('wallet');
+  if (e.target.closest('[data-sheet-wallet]')) return openWallet('spot');
   const cal = e.target.closest('[data-cal]');
   if (cal) {
     state.calMonth = Math.max(0, Math.min(24, state.calMonth + Number(cal.dataset.cal)));
