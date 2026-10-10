@@ -25,7 +25,7 @@ export const NON_MEME = new Set([
   '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs', // WETH
 ]);
 
-export const NON_MEME_TAGS = new Set(['lst', 'stable', 'stablecoin', 'defi', 'rwa']);
+export const NON_MEME_TAGS = new Set(['lst', 'stable', 'stablecoin', 'defi', 'rwa', 'yield', 'yb', 'jup-lend-earn', 'xstocks', 'stocks', 'equities']);
 
 /** DexScreener dexIds of launchpad bonding-curve pools (not a real DEX market yet). */
 export const CURVE_DEXES = new Set(['pumpfun', 'meteoradbc', 'launchlab', 'moonshot', 'boop', 'fourmeme']);

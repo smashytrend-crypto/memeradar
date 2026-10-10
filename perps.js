@@ -2,7 +2,7 @@
 // candles straight from Hyperliquid's public API (free, no key), trading rules from perps-math.js.
 // The account lives in this browser only (localStorage 'mr:perps') — virtual dollars.
 
-import * as M from './perps-math.js?v=mv2xgu7u';
+import * as M from './perps-math.js?v=mv2zx1lk';
 
 const API = 'https://api.hyperliquid.xyz/info';
 const WS_URL = 'wss://api.hyperliquid.xyz/ws';
@@ -12,6 +12,13 @@ const MIN_ORDER = 10; // Hyperliquid's minimum order value ($)
 const FAV = ['BTC', 'ETH', 'SOL', 'HYPE', 'DOGE', 'XRP', 'kPEPE', 'WIF', 'FARTCOIN', 'SUI'];
 
 const $ = (s, el = document) => el.querySelector(s);
+// AbortSignal.timeout is missing before Safari 16 / iOS 16.
+const timeoutSignal = (ms) => {
+  if (AbortSignal.timeout) return AbortSignal.timeout(ms);
+  const c = new AbortController();
+  setTimeout(() => c.abort(), ms);
+  return c.signal;
+};
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const ls = {
   get(k, d) {
@@ -76,13 +83,14 @@ export function createPerps({ toast, loadLW, onChange, nav }) {
     }
   };
   function syncFromStorage() {
+    if (S.catching) return; // the replay owns the account; a newer copy is loaded when it ends
     if (storedRev() > A.rev) {
       A = loadAcct();
       S.dirty = true;
     }
   }
   const save = () => {
-    A.hist = A.hist.slice(0, 300);
+    A.hist = A.hist.slice(0, 1000); // a year of closes for the PnL calendar
     A.tx = A.tx.slice(0, 300);
     A.rev = Math.max(A.rev, storedRev()) + 1;
     ls.set(KEY, A);
@@ -96,6 +104,8 @@ export function createPerps({ toast, loadLW, onChange, nav }) {
   };
   window.addEventListener('storage', (e) => {
     if (e.key !== KEY) return;
+    // Mid-replay the newer copy is picked up when it ends (syncFromStorage before saving).
+    if (S.catching) return;
     A = loadAcct();
     S.dirty = true;
   });
@@ -152,7 +162,7 @@ export function createPerps({ toast, loadLW, onChange, nav }) {
 
   // ---------- Hyperliquid API ----------
   async function post(body) {
-    const r = await fetch(API, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(12_000) });
+    const r = await fetch(API, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: timeoutSignal(12_000) });
     if (!r.ok) throw new Error(`Hyperliquid HTTP ${r.status}`);
     return r.json();
   }
@@ -505,6 +515,7 @@ export function createPerps({ toast, loadLW, onChange, nav }) {
     const ev = M.liquidate(A, mk, tiersOf, t, { replay: !live });
     for (const e of ev) {
       A.stats.liqs++;
+      A.stats.fees += e.fee || 0;
       record('liq', { coin: e.coin, pnl: e.pnl, kind: e.kind, partial: e.partial, returned: e.returned ?? 0 });
       notes.push(`💥 LIKWIDACJA ${e.coin}${e.partial ? ' (20%)' : ''}${e.kind === 'backstop' ? ' — cały margin stracony' : e.returned > 0 ? ` — zwrócono ${money(e.returned)}` : ''}`);
       changed = true;
@@ -577,25 +588,32 @@ export function createPerps({ toast, loadLW, onChange, nav }) {
     try {
       const coins = coinsInUse();
       const gap = to - from;
-      const iv = gap <= 3 * 86400e3 ? '1m' : gap <= 40 * 86400e3 ? '15m' : '1h';
-      const ivMs = TF_MS[iv];
+      const iv = gap <= 6 * 3_600_000 ? '1m' : gap <= 2 * 86400e3 ? '5m' : gap <= 40 * 86400e3 ? '15m' : '1h';
+      const ivMs = TF_MS[iv] || 300e3;
       const pts = [];
       let lastFund = 0;
-      await Promise.all(
-        coins.map(async (coin) => {
-          const cs = await paged((st, en) => ({ type: 'candleSnapshot', req: { coin, interval: iv, startTime: st, endTime: en } }), from - ivMs, to, (c) => c.t);
-          for (const c of cs) {
-            const o = +c.o, h = +c.h, l = +c.l, cl = +c.c;
-            const path = cl >= o ? [o, l, h, cl] : [o, h, l, cl]; // likely order inside the candle
-            const t0 = Math.max(c.t, from);
-            path.forEach((px, k) => pts.push({ t: t0 + (k * Math.max(1, c.T - t0)) / 4, coin, px }));
+      const fundFrom = Math.min(from, A.fundAt || from); // an hour not settled before the sleep too
+      const firstPx = {};
+      // One coin at a time: a burst of parallel pages trips the API's rate limit.
+      for (const coin of coins) {
+        const cs = await paged((st, en) => ({ type: 'candleSnapshot', req: { coin, interval: iv, startTime: st, endTime: en } }), from - ivMs, to, (c) => c.t);
+        for (const c of cs) {
+          const o = +c.o, h = +c.h, l = +c.l, cl = +c.c;
+          if (c.t < from) {
+            // The candle the sleep began in: its earlier prices happened before the gap.
+            pts.push({ t: from, coin, px: cl });
+            firstPx[coin] ??= cl;
+            continue;
           }
-          // Every coin in use: a limit order can open a position during the gap.
-          const fh = await paged((st, en) => ({ type: 'fundingHistory', coin, startTime: st, endTime: en }), from + 1, to, (f) => f.time);
-          for (const f of fh) if (f.time > from && f.time <= to) pts.push({ t: f.time, coin, fund: Number(f.fundingRate), k: 1 });
-          for (const f of fh) lastFund = Math.max(lastFund, f.time);
-        }),
-      );
+          const path = cl >= o ? [o, l, h, cl] : [o, h, l, cl]; // likely order inside the candle
+          firstPx[coin] ??= o;
+          path.forEach((px, k) => pts.push({ t: c.t + (k * Math.max(1, c.T - c.t)) / 4, coin, px }));
+        }
+        // Every coin in use: a limit order can open a position during the gap.
+        const fh = await paged((st, en) => ({ type: 'fundingHistory', coin, startTime: st, endTime: en }), fundFrom + 1, to, (f) => f.time);
+        for (const f of fh) if (f.time > fundFrom && f.time <= to) pts.push({ t: Math.max(f.time, from), ft: f.time, coin, fund: Number(f.fundingRate), k: 1 });
+        for (const f of fh) lastFund = Math.max(lastFund, f.time);
+      }
       pts.sort((a, b) => a.t - b.t || (a.k || 0) - (b.k || 0));
       const mk = {};
       let funded = 0;
@@ -608,8 +626,9 @@ export function createPerps({ toast, loadLW, onChange, nav }) {
         for (const pt of group) {
           if (pt.fund == null) continue;
           const p = A.pos[pt.coin];
-          if (p && p.openedAt < pt.t && mk[pt.coin] > 0) {
-            const pay = M.applyFunding(A, pt.coin, pt.fund, mk[pt.coin]);
+          const px = mk[pt.coin] > 0 ? mk[pt.coin] : firstPx[pt.coin];
+          if (p && p.openedAt < (pt.ft || pt.t) && px > 0) {
+            const pay = M.applyFunding(A, pt.coin, pt.fund, px);
             A.stats.funding += pay;
             funded += pay;
           }
@@ -629,14 +648,17 @@ export function createPerps({ toast, loadLW, onChange, nav }) {
       // Leave the account as it was and try again soon (the gap is replayed once data comes).
       A = Object.assign(loadAcctFrom(JSON.parse(snapshotAcct)));
       S.catchFails = (S.catchFails || 0) + 1;
-      S.catchRetryAt = Date.now() + Math.min(60_000, 5_000 * S.catchFails);
+      // Backing off (30 s, 1, 2, 4, 5 min…): rate limits pass; about 15 min before giving up.
+      S.catchRetryAt = Date.now() + Math.min(300_000, 30_000 * 2 ** (S.catchFails - 1));
       if (S.catchFails >= 6) {
         A.lastTick = Date.now();
         notes.push('Nie udało się odtworzyć rynku z czasu, gdy aplikacja była w tle');
       }
     } finally {
       S.catching = false;
-      save();
+      // Another tab saved meanwhile: its newer account wins over this replay.
+      if (storedRev() > A.rev) A = loadAcct();
+      else save();
       S.dirty = true;
       if (notes.length) toast(notes.slice(0, 3).join(' · '));
     }
@@ -1042,11 +1064,14 @@ export function createPerps({ toast, loadLW, onChange, nav }) {
     render();
   }
 
+  // While the market of a sleep is replayed, account changes would be lost if it failed.
+  const MUTATING = ['pfMode', 'pfLev', 'pfSubmit', 'pfClose', 'pfSave', 'pfMargin', 'pfCancel'];
   function onClick(e) {
     const t = e.target.closest('button, [data-pf-goto]');
     if (!t) return;
     syncFromStorage();
     const d = t.dataset;
+    if (S.catching && MUTATING.some((k) => d[k] !== undefined)) return toast('Synchronizuję konto z rynkiem — chwila…');
     if (d.pfSide) S.side = Number(d.pfSide);
     else if (d.pfType) S.type = d.pfType;
     else if (d.pfMode) {
@@ -1252,8 +1277,9 @@ export function createPerps({ toast, loadLW, onChange, nav }) {
   function onWalletClick(e) {
     const b = e.target.closest('button');
     if (!b) return;
+    if (S.catching && (b.dataset.pwAmt || b.dataset.pw === 'topup' || b.dataset.pw === 'reset')) return toast('Synchronizuję konto z rynkiem — chwila…');
     if (b.dataset.pwCal) {
-      S.calMonth = Math.max(0, Math.min(24, (S.calMonth || 0) + Number(b.dataset.pwCal)));
+      S.calMonth = Math.max(0, Math.min(12, (S.calMonth || 0) + Number(b.dataset.pwCal)));
       return walletRender(e.currentTarget);
     }
     syncFromStorage();

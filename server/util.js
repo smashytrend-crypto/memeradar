@@ -46,12 +46,20 @@ export class HttpError extends Error {
   }
 }
 
+/** Abort signal after `ms` (AbortSignal.timeout is missing before Safari 16 / iOS 16). */
+export function timeoutSignal(ms) {
+  if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) return AbortSignal.timeout(ms);
+  const c = new AbortController();
+  setTimeout(() => c.abort(), ms);
+  return c.signal;
+}
+
 /** fetch JSON with timeout; throws HttpError on non-2xx. */
 export async function getJSON(url, { headers = {}, timeout = 12000, onHeaders } = {}) {
   const res = await fetch(url, {
     // In a browser a custom user-agent would force a CORS preflight, so only send it from Node.
     headers: { accept: 'application/json', ...(IS_BROWSER ? {} : { 'user-agent': 'memeradar/1.0' }), ...headers },
-    signal: AbortSignal.timeout(timeout),
+    signal: timeoutSignal(timeout),
   });
   onHeaders?.(res.headers);
   if (!res.ok) throw new HttpError(res.status, url, res.headers);

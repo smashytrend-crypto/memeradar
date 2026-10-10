@@ -1,8 +1,8 @@
-import { computeHype } from './scoring.js?v=mv2xgu7u';
-import { CURVE_DEXES, NON_MEME, NON_MEME_TAGS, PUMP_INITIAL_VTOKENS, PUMP_K, PUMP_TOKENS_FOR_SALE } from './constants.js?v=mv2xgu7u';
-import { Emitter, clamp } from './util.js?v=mv2xgu7u';
-import { change4h, freshCandles, sparkPoints } from './candles.js?v=mv2xgu7u';
-import { EVM_BASE_ASSETS, EVM_NON_MEME_SYMBOLS, evmEligible, getChain, isAddressOn, normAddr } from './chains.js?v=mv2xgu7u';
+import { computeHype } from './scoring.js?v=mv2zx1lk';
+import { CURVE_DEXES, NON_MEME, NON_MEME_TAGS, PUMP_INITIAL_VTOKENS, PUMP_K, PUMP_TOKENS_FOR_SALE } from './constants.js?v=mv2zx1lk';
+import { Emitter, clamp } from './util.js?v=mv2zx1lk';
+import { change4h, freshCandles, sparkPoints } from './candles.js?v=mv2zx1lk';
+import { EVM_BASE_ASSETS, EVM_NON_MEME_SYMBOLS, evmEligible, getChain, isAddressOn, isBaseAsset, normAddr } from './chains.js?v=mv2zx1lk';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -42,8 +42,13 @@ export function freshness(vol5, vol1h, vol6h, ageMs = Infinity) {
  * (RugCheck, Solana) or launch / graduation counts (Jupiter), and honeypots (GoPlus, EVM).
  * Many launches that went nowhere pull it down; tokens that reached $30k / $100k+ push it up.
  */
+/** More launches than any person makes: the 'dev' is a platform's signer. */
+export const SHARED_DEV = 1000;
+
 export function devRating({ tokens, devMints, devMigrations, honeypots } = {}) {
   if (honeypots > 0) return { score: 0, n: null, good: 0, best: null, honeypots };
+  // Thousands of launches: a launchpad's shared signer (e.g. stonk.fun), not a person — unknown.
+  if (devMints > SHARED_DEV) return null;
   const clampS = (v) => Math.max(0, Math.min(100, Math.round(v)));
   const spam = (n) => (n > 3 ? Math.min(40, (n - 3) * 2) : 0);
   // RugCheck lists at most ~50 of the creator's tokens: when Jupiter counts more launches, its
@@ -200,6 +205,7 @@ export class Store extends Emitter {
     // The engine of a network the viewer isn't looking at pauses its source loops.
     this.active = true;
     this.tokens = new Map();
+    this.rejected = new Set(); // mints dropped as non-memes (stay out)
     this.rankings = {}; // name -> Map(mint -> rank)
     this.sources = {}; // name -> { state, msg, at, count }
     this.solPrice = 0;
@@ -230,12 +236,17 @@ export class Store extends Emitter {
   /** Create-or-update a token. Returns the token, or null if rejected (not a memecoin / invalid). */
   upsert(mint, patch = {}, source) {
     mint = normAddr(this.chain, mint);
-    if (!isAddressOn(this.chain, mint) || NON_MEME.has(mint)) return null;
+    if (!isAddressOn(this.chain, mint) || NON_MEME.has(mint) || this.rejected.has(mint)) return null;
     const sym = this.chain.evm && patch.symbol ? String(patch.symbol).toUpperCase() : '';
     const nonMemeSymbol = sym && (EVM_BASE_ASSETS.has(sym) || (this.chain.memeOnly !== false && EVM_NON_MEME_SYMBOLS.has(sym)));
-    if (nonMemeSymbol || patch.tags?.some?.((tag) => NON_MEME_TAGS.has(tag))) {
-      // Tags (from Jupiter) can arrive after another source already added the token.
+    // Wrapped / staked coins and stablecoins by name on every network (Solana too: "Coinbase Wrapped LTC").
+    const baseName = typeof patch.name === 'string' && isBaseAsset({ name: patch.name });
+    if (nonMemeSymbol || baseName || patch.tags?.some?.((tag) => NON_MEME_TAGS.has(tag))) {
+      // Tags (from Jupiter) can arrive after another source already added the token; remembered,
+      // so the next untagged update (another source) does not bring it back.
       this.tokens.delete(mint);
+      this.rejected.add(mint);
+      if (this.rejected.size > 5000) this.rejected.delete(this.rejected.values().next().value);
       return null;
     }
     const now = Date.now();
@@ -653,7 +664,7 @@ export class Store extends Emitter {
       cp: t.copyInfo && !t.copyInfo.isOg && t.copyInfo.same >= 2 ? t.copyInfo.same : null, // ticker copies (not the OG)
       dr: devRating({ tokens: t.devTokens, devMints: t.audit?.devMints, devMigrations: t.audit?.devMigrations, honeypots: t.audit?.honeypotSameCreator })?.score ?? null,
       cr: t.creator || null,
-      dm: t.audit?.devMints ?? null, // tokens the creator launched
+      dm: t.audit?.devMints > SHARED_DEV ? null : t.audit?.devMints ?? null, // tokens the creator launched
       dmg: t.audit?.devMigrations ?? null, // …of which graduated
       dhp: t.audit?.honeypotSameCreator ?? null, // EVM: other honeypots by the creator
       fz: freshness(m.vol5, m.vol1h, t.volume?.h6, (t.migratedAt || t.createdAt) ? now - (t.migratedAt || t.createdAt) : Infinity),

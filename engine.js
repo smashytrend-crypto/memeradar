@@ -3,15 +3,15 @@
 // cross-origin reads). One engine per network, created the first time the viewer opens it; only
 // the network on screen polls its sources, the others pause (and keep their data for a quick
 // switch back).
-import { Store } from './server/store.js?v=mv2xgu7u';
-import { RateLimiter, every, getJSON, num } from './server/util.js?v=mv2xgu7u';
-import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=mv2xgu7u';
-import { startPumpPortal } from './server/sources/pumpportal.js?v=mv2xgu7u';
-import { startDexScreener } from './server/sources/dexscreener.js?v=mv2xgu7u';
-import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=mv2xgu7u';
-import { startJupiter } from './server/sources/jupiter.js?v=mv2xgu7u';
-import { startRugCheck } from './server/sources/rugcheck.js?v=mv2xgu7u';
-import { startGoPlus } from './server/sources/goplus.js?v=mv2xgu7u';
+import { Store } from './server/store.js?v=mv2zx1lk';
+import { RateLimiter, every, getJSON, num } from './server/util.js?v=mv2zx1lk';
+import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=mv2zx1lk';
+import { startPumpPortal } from './server/sources/pumpportal.js?v=mv2zx1lk';
+import { startDexScreener } from './server/sources/dexscreener.js?v=mv2zx1lk';
+import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=mv2zx1lk';
+import { startJupiter } from './server/sources/jupiter.js?v=mv2zx1lk';
+import { startRugCheck } from './server/sources/rugcheck.js?v=mv2zx1lk';
+import { startGoPlus } from './server/sources/goplus.js?v=mv2zx1lk';
 
 const baseConfig = {
   demo: false,
@@ -84,7 +84,7 @@ function createEngine(chainId) {
         if (seenTx.size <= 60) break;
       }
     }
-    let alerts = 0;
+    const whales = [];
     const name = t.symbol ? '$' + t.symbol : t.name || t.mint.slice(0, 6);
     const dev = t.creator ? normAddr(chain, t.creator) : null;
     for (const tr of [...list].reverse()) {
@@ -97,10 +97,10 @@ function createEngine(chainId) {
       const w = wallets.get(normAddr(chain, tr.wallet));
       if (w) {
         store.pushFeed({ type: 'wallet', mint: t.mint, at: tr.t, text: `${w.emoji || '👛'} ${w.name}: ${tr.side === 'buy' ? 'kupił' : 'sprzedał'} ${name} za $${Math.round(tr.usd).toLocaleString('pl-PL')}` });
-      } else if (tr.usd >= whaleUsd && alerts++ < 5) {
-        store.pushFeed({ type: 'whale', mint: t.mint, at: tr.t, text: `🐋 ${tr.side === 'buy' ? 'Kupno' : 'Sprzedaż'} ${name} za $${Math.round(tr.usd).toLocaleString('pl-PL')}` });
-      }
+      } else if (tr.usd >= whaleUsd) whales.push(tr);
     }
+    // At most 5 big trades per batch: the newest ones (still in time order).
+    for (const tr of whales.slice(-5)) store.pushFeed({ type: 'whale', mint: t.mint, at: tr.t, text: `🐋 ${tr.side === 'buy' ? 'Kupno' : 'Sprzedaż'} ${name} za $${Math.round(tr.usd).toLocaleString('pl-PL')}` });
     if (seen.size > 2000) seenTx.set(t.mint, new Set([...seen].slice(-800)));
   }
   async function trades(mint, priority = false, quiet = false) {
@@ -214,6 +214,9 @@ function createEngine(chainId) {
       if (!chain.evm && pool && pool.id === t.pairAddress && !t.chainBad && store.solPrice > 0) {
         const v = await rpcVaults(pool);
         const usd = pool.quoteMint === SOL_MINT ? store.solPrice : STABLES.has(pool.quoteMint) ? 1 : 0;
+        // A quote coin we can't price never works; nodes that don't answer count as misses.
+        if (!usd) t.chainBad = true;
+        else if (!v && (t.chainMiss = (t.chainMiss || 0) + 1) > 5) t.chainBad = true;
         if (v && usd) {
           const cp = (v.q / v.b) * usd;
           // Sanity check against the aggregators (a pool type whose vaults don't give the price).
@@ -332,7 +335,8 @@ function createEngine(chainId) {
           }
         }
       }
-      candleCache.set(key, { at: Date.now(), list });
+      // Nothing for this pool: don't ask GeckoTerminal again (candles + pools) for 5 minutes.
+      candleCache.set(key, { at: list.length ? Date.now() : Date.now() + 250_000, list });
       if (candleCache.size > 30) candleCache.delete(candleCache.keys().next().value);
       return list.map((k) => [...k]);
     },

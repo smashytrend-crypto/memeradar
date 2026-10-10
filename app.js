@@ -660,9 +660,15 @@ function displayOrder(rows) {
   if (!state.order || state.firstSnapshot || (!listHeld() && now - (state.lastReorder || 0) >= REORDER_MS)) {
     state.lastReorder = now;
     state.order = rows.map((d) => d.m);
+    state.lastData = new Map(rows.map((d) => [d.m, d]));
     return { list: rows, reordered: true };
   }
   const byMint = new Map(rows.map((d) => [d.m, d]));
+  // Held under a finger: a token that left the list keeps its row (last data) until the next
+  // reorder, so rows never shift up under the finger. Otherwise it goes now.
+  const held = listHeld();
+  if (held) for (const m of state.order) if (!byMint.has(m) && state.lastData?.has(m)) byMint.set(m, state.lastData.get(m));
+  state.lastData = byMint;
   const kept = state.order.filter((m) => byMint.has(m));
   const keptSet = new Set(kept);
   state.order = [...kept, ...rows.filter((d) => !keptSet.has(d.m)).map((d) => d.m)];
@@ -954,8 +960,12 @@ function saveWallet() {
   LS.set('wallet', state.wallet);
 }
 function walletTx(type, amount, extra = {}) {
+  // Fees paid since the last reset: a running total (the history keeps only 200 entries).
+  if (extra.fee > 0) state.wallet.feesPaid = feesPaidSoFar() + extra.fee;
   state.wallet.tx.unshift({ t: Date.now(), type, amount, ...extra });
 }
+/** Total from older versions (no running total yet): what the kept history shows. */
+const feesPaidSoFar = () => state.wallet.feesPaid ?? state.wallet.tx.reduce((a, t) => a + (t.fee > 0 ? t.fee : 0), 0);
 function deposit(amount) {
   state.wallet.cash += amount;
   state.wallet.deposits += amount;
@@ -1014,7 +1024,7 @@ function savePosition(mint, price, usd, mc, d = {}, fee = 0) {
   }
   // Funded from the demo wallet: the stake leaves the balance now and returns (with P&L) on close.
   state.wallet.cash -= usd;
-  walletTx('open', usd, { m: mint, n: d.n || '', s: d.s || '', p: price, ...(fee > 0 ? { fee } : {}) });
+  walletTx('open', usd, { m: mint, chain: ENGINE?.chain || 'solana', n: d.n || '', s: d.s || '', p: price, ...(fee > 0 ? { fee } : {}) });
   saveWallet();
   if (prev && prev.p > 0 && prev.usd > 0) {
     // Buying more: one position with the average entry (weighted by tokens bought).
@@ -1023,6 +1033,7 @@ function savePosition(mint, price, usd, mc, d = {}, fee = 0) {
     prev.mc = prev.mc && mc ? (prev.usd + usd) / (prev.usd / prev.mc + usd / mc) : prev.mc || mc;
     prev.usd += usd;
     prev.fees = (prev.fees || 0) + fee;
+    prev.bf = (prev.bf || 0) + fee;
     // Break even is measured from the new average entry: armed only if still above +BE_PCT.
       // (measured at the market price, like the exit checks — the buy price includes the fees)
     if (prev.be) prev.bea = ((d.p > 0 ? d.p : price) / prev.p - 1) * 100 > BE_PCT;
@@ -1036,6 +1047,7 @@ function savePosition(mint, price, usd, mc, d = {}, fee = 0) {
     mc: mc || 0,
     usd: usd > 0 ? usd : 0,
     fees: fee, // fees paid so far ($), shown with the position
+    bf: fee, // of which buying (its share goes with each sale onto the PnL card)
     t: Date.now(),
     chain: ENGINE?.chain || 'solana',
     // Name / icon and last seen price, for the positions list when the token isn't loaded.
@@ -1062,10 +1074,12 @@ function sellPosition(mint, fraction, price, extra = {}) {
   const fee = Math.min(gross, tradeFee(gross, p.chain || 'solana'));
   const back = gross - fee;
   if (part > 0) p.fees = (p.fees || 0) + fee;
+  const buyFee = p.bf > 0 && p.usd > 0 ? p.bf * Math.min(1, part / p.usd) : 0;
+  if (buyFee) p.bf -= buyFee;
   // Wallet-funded positions pay it back into the demo balance.
   if (p.w && part > 0) {
     state.wallet.cash += back;
-    walletTx('close', back, { m: mint, n: p.n, s: p.s, pnl: back - part, f, p: exit, ...(fee > 0 ? { fee } : {}) });
+    walletTx('close', back, { m: mint, chain: p.chain || ENGINE?.chain || 'solana', n: p.n, s: p.s, pnl: back - part, f, p: exit, ...(fee > 0 ? { fee } : {}) });
     saveWallet();
   }
   if (exit > 0 && p.p > 0) {
@@ -1074,9 +1088,10 @@ function sellPosition(mint, fraction, price, extra = {}) {
       m: mint, n: p.n, s: p.s, chain: p.chain, usd: part, pct, f,
       // Positions outside the wallet (opened before a reset) stay out of the statistics.
       w: p.w !== false,
-      pnl: part > 0 ? back - part : 0, fee, openedAt: p.t, closedAt: Date.now(), ...extra,
+      pnl: part > 0 ? back - part : 0, fee: fee + buyFee, openedAt: p.t, closedAt: Date.now(), ...extra,
     });
-    state.closed = state.closed.filter((c) => Date.now() - c.closedAt < 90 * 86400e3).slice(0, 500);
+    // A year of history for the calendar (entries are small).
+    state.closed = state.closed.filter((c) => Date.now() - c.closedAt < 400 * 86400e3).slice(0, 2000);
     LS.set('closedPositions', state.closed);
   }
   if (f >= 1 || p.usd - part < 0.005) delete state.positions[mint];
@@ -1489,7 +1504,7 @@ function renderWallet() {
         ? tx.map((t) => `<div><span>${TX[t.type]?.[0] || '•'} ${TX[t.type]?.[1] || t.type}${t.s ? ` <small>$${esc(t.s)}</small>` : ''} <small>· ${fmt.ago(t.t)}</small></span><b class="${t.type === 'open' ? 'down' : t.type === 'reset' ? '' : 'up'}">${t.type === 'open' ? '−' : t.type === 'reset' ? '' : '+'}${fmt.usd(t.amount)}${t.pnl != null ? ` <small class="${t.pnl >= 0 ? 'up' : 'down'}">(${sign(t.pnl)}${fmt.usd(Math.abs(t.pnl))})</small>` : ''}${t.fee > 0 ? `<small class="muted tx-fee">opłaty ${feeUsd(t.fee)}</small>` : ''}</b></div>`).join('')
         : '<div><span class="muted">Brak operacji — doładuj wallet, żeby zacząć grać pozycjami DEMO.</span></div>'
     }</div>`;
-  const paid = w.tx.reduce((a, t) => a + (t.fee > 0 ? t.fee : 0), 0);
+  const paid = feesPaidSoFar();
   const ex = 100;
   const feesCard = `<div class="card wallet-fees"><h3>Opłaty transakcji <small>jak na prawdziwym rynku</small></h3>
       <label class="toggle-row"><input type="checkbox" data-wallet="fees" ${state.fees ? 'checked' : ''} /> <span>Realistyczne opłaty przy kupnie i sprzedaży</span></label>
@@ -1556,7 +1571,7 @@ function openSheet(name) {
 state.walletMode = LS.get('walletMode', 'spot') === 'perps' ? 'perps' : 'spot';
 // Loaded as its own module: if it can't load (e.g. the single-file preview), only perps are off.
 let perps = null;
-import('./perps.js?v=mv2xgu7u')
+import('./perps.js?v=mv2zx1lk')
   .then(({ createPerps }) => {
     perps = createPerps({
       toast: (m) => toast(m),
@@ -2307,9 +2322,14 @@ function renderChart(d, tab) {
   const box = $('#chartBox');
   if (!box) return;
   if (tab === 'candles' && d.pair) {
-    drawCandles(d);
+    // Loading first: a drawing error must never stop the next download.
     loadCandles(d);
     startLive();
+    try {
+      drawCandles(d);
+    } catch {
+      /* redrawn on the next refresh */
+    }
     return;
   }
   if (tab === 'dex' && d.pair) {
@@ -2769,7 +2789,7 @@ $('#walletSheet').addEventListener('click', (e) => {
   if (e.target.closest('[data-sheet-close]')) return closeSheets();
   const cal = e.target.closest('[data-cal]');
   if (cal) {
-    state.calMonth = Math.max(0, Math.min(24, state.calMonth + Number(cal.dataset.cal)));
+    state.calMonth = Math.max(0, Math.min(12, state.calMonth + Number(cal.dataset.cal)));
     return renderWallet();
   }
   const quick = e.target.closest('[data-wallet-amt]');
@@ -2941,7 +2961,12 @@ function saveWallets() {
   LS.set('wallets', state.wallets);
   ENGINE?.setWallets(state.wallets);
 }
+function reloadWallets() {
+  const w = LS.get('wallets', []);
+  if (Array.isArray(w)) state.wallets = w.filter((x) => x && typeof x.a === 'string');
+}
 function trackWallet(a, name, emoji = '👛') {
+  reloadWallets(); // another tab may have changed the list
   const addr = normWallet(a);
   if (!/^0x[0-9a-fA-F]{40}$/.test(addr) && !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(addr)) return toast('To nie wygląda na adres portfela');
   const label = String(name || '').trim().slice(0, 24) || fmt.short(addr);
@@ -2952,6 +2977,7 @@ function trackWallet(a, name, emoji = '👛') {
   toast(`${emoji} Śledzę portfel: ${label}`);
 }
 function untrackWallet(a) {
+  reloadWallets();
   const k = normWallet(a);
   state.wallets = state.wallets.filter((w) => normWallet(w.a) !== k);
   saveWallets();
@@ -2981,7 +3007,7 @@ function askTrackWallet(a) {
 // Every token window's top traders are remembered locally; wallets that were in profit on several
 // different tokens (best: getting in early) are suggested for the wallet tracker.
 /** Wallet results on a token from its recent trades (`d`: the token's row — price, launch, symbol). */
-function recordTraders(mint, list, d = state.detail?.m === mint ? state.detail : null) {
+function recordTraders(mint, list, d = state.detail?.m === mint ? state.detail : null, chain = ENGINE?.chain || 'solana') {
   const price = d?.p;
   if (!(price > 0) || list.length < 20) return;
   const t0 = list[list.length - 1].t;
@@ -2997,13 +3023,15 @@ function recordTraders(mint, list, d = state.detail?.m === mint ? state.detail :
   for (const o of topTraders(list, price, 40)) {
     if (o.pnl == null || !o.w) continue;
     const e = (disc[o.w] ??= { n: {}, at: 0 });
-    delete e.n[mint]; // re-insert = most recent
-    // [pnl $, early 0/1, symbol, bought $, when seen]
-    e.n[mint] = [Math.round(o.pnl), isEarly(firstBuy.get(o.w)) ? 1 : 0, d?.s ? String(d.s).slice(0, 12) : '', Math.round(o.bUsd), now];
+    const k = `${chain}:${mint}`; // the same address can exist on two EVM networks
+    delete e.n[mint];
+    delete e.n[k]; // re-insert = most recent
+    // [pnl $, early 0/1, symbol, bought $, when seen, network]
+    e.n[k] = [Math.round(o.pnl), isEarly(firstBuy.get(o.w)) ? 1 : 0, d?.s ? String(d.s).slice(0, 12) : '', Math.round(o.bUsd), now, chain];
     const nk = Object.keys(e.n);
     if (nk.length > 40) for (const k of nk.slice(0, nk.length - 40)) delete e.n[k];
     e.at = now;
-    e.c = ENGINE?.chain || 'solana';
+    e.c = chain;
   }
   // Bounded: results older than 8 days (the ranking shows 7) and the stalest wallets go.
   for (const [w, e] of Object.entries(disc)) {
@@ -3024,16 +3052,19 @@ function getDisc() {
   return discMem;
 }
 window.addEventListener('storage', (e) => e.key === 'mr:disc' && (discMem = null));
+document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && (discMem = null));
+const discChain = (x, e) => x[5] || e.c || 'solana';
 /** Wallets in profit on 3+ different tokens, best first. */
 function discoveredWallets() {
   const disc = getDisc();
   return Object.entries(disc)
     .map(([w, e]) => {
-      const toks = Object.values(e.n || {});
+      const chain = ENGINE?.chain || 'solana';
+      const toks = Object.values(e.n || {}).filter((x) => discChain(x, e) === chain);
       // A win: at least $50 and 20% of what they bought (not a few cents of unrealised gain).
       const win = (x) => x[0] >= Math.max(50, 0.2 * (x[3] || 0));
       const wins = toks.filter(win);
-      return { w, c: e.c, wins: wins.length, early: wins.filter((x) => x[1]).length, pnl: toks.reduce((a, x) => a + x[0], 0), n: toks.length, syms: Object.values(e.n || {}).filter(win).map((x) => x[2]).filter(Boolean).slice(0, 4) };
+      return { w, c: ENGINE?.chain || 'solana', wins: wins.length, early: wins.filter((x) => x[1]).length, pnl: toks.reduce((a, x) => a + x[0], 0), n: toks.length, syms: wins.map((x) => x[2]).filter(Boolean).slice(0, 4) };
     })
     .filter((x) => x.wins >= 3 && !walletOf(x.w))
     .sort((a, b) => b.wins - a.wins || b.early - a.early || b.pnl - a.pnl)
@@ -3054,9 +3085,10 @@ function scanTick() {
   SCAN.at[row.m] = now;
   for (const k of Object.keys(SCAN.at)) if (now - SCAN.at[k] > DAY_MS) delete SCAN.at[k];
   LS.set('scanAt', SCAN.at);
+  const chain = ENGINE.chain || 'solana'; // the network can change before the answer comes
   ENGINE.scanTrades(row.m)
     .then((list) => {
-      if (list?.length) recordTraders(row.m, list, row);
+      if (list?.length) recordTraders(row.m, list, row, chain);
       SCAN.n++;
       SCAN.last = { s: row.s || fmt.short(row.m), t: Date.now() };
       if (sheetOpen('track') && !sheetBusy()) renderTracker();
@@ -3074,8 +3106,7 @@ function topWallets() {
   const win = (x) => x[0] >= Math.max(50, 0.2 * (x[3] || 0));
   const out = [];
   for (const [w, e] of Object.entries(disc)) {
-    if ((e.c || 'solana') !== chain) continue;
-    const toks = Object.values(e.n || {}).filter((x) => (x[4] || e.at || 0) >= since);
+    const toks = Object.values(e.n || {}).filter((x) => discChain(x, e) === chain && (x[4] || e.at || 0) >= since);
     if (toks.length < state.lb.min) continue;
     const wins = toks.filter(win);
     const best = toks.reduce((b, x) => (!b || x[0] > b[0] ? x : b), null);
@@ -3130,8 +3161,9 @@ async function loadTrades(mint) {
   if (state.tr?.m === mint && Date.now() - state.tr.at < 40_000) return;
   tradesBusy = true;
   try {
+    const chain = ENGINE.chain;
     const list = await ENGINE.trades(mint);
-    if (state.selected !== mint) return;
+    if (state.selected !== mint || ENGINE.chain !== chain) return;
     state.tr = { m: mint, list: list || [], at: Date.now(), none: list == null };
     if (list?.length) recordTraders(mint, list);
     if (state.detail && Date.now() >= drawerTouch) renderDetail(state.detail);
@@ -3281,9 +3313,11 @@ function devSection(d) {
 // ---------- candle chart ----------
 const TF_LIST = ['1m', '5m', '15m', '1h', '4h'];
 let candlesBusy = null; // key of the load in flight
+// Per network: the same EVM address can be a different token elsewhere.
+const candleKey = (m, tf) => `${ENGINE?.chain || 'solana'}:${m}|${tf}`;
 async function loadCandles(d) {
   const tf = state.candleTf;
-  const key = `${d.m}|${tf}`;
+  const key = candleKey(d.m, tf);
   if (!ENGINE?.candles) return;
   if (state.candles?.key === key && Date.now() - state.candles.at < 50_000) return;
   // Built from what we have: the latest trades, else the prices the radar recorded (every 15 s).
@@ -3306,12 +3340,17 @@ async function loadCandles(d) {
   // One download at a time; when it ends it loads whatever is wanted then.
   if (candlesBusy) return;
   candlesBusy = key;
-  const wanted = () => key === `${state.selected}|${state.candleTf}`;
+  const wanted = () => key === candleKey(state.selected, state.candleTf);
   try {
     let list = await ENGINE.candles(d.m, tf);
     let synth = null;
-    if (!list?.length) ({ list, synth } = synthesize());
-    else saveCandleCache(key, list);
+    const prev = state.candles?.key === key && state.candles.list.length && state.candles.synth ? state.candles : null;
+    if (!list?.length) {
+      ({ list, synth } = synthesize());
+      // No candles for this pool: keep the chart built so far (live / provisional) unless the
+      // provisional source has more now.
+      if (prev && prev.list.length >= list.length) ({ list, synth } = { list: prev.list, synth: prev.synth });
+    } else saveCandleCache(key, list);
     if (wanted()) state.candles = { key, list: list || [], at: Date.now(), synth };
   } catch (e) {
     if (wanted()) {
@@ -3365,7 +3404,8 @@ function candlesFrom(points, tf) {
 
 /** The viewer's demo buys / sells of this token: [{ t, side, p }]. */
 function myTrades(m) {
-  return state.wallet.tx.filter((t) => t.m === m && (t.type === 'open' || t.type === 'close') && t.p > 0).map((t) => ({ t: t.t, side: t.type === 'open' ? 'buy' : 'sell', p: t.p }));
+  const chain = ENGINE?.chain || 'solana';
+  return state.wallet.tx.filter((t) => t.m === m && (!t.chain || t.chain === chain) && (t.type === 'open' || t.type === 'close') && t.p > 0).map((t) => ({ t: t.t, side: t.type === 'open' ? 'buy' : 'sell', p: t.p }));
 }
 
 /**
@@ -3426,7 +3466,7 @@ function drawCandlesSvg(d) {
   const box = $('#chartBox');
   if (!box) return;
   const tf = state.candleTf;
-  const c = state.candles?.key === `${d.m}|${tf}` ? state.candles : null;
+  const c = state.candles?.key === candleKey(d.m, tf) ? state.candles : null;
   const tfRow = `<div class="tf-row">${TF_LIST.map((x) => `<button data-tf="${x}" class="${x === tf ? 'active' : ''}">${x}</button>`).join('')}</div>`;
   if (!c || !c.list.length) {
     const html = `${tfRow}<div class="empty"><b>${c ? (c.err ? 'Limit darmowego API — spróbuję za chwilę' : 'Czekam na cenę na żywo…') : 'Ładowanie świec…'}</b></div>`;
@@ -3624,7 +3664,7 @@ function drawCandlesLW(d) {
   }
   box.querySelectorAll('.tf-row button').forEach((b) => b.classList.toggle('active', b.dataset.tf === tf));
   const msg = box.querySelector('.lw-msg');
-  const c = state.candles?.key === `${d.m}|${tf}` ? state.candles : null;
+  const c = state.candles?.key === candleKey(d.m, tf) ? state.candles : null;
   if (!c || !c.list.length) {
     msg.hidden = false;
     msg.textContent = c ? (c.err ? 'Limit darmowego API — spróbuję za chwilę' : 'Czekam na cenę na żywo…') : 'Ładowanie świec…';
@@ -3641,7 +3681,9 @@ function drawCandlesLW(d) {
   const off = -new Date().getTimezoneOffset() * 60; // the chart shows UTC: shift to local time
   const ms = TF_MS[tf] || 300e3;
   const tOf = (ts) => Math.floor(ts / ms) * (ms / 1000) + off;
-  const dataKey = `${c.key}|${c.at}|${c.synth || ''}`;
+  // The offset is part of the data set: after a DST change setData redraws everything with it
+  // (an update() 1 h older than the last bar would throw).
+  const dataKey = `${c.key}|${c.at}|${c.synth || ''}|${off}`;
   const toBar = (k, K) => ({ time: Math.floor(k[0] / 1000) + off, open: k[1] * K, high: k[2] * K, low: k[3] * K, close: k[4] * K });
   const volBar = (k) => ({ time: Math.floor(k[0] / 1000) + off, value: k[5] || 0, color: k[4] >= k[1] ? 'rgba(31,214,143,0.35)' : 'rgba(255,77,106,0.35)' });
   if (dataKey !== lw.dataKey) {
@@ -3822,8 +3864,12 @@ async function sharePnlCard(c) {
   g.font = font(500, 38);
   g.fillText(String(c.sub || '').slice(0, 44), 80, 392);
   g.fillStyle = up ? '#1fd68f' : '#ff4d6a';
-  g.font = font(900, 210);
-  g.fillText(`${up ? '+' : ''}${c.pct >= 1000 ? Math.round(c.pct).toLocaleString('pl-PL') : c.pct.toFixed(1)}%`, 70, 640);
+  // Shrunk to fit the card for huge memecoin percentages.
+  const pctTxt = `${up ? '+' : ''}${c.pct >= 1000 ? Math.round(c.pct).toLocaleString('pl-PL') : c.pct.toFixed(1)}%`;
+  let px = 210;
+  do g.font = font(900, px);
+  while (g.measureText(pctTxt).width > 940 && (px -= 10) > 60);
+  g.fillText(pctTxt, 70, 640);
   if (c.pnl != null) {
     g.font = font(800, 76);
     g.fillText(`${c.pnl >= 0 ? '+' : '−'}$${Math.abs(c.pnl).toLocaleString('pl-PL', { maximumFractionDigits: 2 })}`, 80, 760);
@@ -3935,6 +3981,11 @@ function reloadTradeState() {
 }
 window.addEventListener('storage', (e) => {
   if (['mr:positions', 'mr:wallet', 'mr:closedPositions'].includes(e.key)) reloadTradeState();
+  if (e.key === 'mr:wallets') {
+    reloadWallets();
+    ENGINE?.setWallets(state.wallets);
+    if (sheetOpen('track') && !sheetBusy()) renderTracker();
+  }
 });
 document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && reloadTradeState());
 window.addEventListener('pageshow', (e) => e.persisted && reloadTradeState());

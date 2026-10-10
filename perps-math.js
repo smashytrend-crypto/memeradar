@@ -206,17 +206,19 @@ export function applyFill(a, { coin, side, sz, px, fee, lev, cross, t, reason = 
     const part = closeSz / p.sz;
     const feePart = fee * (closeSz / sz);
     out.realized += realized;
+    const released = p.cross ? Infinity : p.margin * part;
     if (p.cross) a.cash += realized;
     else {
-      const release = p.margin * part;
+      const release = released;
       p.margin -= release;
       // An isolated position never loses more than its margin (the rest would be bad debt).
       a.cash += Math.max(0, release + realized);
     }
     p.fees += feePart;
     p.realized = (p.realized || 0) + realized;
+    // An isolated position never loses more than its margin: the history shows the money lost.
     const row = {
-      coin, side: p.side, sz: closeSz, entry: p.entry, exit: px, lev: p.lev, cross: p.cross, pnl: realized,
+      coin, side: p.side, sz: closeSz, entry: p.entry, exit: px, lev: p.lev, cross: p.cross, pnl: Math.max(realized, -released),
       fees: (p.fees * closeSz) / p.sz, funding: (p.funding * closeSz) / p.sz, openedAt: p.openedAt, t, reason,
       full: closeSz >= p.sz - EPS,
     };
@@ -280,24 +282,35 @@ export function liquidate(a, marks, tiersOf, t, { replay = false } = {}) {
   const events = [];
   // Replaying candles jumps between prices that were passed continuously: the exchange would have
   // liquidated through the book where equity crossed maintenance, never skipping to the backstop.
-  const pxOf = (p) => (replay && !p.cross ? positionLiq(a, p, marks, tiersOf) || marks[p.coin] : marks[p.coin]) ?? p.entry;
+  // Cross positions too: each one's liquidation price with the others at their current marks,
+  // computed before any of them closes; the trader gets the better of that and the mark.
+  const liqAt = new Map();
+  if (replay) for (const p of posList(a)) liqAt.set(p.coin, positionLiq(a, p, marks, tiersOf));
+  const pxOf = (p) => {
+    const mark = marks[p.coin] ?? p.entry;
+    const liq = replay ? liqAt.get(p.coin) : null;
+    if (!(liq > 0)) return mark;
+    return p.side > 0 ? Math.max(liq, mark) : Math.min(liq, mark);
+  };
   const close = (p, frac, kind) => {
     if (replay && kind === 'backstop') kind = 'book';
     const mark = pxOf(p);
     const sz = frac >= 1 ? p.sz : p.sz * frac;
     const before = a.cash;
     if (kind === 'backstop') {
-      // The liquidator vault takes the position and the collateral behind it.
+      // The liquidator vault takes the position and the collateral behind it: isolated, its
+      // margin; cross, the cross balance (its share by notional, set by the caller as `lost`).
       const realized = p.side * p.sz * (mark - p.entry);
-      events.push({ coin: p.coin, kind, partial: false, pnl: realized, lost: p.cross ? null : p.margin });
-      a.hist.unshift({ coin: p.coin, side: p.side, sz: p.sz, entry: p.entry, exit: mark, lev: p.lev, cross: p.cross, pnl: p.cross ? realized : -p.margin, fees: p.fees, funding: p.funding, openedAt: p.openedAt, t, reason: 'liq', full: true });
+      const lost = p.cross ? p.lostShare ?? 0 : p.margin;
+      events.push({ coin: p.coin, kind, partial: false, pnl: -lost, lost });
+      a.hist.unshift({ coin: p.coin, side: p.side, sz: p.sz, entry: p.entry, exit: mark, lev: p.lev, cross: p.cross, pnl: -lost, fees: p.fees, funding: p.funding, openedAt: p.openedAt, t, reason: 'liq', full: true, realized });
       delete a.pos[p.coin];
       return;
     }
     const fee = sz * mark * PERP_FEES.taker;
     const r = applyFill(a, { coin: p.coin, side: -p.side, sz, px: mark, fee, lev: p.lev, cross: p.cross, t, reason: 'liq' });
     for (const row of r.closed) a.hist.unshift(row);
-    events.push({ coin: p.coin, kind, partial: frac < 1, pnl: r.realized, returned: a.cash - before });
+    events.push({ coin: p.coin, kind, partial: frac < 1, pnl: r.realized, returned: a.cash - before, fee });
     if (frac < 1 && a.pos[p.coin]) a.pos[p.coin].liqCooldown = t + PARTIAL_LIQ_COOLDOWN;
   };
   // Isolated positions, each on its own margin.
@@ -319,7 +332,13 @@ export function liquidate(a, marks, tiersOf, t, { replay = false } = {}) {
     const mm = crossMM(a, marks, tiersOf);
     if (cv < mm) {
       if (cv < BACKSTOP_RATIO * mm && !replay) {
-        for (const p of crossPos) close(p, 1, 'backstop');
+        // The whole cross balance is lost: shared out by notional for the history.
+        const total = crossPos.reduce((sum, p) => sum + p.sz * marks[p.coin], 0) || 1;
+        const cash = Math.max(0, a.cash);
+        for (const p of crossPos) {
+          p.lostShare = (cash * p.sz * marks[p.coin]) / total;
+          close(p, 1, 'backstop');
+        }
         a.cash = 0;
       } else {
         for (const p of crossPos) {

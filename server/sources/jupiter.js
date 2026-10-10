@@ -1,6 +1,6 @@
 // Jupiter Tokens API v2 (https://dev.jup.ag/docs/tokens): trending / organic lists, holder counts,
 // organic score, audit (mint/freeze authority, top holders) and bonding-curve progress. Also SOL price.
-import { RateLimiter, errMsg, every, getJSON, isMint, num, toMs } from '../util.js?v=mv2xgu7u';
+import { RateLimiter, errMsg, every, getJSON, isMint, num, toMs } from '../util.js?v=mv2zx1lk';
 
 const BASE = 'https://lite-api.jup.ag';
 const NAME = 'jupiter';
@@ -22,7 +22,8 @@ export function jupToPatch(j) {
   return {
     name: j.name,
     symbol: j.symbol,
-    creator: typeof j.dev === 'string' ? j.dev : undefined,
+    // A launchpad's shared signer (thousands of launches) is not the token's dev.
+    creator: typeof j.dev === 'string' && !(num(a.devMints) > 1000) ? j.dev : undefined,
     image: j.icon,
     holders: num(j.holderCount),
     holderChange1h: z(s1.holderChange),
