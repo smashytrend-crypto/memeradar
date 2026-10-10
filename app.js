@@ -1444,7 +1444,7 @@ function renderPositions() {
         .map((c) => `<div><span>${esc(c.n || fmt.short(c.m))} <small>${c.sl ? '🛑 SL · ' : c.tp ? '🎯 TP · ' : c.be ? '🛡️ BE · ' : c.safe ? '🔒 SAFE · ' : ''}$${esc(c.s || '?')}${c.f && c.f < 1 ? ` · ${Math.round(c.f * 100)}%` : ''} · ${fmt.ago(c.closedAt)}</small></span><b class="${c.pct >= 0 ? 'up' : 'down'}">${fmt.pct(c.pct)}${c.usd > 0 ? ` · ${money(c.pnl)}` : ''}</b><button class="share-mini" data-share-closed="${esc(c.m)}|${c.closedAt}" aria-label="Karta PnL">📸</button></div>`)
         .join('')}</div>`
     : '';
-  const html = summary + `<h3 class="pos-h">Otwarte (${list.length})</h3>` + cards + history + pnlCalendar();
+  const html = summary + `<h3 class="pos-h">Otwarte (${list.length})</h3>` + cards + history;
   if (body.dataset.html !== html) {
     body.dataset.html = html;
     body.innerHTML = html;
@@ -1498,7 +1498,7 @@ function renderWallet() {
     </div>`;
   const body = $('#walletBody');
   if (!body.querySelector('#wCard')) {
-    body.innerHTML = `<div id="wCard"></div>${form}<div id="wFees"></div><div id="wTrack"></div><div id="wDisc"></div><div id="wHist"></div>
+    body.innerHTML = `<div id="wCard"></div><div id="wCal"></div>${form}<div id="wFees"></div><div id="wTrack"></div><div id="wDisc"></div><div id="wHist"></div>
       <div class="d-acts" style="margin-top:16px"><button data-wallet="reset">♻️ Wyzeruj wallet DEMO</button></div>`;
   }
   const put = (id, html) => {
@@ -1509,6 +1509,7 @@ function renderWallet() {
     }
   };
   put('#wCard', card);
+  put('#wCal', pnlCalendar()); // PnL calendar under the balance, before the top-up
   put('#wFees', feesCard);
   put('#wTrack', walletTrackerCard());
   put('#wDisc', discoveryCard());
@@ -1543,7 +1544,7 @@ function openSheet(name) {
 state.walletMode = LS.get('walletMode', 'spot') === 'perps' ? 'perps' : 'spot';
 // Loaded as its own module: if it can't load (e.g. the single-file preview), only perps are off.
 let perps = null;
-import('./perps.js?v=mv2qm0je')
+import('./perps.js?v=mv2qoo8l')
   .then(({ createPerps }) => {
     perps = createPerps({
       toast: (m) => toast(m),
@@ -2754,6 +2755,11 @@ $('#walletSheet').addEventListener('change', (e) => {
 });
 $('#walletSheet').addEventListener('click', (e) => {
   if (e.target.closest('[data-sheet-close]')) return closeSheets();
+  const cal = e.target.closest('[data-cal]');
+  if (cal) {
+    state.calMonth = Math.max(0, Math.min(24, state.calMonth + Number(cal.dataset.cal)));
+    return renderWallet();
+  }
   if (e.target.closest('[data-wt-add]')) {
     const a = $('#wtAddr')?.value || '';
     trackWallet(a, $('#wtName')?.value || '', $('#wtEmoji')?.value || '👛');
@@ -2803,11 +2809,6 @@ $('#perpSheet').addEventListener('click', (e) => {
 $('#posSheet').addEventListener('click', (e) => {
   if (e.target.closest('[data-sheet-close]')) return closeSheets();
   if (e.target.closest('[data-sheet-wallet]')) return openWallet('spot');
-  const cal = e.target.closest('[data-cal]');
-  if (cal) {
-    state.calMonth = Math.max(0, Math.min(24, state.calMonth + Number(cal.dataset.cal)));
-    return renderPositions();
-  }
   const sc = e.target.closest('[data-share-closed]');
   if (sc) {
     const [m, at] = sc.dataset.shareClosed.split('|');
