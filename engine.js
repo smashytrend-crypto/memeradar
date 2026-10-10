@@ -3,15 +3,15 @@
 // cross-origin reads). One engine per network, created the first time the viewer opens it; only
 // the network on screen polls its sources, the others pause (and keep their data for a quick
 // switch back).
-import { Store } from './server/store.js?v=mv29k8ss';
-import { RateLimiter, every, getJSON, num } from './server/util.js?v=mv29k8ss';
-import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=mv29k8ss';
-import { startPumpPortal } from './server/sources/pumpportal.js?v=mv29k8ss';
-import { startDexScreener } from './server/sources/dexscreener.js?v=mv29k8ss';
-import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=mv29k8ss';
-import { startJupiter } from './server/sources/jupiter.js?v=mv29k8ss';
-import { startRugCheck } from './server/sources/rugcheck.js?v=mv29k8ss';
-import { startGoPlus } from './server/sources/goplus.js?v=mv29k8ss';
+import { Store } from './server/store.js?v=mv2bfqxf';
+import { RateLimiter, every, getJSON, num } from './server/util.js?v=mv2bfqxf';
+import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=mv2bfqxf';
+import { startPumpPortal } from './server/sources/pumpportal.js?v=mv2bfqxf';
+import { startDexScreener } from './server/sources/dexscreener.js?v=mv2bfqxf';
+import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=mv2bfqxf';
+import { startJupiter } from './server/sources/jupiter.js?v=mv2bfqxf';
+import { startRugCheck } from './server/sources/rugcheck.js?v=mv2bfqxf';
+import { startGoPlus } from './server/sources/goplus.js?v=mv2bfqxf';
 
 const baseConfig = {
   demo: false,
@@ -55,6 +55,15 @@ function createEngine(chainId) {
   } else {
     src.pump = startPumpPortal(store, baseConfig);
     src.jup = startJupiter(store, baseConfig);
+    store.pumpHook = (m) => {
+      for (const fn of pumpHandlers) {
+        try {
+          fn(m);
+        } catch {
+          /* a listener's own problem */
+        }
+      }
+    };
     src.safety = startRugCheck(store, baseConfig);
   }
   const refresh = (a) => Promise.allSettled([src.dex.refresh(a), src.jup?.refresh(a)]);
@@ -148,6 +157,10 @@ function createEngine(chainId) {
   return {
     chain,
     store,
+    jupRaw: (path, priority) => (src.jup ? src.jup.raw(path, priority) : Promise.reject(new Error('Jupiter: tylko Solana'))),
+    get solPrice() {
+      return store.solPrice;
+    },
     snapshot(view, filters, limit = 100, mints = []) {
       if (view === 'watch') ensureWatched(mints);
       return { t: Date.now(), view, rows: store.list(view, filters, limit, mints), stats: store.stats(), sources: store.sources };
@@ -376,6 +389,7 @@ const jupLim = new RateLimiter(50);
 
 const engines = new Map();
 const feedHandlers = new Set();
+const pumpHandlers = new Set(); // raw PumpPortal launches / migrations (Trenches)
 let current = null;
 
 function use(chainId) {
@@ -429,6 +443,18 @@ export const engine = {
   copies: (mint) => current.copies(mint),
   live: (mint) => current.live(mint),
   candles: (mint, tf) => current.candles(mint, tf),
+  /** Trenches (Solana launchpads): raw Jupiter Tokens API + PumpPortal launches / migrations. */
+  trenches: {
+    jup: (path, priority) => engines.get('solana')?.jupRaw(path, priority) ?? Promise.reject(new Error('Solana nie działa')),
+    onPump: (fn) => pumpHandlers.add(fn),
+    solPrice: () => engines.get('solana')?.solPrice || 0,
+    /** Rows of tokens on a network (its engine's data), loading missing ones on the network on screen. */
+    rows: (chainId, mints) => {
+      const e = engines.get(chainId);
+      return e ? mints.map((m) => e.store.get(m)).filter(Boolean).map((t) => e.store.row(t)) : [];
+    },
+    list: (view, limit = 60) => current.store.list(view, {}, limit),
+  },
   /** The viewer's tracked wallets: [{ a, name, emoji }]. */
   setWallets(list) {
     wallets.clear();

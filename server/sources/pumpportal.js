@@ -1,6 +1,6 @@
 // On-chain stream of pump.fun / bonk.fun launches, trades and migrations via PumpPortal's
 // free WebSocket (https://pumpportal.fun/data-api/real-time). One connection only — their rule.
-import { num } from '../util.js?v=mv29k8ss';
+import { num } from '../util.js?v=mv2bfqxf';
 
 const WS_URL = 'wss://pumpportal.fun/api/data';
 const NAME = 'pumpportal';
@@ -45,6 +45,8 @@ export function startPumpPortal(store, config) {
     if (!msg || typeof msg !== 'object' || !msg.mint) return;
     lastMsg = Date.now();
     const type = String(msg.txType || '').toLowerCase();
+    // Raw launches / migrations for the Trenches screen (works with onlyGraduated too).
+    if (type === 'create' || type.includes('migrat')) store.pumpHook?.(msg);
 
     if (type === 'create') {
       // Tracked wallets launching a token (wallet tracker) — seen even when launches aren't listed.
