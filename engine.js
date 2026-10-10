@@ -3,15 +3,15 @@
 // cross-origin reads). One engine per network, created the first time the viewer opens it; only
 // the network on screen polls its sources, the others pause (and keep their data for a quick
 // switch back).
-import { Store } from './server/store.js?v=mv2dlcgj';
-import { RateLimiter, every, getJSON, num } from './server/util.js?v=mv2dlcgj';
-import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=mv2dlcgj';
-import { startPumpPortal } from './server/sources/pumpportal.js?v=mv2dlcgj';
-import { startDexScreener } from './server/sources/dexscreener.js?v=mv2dlcgj';
-import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=mv2dlcgj';
-import { startJupiter } from './server/sources/jupiter.js?v=mv2dlcgj';
-import { startRugCheck } from './server/sources/rugcheck.js?v=mv2dlcgj';
-import { startGoPlus } from './server/sources/goplus.js?v=mv2dlcgj';
+import { Store } from './server/store.js?v=mv2nguv7';
+import { RateLimiter, every, getJSON, num } from './server/util.js?v=mv2nguv7';
+import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=mv2nguv7';
+import { startPumpPortal } from './server/sources/pumpportal.js?v=mv2nguv7';
+import { startDexScreener } from './server/sources/dexscreener.js?v=mv2nguv7';
+import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=mv2nguv7';
+import { startJupiter } from './server/sources/jupiter.js?v=mv2nguv7';
+import { startRugCheck } from './server/sources/rugcheck.js?v=mv2nguv7';
+import { startGoPlus } from './server/sources/goplus.js?v=mv2nguv7';
 
 const baseConfig = {
   demo: false,
@@ -55,15 +55,6 @@ function createEngine(chainId) {
   } else {
     src.pump = startPumpPortal(store, baseConfig);
     src.jup = startJupiter(store, baseConfig);
-    store.pumpHook = (m) => {
-      for (const fn of pumpHandlers) {
-        try {
-          fn(m);
-        } catch {
-          /* a listener's own problem */
-        }
-      }
-    };
     src.safety = startRugCheck(store, baseConfig);
   }
   const refresh = (a) => Promise.allSettled([src.dex.refresh(a), src.jup?.refresh(a)]);
@@ -157,10 +148,6 @@ function createEngine(chainId) {
   return {
     chain,
     store,
-    jupRaw: (path, priority) => (src.jup ? src.jup.raw(path, priority) : Promise.reject(new Error('Jupiter: tylko Solana'))),
-    get solPrice() {
-      return store.solPrice;
-    },
     snapshot(view, filters, limit = 100, mints = []) {
       if (view === 'watch') ensureWatched(mints);
       return { t: Date.now(), view, rows: store.list(view, filters, limit, mints), stats: store.stats(), sources: store.sources };
@@ -223,19 +210,6 @@ function createEngine(chainId) {
             source = 'chain';
           } else if ((t.chainMiss = (t.chainMiss || 0) + 1) > 5) t.chainBad = true;
         }
-      }
-      // Still on the pump.fun curve: the curve account itself, every second.
-      if (!p && !chain.evm && t.dexId === 'pumpfun' && t.pairAddress && !t.curveBad && store.solPrice > 0) {
-        const c = await rpcCurve(t.pairAddress);
-        if (c.vTok > 0 && c.vSol > 0 && !c.complete) {
-          // The account is verified as pump.fun's curve: its reserves are the price, however fast it runs.
-          p = (c.vSol / c.vTok) * store.solPrice;
-          source = 'chain';
-          t.curveMiss = 0;
-        } else if (c.notCurve || c.complete) {
-          // Not (or no longer) a curve: after a couple of definite answers, stop asking.
-          if ((t.curveMiss = (t.curveMiss || 0) + 1) >= 2) t.curveBad = true;
-        } // network trouble: the aggregators this time, the curve again later
       }
       if (!p && !chain.evm) {
         try {
@@ -398,52 +372,10 @@ async function rpcVaults(pool) {
   }
   return null;
 }
-// pump.fun bonding curve account (the pair DexScreener lists for a token still on its curve):
-// 8-byte discriminator, then virtual token / virtual SOL / real token / real SOL reserves and
-// supply as little-endian u64, and a `complete` flag. Price = virtual SOL / virtual tokens.
-const CURVE_DISC = [23, 183, 248, 55, 96, 216, 172, 96];
-const PUMP_PROGRAM = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
-let rpcDownUntil = 0; // every node failed: give the aggregators the next half minute
-/** { vTok, vSol, complete } | { notCurve: true } (a definite answer) | { err: true } (network). */
-async function rpcCurve(addr) {
-  if (Date.now() < rpcDownUntil) return { err: true };
-  for (let i = 0; i < RPCS.length; i++) {
-    const url = RPCS[(rpcIdx + i) % RPCS.length];
-    try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 2500);
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getAccountInfo', params: [addr, { encoding: 'base64', commitment: 'processed' }] }),
-        signal: ctrl.signal,
-      }).finally(() => clearTimeout(timer));
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
-      if (!json?.result) throw new Error('rpc error'); // node trouble: ask the next one
-      const acc = json.result.value;
-      rpcIdx = (rpcIdx + i) % RPCS.length;
-      // No such account, another program's account or not a bonding curve: definitely not one.
-      if (!acc || acc.owner !== PUMP_PROGRAM || typeof acc.data?.[0] !== 'string') return { notCurve: true };
-      const bin = atob(acc.data[0]);
-      if (bin.length < 49) return { notCurve: true };
-      const u8 = Uint8Array.from(bin, (c) => c.charCodeAt(0));
-      if (CURVE_DISC.some((v, k) => u8[k] !== v)) return { notCurve: true };
-      const dv = new DataView(u8.buffer);
-      const u64 = (o) => Number(dv.getBigUint64(o, true));
-      return { vTok: u64(8) / 1e6, vSol: u64(16) / 1e9, complete: u8[48] === 1 };
-    } catch {
-      /* next node */
-    }
-  }
-  rpcDownUntil = Date.now() + 30_000;
-  return { err: true };
-}
 const jupLim = new RateLimiter(50);
 
 const engines = new Map();
 const feedHandlers = new Set();
-const pumpHandlers = new Set(); // raw PumpPortal launches / migrations (Trenches)
 let current = null;
 
 function use(chainId) {
@@ -497,18 +429,6 @@ export const engine = {
   copies: (mint) => current.copies(mint),
   live: (mint) => current.live(mint),
   candles: (mint, tf) => current.candles(mint, tf),
-  /** Trenches (Solana launchpads): raw Jupiter Tokens API + PumpPortal launches / migrations. */
-  trenches: {
-    jup: (path, priority) => engines.get('solana')?.jupRaw(path, priority) ?? Promise.reject(new Error('Solana nie działa')),
-    onPump: (fn) => pumpHandlers.add(fn),
-    solPrice: () => engines.get('solana')?.solPrice || 0,
-    /** Rows of tokens on a network (its engine's data), loading missing ones on the network on screen. */
-    rows: (chainId, mints) => {
-      const e = engines.get(chainId);
-      return e ? mints.map((m) => e.store.get(m)).filter(Boolean).map((t) => e.store.row(t)) : [];
-    },
-    list: (view, limit = 60) => current.store.list(view, {}, limit),
-  },
   /** The viewer's tracked wallets: [{ a, name, emoji }]. */
   setWallets(list) {
     wallets.clear();

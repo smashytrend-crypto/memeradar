@@ -1,10 +1,6 @@
 // DMN frontend — vanilla JS, no build step. Server pushes snapshots over SSE every 2s;
 // rows are keyed by mint and patched in place (with FLIP re-ordering) so updates stay smooth.
 
-import { iconImg, installIconFallbacks, setHtml } from './img.js?v=mv2dlcgj';
-
-installIconFallbacks();
-
 // Static preview: a snapshot embedded by scripts/build-preview.mjs replaces the server.
 const STATIC = window.__MR_SNAPSHOT || null;
 // Serverless build: the engine runs in this page (web/engine.js).
@@ -163,10 +159,9 @@ function hashHue(str) {
 function avatar(d, size = '') {
   const hue = hashHue(d.m);
   const initials = esc((d.s || d.n || '?').replace(/[^\p{L}\p{N}]/gu, '').slice(0, 2) || '?');
-  // Resized icon from a fast source, with fallbacks (img.js); the initials show until it loads.
-  const img = iconImg(d.i, size === 'xl' ? 58 : size === 'lg' ? 48 : 36, { lazy: size !== 'xl' });
+  const img = safeUrl(d.i);
   return `<div class="av ${size}" style="background:linear-gradient(135deg,hsl(${hue},70%,45%),hsl(${(hue + 50) % 360},75%,35%))">
-    <span class="av-i">${initials}</span>${img}
+    <span class="av-i">${initials}</span>${img ? `<img src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">` : ''}
     <span class="av-live"></span></div>`;
 }
 
@@ -1452,21 +1447,18 @@ function renderPositions() {
   const html = summary + `<h3 class="pos-h">Otwarte (${list.length})</h3>` + cards + history + pnlCalendar();
   if (body.dataset.html !== html) {
     body.dataset.html = html;
-    setHtml(body, html);
+    body.innerHTML = html;
   }
 }
 
 // ---------- demo wallet screen ----------
 function renderWallet() {
-  // Spot (memecoin positions), Trenches or Perpetuals: three separate demo wallets.
-  const mode = state.walletMode;
-  const perpMode = mode === 'perps';
-  $('#walletBody').hidden = mode !== 'spot';
+  // Spot (memecoin positions) or Perpetuals: two separate demo wallets.
+  const perpMode = state.walletMode === 'perps';
+  $('#walletBody').hidden = perpMode;
   $('#walletPerpBody').hidden = !perpMode;
-  $('#walletTrenchBody').hidden = mode !== 'trench';
-  $$('#walletSeg button').forEach((b) => b.classList.toggle('on', b.dataset.wmode === mode));
+  $$('#walletSeg button').forEach((b) => b.classList.toggle('on', (b.dataset.wmode === 'perps') === perpMode));
   if (perpMode) return perps ? perps.renderWallet($('#walletPerpBody')) : ($('#walletPerpBody').innerHTML = '<p class="note">Perpetuals ładują się…</p>');
-  if (mode === 'trench') return trenches ? trenches.renderWallet($('#walletTrenchBody')) : ($('#walletTrenchBody').innerHTML = '<p class="note">Trenches ładują się…</p>');
   const w = state.wallet;
   const list = positionList();
   const inPos = list.reduce((a, x) => a + (x.p.w ? x.value ?? x.p.usd ?? 0 : 0), 0);
@@ -1513,7 +1505,7 @@ function renderWallet() {
     const el = body.querySelector(id);
     if (el.dataset.html !== html) {
       el.dataset.html = html;
-      setHtml(el, html);
+      el.innerHTML = html;
     }
   };
   put('#wCard', card);
@@ -1523,11 +1515,11 @@ function renderWallet() {
   put('#wHist', hist);
 }
 
-const SHEETS = { pos: ['#posSheet', renderPositions], wallet: ['#walletSheet', renderWallet], perps: ['#perpSheet', () => perps?.render()], trench: ['#trenchSheet', () => trenches?.render()] };
+const SHEETS = { pos: ['#posSheet', renderPositions], wallet: ['#walletSheet', renderWallet], perps: ['#perpSheet', () => perps?.render()] };
 // While a finger is on a sheet, live re-renders wait: replacing a button mid-tap loses the tap
 // on iOS Safari.
 let sheetTouch = 0;
-for (const sel of ['#posSheet', '#walletSheet', '#perpSheet', '#trenchSheet']) {
+for (const sel of ['#posSheet', '#walletSheet', '#perpSheet']) {
   $(sel).addEventListener('touchstart', () => (sheetTouch = Date.now() + 60_000), { passive: true });
   for (const ev of ['touchend', 'touchcancel']) $(sel).addEventListener(ev, () => (sheetTouch = Date.now() + 400), { passive: true });
 }
@@ -1548,11 +1540,10 @@ function openSheet(name) {
   $(SHEETS[name][0]).scrollTop = 0;
 }
 // Perpetuals DEMO (live Hyperliquid data; own wallet).
-const WALLET_MODES = ['spot', 'trench', 'perps'];
-state.walletMode = WALLET_MODES.includes(LS.get('walletMode', 'spot')) ? LS.get('walletMode', 'spot') : 'spot';
+state.walletMode = LS.get('walletMode', 'spot') === 'perps' ? 'perps' : 'spot';
 // Loaded as its own module: if it can't load (e.g. the single-file preview), only perps are off.
 let perps = null;
-import('./perps.js?v=mv2dlcgj')
+import('./perps.js?v=mv2nguv7')
   .then(({ createPerps }) => {
     perps = createPerps({
       toast: (m) => toast(m),
@@ -1567,44 +1558,16 @@ import('./perps.js?v=mv2dlcgj')
   .catch(() => {
     $('#perpBody').innerHTML = '<div class="empty"><b>Perpetuals niedostępne</b>Nie udało się wczytać modułu.</div>';
   });
-// Trenches DEMO (launchpad columns, one-tap memecoin trading; own wallet per network).
-let trenches = null;
-if (ENGINE?.trenches)
-  import('./trenches.js?v=mv2dlcgj')
-    .then(({ createTrenches }) => {
-      trenches = createTrenches({
-        engine: ENGINE,
-        chains: CHAIN_LIST || [],
-        chain: () => ENGINE.chain,
-        setChain: (id) => setChain(id),
-        nativeUsd: (c) => state.nativeUsd[c] || 0,
-        toast: (m) => toast(m),
-        loadLW: () => loadLW(),
-        nav: (where) => (where === 'wallet' ? openWallet('trench') : openSheet(where)),
-      });
-      renderTrenchCount();
-      if (sheetOpen('trench')) trenches.render();
-      if (sheetOpen('wallet')) renderWallet();
-    })
-    .catch(() => {
-      $('#trenchBody').innerHTML = '<div class="empty"><b>Trenches niedostępne</b>Nie udało się wczytać modułu.</div>';
-    });
-else $('#trenchBody').innerHTML = '<div class="empty"><b>Trenches działają w wersji przeglądarkowej</b>Otwórz stronę DMN.</div>';
-function renderTrenchCount() {
-  const el = $('#c-trench');
-  if (el) el.textContent = trenches?.count() || '';
-}
-setInterval(renderTrenchCount, 3_000);
-/** Opens the wallet on one of its sides: Spot (memecoins), Trenches or Perpetuals. */
+/** Opens the wallet on its Spot (memecoins) or Perpetuals side. */
 function openWallet(mode) {
-  state.walletMode = WALLET_MODES.includes(mode) ? mode : 'spot';
+  state.walletMode = mode === 'perps' ? 'perps' : 'spot';
   LS.set('walletMode', state.walletMode);
   openSheet('wallet');
 }
 $('#walletSeg').addEventListener('click', (e) => {
   const b = e.target.closest('[data-wmode]');
   if (!b) return;
-  state.walletMode = WALLET_MODES.includes(b.dataset.wmode) ? b.dataset.wmode : 'spot';
+  state.walletMode = b.dataset.wmode === 'perps' ? 'perps' : 'spot';
   LS.set('walletMode', state.walletMode);
   renderWallet();
 });
@@ -1730,9 +1693,6 @@ function setChain(id) {
   renderWatchCount();
   renderPosCount();
   setView(state.view === 'watch' ? 'hype' : state.view);
-  trenches?.chainChanged();
-  renderTrenchCount();
-  if (sheetOpen('wallet')) renderWallet();
 }
 
 /** Watched tokens of the network on screen: by the network they were starred on (older entries
@@ -2267,7 +2227,7 @@ function renderDetail(d) {
     if (el) {
       // Inner scroll boxes (trades tables) keep their position across the refresh.
       const keep = [...el.querySelectorAll('.tr-wrap')].map((w) => w.scrollTop);
-      setHtml(el, html);
+      el.innerHTML = html;
       el.querySelectorAll('.tr-wrap').forEach((w, i) => {
         if (keep[i]) w.scrollTop = keep[i];
       });
@@ -2838,9 +2798,6 @@ $('#walletSheet').addEventListener('click', (e) => {
   }
 });
 $('#perpSheet').addEventListener('click', (e) => {
-  if (e.target.closest('[data-sheet-close]')) closeSheets();
-});
-$('#trenchSheet').addEventListener('click', (e) => {
   if (e.target.closest('[data-sheet-close]')) closeSheets();
 });
 $('#posSheet').addEventListener('click', (e) => {

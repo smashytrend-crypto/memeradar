@@ -1,6 +1,6 @@
 // Jupiter Tokens API v2 (https://dev.jup.ag/docs/tokens): trending / organic lists, holder counts,
 // organic score, audit (mint/freeze authority, top holders) and bonding-curve progress. Also SOL price.
-import { RateLimiter, errMsg, every, getJSON, isMint, num, toMs } from '../util.js?v=mv2dlcgj';
+import { RateLimiter, errMsg, every, getJSON, isMint, num, toMs } from '../util.js?v=mv2nguv7';
 
 const BASE = 'https://lite-api.jup.ag';
 const NAME = 'jupiter';
@@ -65,7 +65,7 @@ export function jupToPatch(j) {
 }
 
 export function startJupiter(store) {
-  const lim = new RateLimiter(50);
+  const lim = new RateLimiter(40);
   let okCount = 0;
   const ok = () => store.setSource(NAME, 'ok', `OK · ${++okCount} odświeżeń`);
   const fail = (err) => {
@@ -145,15 +145,6 @@ export function startJupiter(store) {
   );
 
   return {
-    /** Raw Tokens API reply through the shared budget (Trenches); `priority`: the viewer waits. */
-    async raw(path, priority = false) {
-      try {
-        return await lim.run(() => getJSON(`${BASE}/${path}`), priority);
-      } catch (err) {
-        if (err?.status === 429) lim.pause(30_000);
-        throw err;
-      }
-    },
     async refresh(mint) {
       return apply(await lim.run(() => getJSON(`${BASE}/tokens/v2/search?query=${mint}`)));
     },

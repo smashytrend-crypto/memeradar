@@ -9,11 +9,8 @@
   <link rel="icon" href="favicon.svg" type="image/svg+xml" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <!-- Token icons: pump.fun's IPFS gateway and the wsrv.nl image proxy (see img.js). -->
-  <link rel="preconnect" href="https://pump.mypinata.cloud" />
-  <link rel="preconnect" href="https://wsrv.nl" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=mv2dlcgj" />
+  <link rel="stylesheet" href="styles.css?v=mv2nguv7" />
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -190,20 +187,10 @@
       <button class="d-close" data-sheet-close aria-label="Zamknij">✕</button>
     </div>
     <div class="sheet-body">
-      <div class="pf-seg wallet-seg" id="walletSeg"><button data-wmode="spot">Spot</button><button data-wmode="trench">Trenches</button><button data-wmode="perps">Perpetuals</button></div>
+      <div class="pf-seg wallet-seg" id="walletSeg"><button data-wmode="spot">Spot (memecoiny)</button><button data-wmode="perps">Perpetuals</button></div>
     </div>
     <div class="sheet-body" id="walletBody"></div>
     <div class="sheet-body" id="walletPerpBody" hidden></div>
-    <div class="sheet-body" id="walletTrenchBody" hidden></div>
-  </section>
-
-  <!-- Trenches DEMO: launchpad columns + one-tap memecoin trading (from the bottom bar) -->
-  <section class="sheet" id="trenchSheet" hidden aria-label="Trenches DEMO">
-    <div class="sheet-head">
-      <h2>🔥 Trenches <span class="demo-tag">DEMO</span></h2>
-      <button class="d-close" data-sheet-close aria-label="Zamknij">✕</button>
-    </div>
-    <div class="sheet-body" id="trenchBody"></div>
   </section>
 
   <!-- Perpetuals DEMO on live Hyperliquid data (from the bottom bar) -->
@@ -220,7 +207,6 @@
     <button data-nav="radar" class="on"><svg class="bi" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/><path d="M12 12l5.5-5.5"/><circle cx="12" cy="12" r="1" class="dot"/></svg><span class="bl">Radar</span></button>
     <button data-nav="pos"><svg class="bi" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="7.5" width="17" height="12" rx="2.5"/><path d="M9 7.5V6a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v1.5M3.5 12.5h17"/></svg><span class="bl">Pozycje</span><span class="bb-count" id="c-pos"></span></button>
     <button data-nav="wallet"><svg class="bi" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5A2.5 2.5 0 0 1 6.5 5H17a1 1 0 0 1 1 1v1.5"/><rect x="4" y="7.5" width="16" height="11.5" rx="2.5"/><path d="M20 11h-3.5a2 2 0 0 0 0 4H20"/><circle cx="16.6" cy="13" r=".6" class="dot"/></svg><span class="bl">Wallet</span></button>
-    <button data-nav="trench"><svg class="bi" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3c.5 3.2 4.5 5 4.5 9.5A4.5 4.5 0 0 1 12 17a4.5 4.5 0 0 1-4.5-4.5c0-2 1-3.2 2-4.3.3 1.6 1 2.4 2 2.8C11.4 8.5 11 5.6 12 3z"/><path d="M5 21h14"/></svg><span class="bl">Trenches</span><span class="bb-count" id="c-trench"></span></button>
     <button data-nav="perps"><svg class="bi" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v3M7 15v5M17 4v5M17 17v3"/><rect x="5" y="7" width="4" height="8" rx="1"/><rect x="15" y="9" width="4" height="8" rx="1"/></svg><span class="bl">Perpy</span><span class="bb-count" id="c-perp"></span></button>
   </nav>
 
@@ -228,6 +214,6 @@
     Dane: PumpPortal (on-chain), DexScreener, GeckoTerminal, Jupiter, RugCheck, GoPlus, X API. To nie jest porada inwestycyjna — memecoiny są skrajnie ryzykowne.
   </footer>
 
-  <script type="module" src="boot.js?v=mv2dlcgj"></script>
+  <script type="module" src="boot.js?v=mv2nguv7"></script>
 </body>
 </html>
