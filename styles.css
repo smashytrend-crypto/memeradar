@@ -1173,3 +1173,10 @@ svg.candles .th { fill: #e4c15a; stroke: #0b0f17; stroke-width: 1.2; }
 .tk-kolhead { display: flex; align-items: center; justify-content: space-between; }
 .tk-pnl { font-weight: 800; }
 .tk-pnl small { font-weight: 600; opacity: 0.85; }
+.tk-status button + button { margin-left: 0; }
+.tk-status button.on { border-color: var(--accent); }
+.tk-diag { margin-bottom: 10px; font-size: 12px; }
+.tk-diag > div { padding: 5px 0; border-bottom: 1px solid var(--line); line-height: 1.45; word-break: break-word; }
+.tk-diag b { color: var(--text); }
+.tk-rpc { margin: 12px 0 8px; }
+.tk-rpc .pf-field input { text-align: left; font-size: 13px; }

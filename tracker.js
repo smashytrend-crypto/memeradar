@@ -4,8 +4,8 @@
 // swap (track-parse.js). When the WebSocket is unavailable it falls back to polling each wallet's
 // latest signatures. Token names, icons and market caps come from Jupiter's Tokens API.
 
-import { parseSwap, looksLikeSwap, sellPnl } from './track-parse.js?v=mv2oem6j';
-import { KOLS } from './kols.js?v=mv2oem6j';
+import { parseSwap, looksLikeSwap, sellPnl } from './track-parse.js?v=mv2qi6wu';
+import { KOLS } from './kols.js?v=mv2qi6wu';
 
 const RPCS = ['https://solana-rpc.publicnode.com', 'https://api.mainnet-beta.solana.com'];
 const WSS = ['wss://solana-rpc.publicnode.com', 'wss://api.mainnet-beta.solana.com'];
@@ -56,7 +56,7 @@ export function createTracker({ getWallets, addWallet, removeWallet, toast, solU
   const saveAct = () => ls.set(ACT_KEY, act);
   let feed = (ls.get(FEED_KEY, []) || []).filter((x) => x?.sig && x.w && Date.now() - x.t < 2 * DAY);
   const seen = new Set(feed.map((x) => x.sig));
-  const S = { subFail: new Map(), solPx: 0, txc: new Map(), pnlBusy: false, seedBudget: 60, ws: null, wsOk: false, wsFails: 0, wsIdx: 0, subs: new Map(), pending: new Map(), subOf: new Map(), lastMsg: 0, mode: 'ws', tokens: new Map(), tokQ: new Set(), dirty: true, polled: new Map(), lastSig: new Map() };
+  const S = { st: { polls: 0, rpcOk: 0, rpcErr: 0, lastRpcErr: '', txOk: 0, txNull: 0, swaps: 0 }, subFail: new Map(), solPx: 0, txc: new Map(), pnlBusy: false, seedBudget: 60, ws: null, wsOk: false, wsFails: 0, wsIdx: 0, subs: new Map(), pending: new Map(), subOf: new Map(), lastMsg: 0, mode: 'ws', tokens: new Map(), tokQ: new Set(), dirty: true, polled: new Map(), lastSig: new Map() };
 
   // ---------- wallets ----------
   /** Everyone tracked: own wallets first (they win on duplicates), then the KOL list. */
@@ -110,19 +110,24 @@ export function createTracker({ getWallets, addWallet, removeWallet, toast, solU
       });
     pump();
   }
+  const rpcUrls = () => (String(set.rpc || '').trim() ? [String(set.rpc).trim(), ...RPCS] : RPCS);
   async function call(method, params) {
     let err;
-    for (let i = 0; i < RPCS.length; i++) {
-      const url = RPCS[(rpcIdx + i) % RPCS.length];
+    const urls = rpcUrls();
+    for (let i = 0; i < urls.length; i++) {
+      const url = urls[(rpcIdx + i) % urls.length];
       try {
         const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: AbortSignal.timeout(10_000) });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const j = await res.json();
         if (j.error) throw new Error(j.error.message || 'RPC error');
-        rpcIdx = (rpcIdx + i) % RPCS.length;
+        rpcIdx = (rpcIdx + i) % urls.length;
+        S.st.rpcOk++;
         return j.result;
       } catch (e) {
         err = e;
+        S.st.rpcErr++;
+        S.st.lastRpcErr = `${url.replace(/^https?:\/\//, '').replace(/\?.*$/, '').slice(0, 30)}: ${e?.message || e}`.slice(0, 90);
       }
     }
     throw err || new Error('RPC niedostępne');
@@ -141,6 +146,7 @@ export function createTracker({ getWallets, addWallet, removeWallet, toast, solU
     }
     // Just landed: the node may not serve it yet.
     if (!tx) {
+      S.st.txNull++;
       if (tries < 3) setTimeout(() => readTx(sig, wallet, tries + 1), 1500 * (tries + 1));
       else inflight.delete(sig);
       return;
@@ -148,9 +154,11 @@ export function createTracker({ getWallets, addWallet, removeWallet, toast, solU
     inflight.delete(sig);
     if (seen.has(sig)) return;
     seen.add(sig);
+    S.st.txOk++;
     const tr = parseSwap(tx, wallet);
     act[wallet] = { ...(act[wallet] || {}), t: Math.max(act[wallet]?.t || 0, tx.blockTime ? tx.blockTime * 1000 : 0), at: act[wallet]?.at || Date.now() };
     if (!tr) return;
+    S.st.swaps++;
     const item = { ...tr, w: wallet };
     feed.unshift(item);
     feed.sort((a, b) => b.t - a.t);
@@ -167,105 +175,168 @@ export function createTracker({ getWallets, addWallet, removeWallet, toast, solU
     }
   }
 
-  // ---------- live: WebSocket logsSubscribe per wallet ----------
+  // ---------- live: WebSocket logsSubscribe per wallet, spread over every endpoint ----------
+  // Free nodes cap or drop big subscription sets: each endpoint gets its own connection and at
+  // most PER_CONN wallets; a cheap request every 30 s keeps idle connections open.
+  const PER_CONN = 75;
   let rid = 1;
+  const conns = [];
+  function endpoints() {
+    const own = String(set.rpc || '').trim();
+    const ws = own ? [own.replace(/^http/i, 'ws')] : [];
+    return [...ws, ...WSS];
+  }
+  function connFor(url) {
+    let c = conns.find((x) => x.url === url);
+    if (!c) conns.push((c = { url, ws: null, subs: new Map(), pending: new Map(), subOf: new Map(), ok: 0, err: 0, lastErr: '', notes: 0, lastNote: 0, lastMsg: 0, fails: 0, retryAt: 0, state: 'idle' }));
+    return c;
+  }
+  /** Which wallets each connection should carry. */
+  function plan() {
+    const urls = endpoints();
+    const live = liveList().map((w) => w.a);
+    const out = new Map(urls.map((u) => [u, []]));
+    live.forEach((a, i) => {
+      const u = urls[i % urls.length];
+      if (out.get(u).length < PER_CONN) out.get(u).push(a);
+    });
+    return out;
+  }
   function wsConnect() {
-    if (S.ws || !set.on || document.hidden) return;
-    const url = WSS[S.wsIdx % WSS.length];
-    let ws;
-    try {
-      ws = new WebSocket(url);
-    } catch {
-      return wsFail();
-    }
-    S.ws = ws;
-    S.subs.clear();
-    S.pending.clear();
-    S.subOf.clear();
-    const timer = setTimeout(() => ws.readyState === 0 && ws.close(), 10_000);
-    ws.onopen = () => {
-      clearTimeout(timer);
-      S.lastMsg = Date.now();
-      syncSubs();
-    };
-    ws.onmessage = (ev) => {
-      S.lastMsg = Date.now();
-      let m;
+    if (!set.on || document.hidden || typeof WebSocket === 'undefined') return;
+    const want = plan();
+    for (const c of conns) if (!want.has(c.url) && c.ws) c.ws.close();
+    for (const [url, list] of want) {
+      const c = connFor(url);
+      if (!list.length) continue;
+      if (c.ws) {
+        if (c.ws.readyState === 1) syncConn(c, list);
+        continue;
+      }
+      if (Date.now() < c.retryAt) continue;
+      let ws;
       try {
-        m = JSON.parse(ev.data);
-      } catch {
-        return;
+        ws = new WebSocket(url);
+      } catch (e) {
+        c.lastErr = e?.message || 'WebSocket';
+        c.retryAt = Date.now() + 15_000;
+        continue;
       }
-      if (m.id && S.pending.has(m.id)) {
-        const a = S.pending.get(m.id);
-        S.pending.delete(m.id);
-        if (typeof m.result === 'number') {
-          S.subs.set(a, m.result);
-          S.subOf.set(m.result, a);
-          S.wsOk = true;
-          S.wsFails = 0;
-          S.mode = 'ws';
-          S.subFail.delete(a);
-        } else {
-          // Refused (often a subscription limit): back off for that wallet, longer each time.
-          const f = S.subFail.get(a) || { n: 0 };
-          f.n++;
-          f.until = Date.now() + Math.min(30 * 60_000, 15_000 * 2 ** f.n);
-          S.subFail.set(a, f);
-        }
-        return;
-      }
-      if (m.method === 'logsNotification') {
-        const v = m.params?.result?.value;
-        const a = S.subOf.get(m.params?.subscription);
-        if (!a || !v?.signature || v.err || seen.has(v.signature)) return;
-        if (looksLikeSwap(v.logs)) readTx(v.signature, a);
-        else act[a] = { ...(act[a] || {}), t: Date.now(), at: act[a]?.at || Date.now() };
-      }
-    };
-    ws.onclose = ws.onerror = () => {
-      clearTimeout(timer);
-      if (S.ws !== ws) return;
-      S.ws = null;
-      S.wsOk = false;
-      S.subs.clear();
-      S.subOf.clear();
-      wsFail();
-    };
-  }
-  function wsFail() {
-    S.wsFails++;
-    S.wsIdx++;
-    // Neither WebSocket works here: poll the wallets instead.
-    if (S.wsFails >= 4) S.mode = 'poll';
-    S.dirty = true;
-  }
-  function syncSubs() {
-    const ws = S.ws;
-    if (!ws || ws.readyState !== 1) return;
-    const want = new Set(liveList().map((w) => w.a));
-    for (const a of want) {
-      if (S.subs.has(a) || [...S.pending.values()].includes(a) || S.subFail.get(a)?.until > Date.now()) continue;
-      const id = rid++;
-      S.pending.set(id, a);
-      ws.send(JSON.stringify({ jsonrpc: '2.0', id, method: 'logsSubscribe', params: [{ mentions: [a] }, { commitment: 'confirmed' }] }));
-    }
-    for (const [a, sub] of S.subs) {
-      if (want.has(a)) continue;
-      ws.send(JSON.stringify({ jsonrpc: '2.0', id: rid++, method: 'logsUnsubscribe', params: [sub] }));
-      S.subs.delete(a);
-      S.subOf.delete(sub);
+      c.ws = ws;
+      c.state = 'łączę';
+      c.subs.clear();
+      c.pending.clear();
+      c.subOf.clear();
+      const timer = setTimeout(() => ws.readyState === 0 && ws.close(), 10_000);
+      ws.onopen = () => {
+        clearTimeout(timer);
+        c.state = 'połączony';
+        c.lastMsg = Date.now();
+        syncConn(c, plan().get(url) || []);
+      };
+      ws.onmessage = (ev) => onWsMsg(c, ev);
+      ws.onclose = ws.onerror = (ev) => {
+        clearTimeout(timer);
+        if (c.ws !== ws) return;
+        c.ws = null;
+        c.state = 'rozłączony';
+        c.subs.clear();
+        c.subOf.clear();
+        c.pending.clear();
+        c.fails++;
+        c.lastErr = ev?.code ? `zamknięte (${ev.code})` : 'błąd połączenia';
+        c.retryAt = Date.now() + Math.min(120_000, 3_000 * 2 ** Math.min(c.fails, 6));
+        S.dirty = true;
+      };
     }
   }
-
-  // ---------- activity checks + polling fallback ----------
-  async function checkWallet(w, seed) {
-    let sigs;
+  function onWsMsg(c, ev) {
+    c.lastMsg = Date.now();
+    let m;
     try {
-      sigs = await rpc('getSignaturesForAddress', [w.a, { limit: seed ? 10 : 5 }]);
+      m = JSON.parse(ev.data);
     } catch {
       return;
     }
+    if (m.id && c.pending.has(m.id)) {
+      const a = c.pending.get(m.id);
+      c.pending.delete(m.id);
+      if (typeof m.result === 'number') {
+        c.subs.set(a, m.result);
+        c.subOf.set(m.result, a);
+        c.ok++;
+        c.fails = 0;
+        S.subFail.delete(a);
+      } else {
+        // Refused (often a subscription limit): back off for that wallet, longer each time.
+        c.err++;
+        c.lastErr = m.error?.message || 'subskrypcja odrzucona';
+        const f = S.subFail.get(a) || { n: 0 };
+        f.n++;
+        f.until = Date.now() + Math.min(30 * 60_000, 15_000 * 2 ** f.n);
+        S.subFail.set(a, f);
+      }
+      S.dirty = true;
+      return;
+    }
+    if (m.method === 'logsNotification') {
+      const v = m.params?.result?.value;
+      const a = c.subOf.get(m.params?.subscription);
+      if (!a || !v?.signature) return;
+      c.notes++;
+      c.lastNote = Date.now();
+      if (v.err || seen.has(v.signature)) return;
+      act[a] = { ...(act[a] || {}), t: Date.now(), at: act[a]?.at || Date.now() };
+      if (looksLikeSwap(v.logs)) readTx(v.signature, a);
+    }
+  }
+  function syncConn(c, list) {
+    const ws = c.ws;
+    if (!ws || ws.readyState !== 1) return;
+    const want = new Set(list);
+    const pendingSet = new Set(c.pending.values());
+    for (const a of want) {
+      if (c.subs.has(a) || pendingSet.has(a) || S.subFail.get(a)?.until > Date.now()) continue;
+      const id = rid++;
+      c.pending.set(id, a);
+      ws.send(JSON.stringify({ jsonrpc: '2.0', id, method: 'logsSubscribe', params: [{ mentions: [a] }, { commitment: 'confirmed' }] }));
+    }
+    for (const [a, sub] of c.subs) {
+      if (want.has(a)) continue;
+      ws.send(JSON.stringify({ jsonrpc: '2.0', id: rid++, method: 'logsUnsubscribe', params: [sub] }));
+      c.subs.delete(a);
+      c.subOf.delete(sub);
+    }
+  }
+  function syncSubs() {
+    wsConnect();
+  }
+  const subCount = () => conns.reduce((s, c) => s + (c.ws?.readyState === 1 ? c.subs.size : 0), 0);
+  /** Live signals arriving lately: polling can slow down. */
+  const wsHealthy = () => conns.some((c) => c.ws?.readyState === 1 && c.subs.size > 0 && Date.now() - c.lastNote < 120_000);
+  function keepAlive() {
+    for (const c of conns) {
+      if (c.ws?.readyState !== 1) continue;
+      // Any request counts as traffic; this one is answered with a small error.
+      try {
+        c.ws.send(JSON.stringify({ jsonrpc: '2.0', id: rid++, method: 'getHealth' }));
+      } catch {
+        /* closing */
+      }
+      // Open but silent for 5 minutes with wallets subscribed: start over.
+      if (c.subs.size > 10 && Date.now() - c.lastMsg > 300_000) c.ws.close();
+    }
+  }
+
+  // ---------- activity checks + polling (always on: the safety net for missed signals) ----------
+  async function checkWallet(w, seed) {
+    let sigs;
+    try {
+      sigs = await rpc('getSignaturesForAddress', [w.a, { limit: seed ? 10 : 8 }]);
+    } catch {
+      return;
+    }
+    S.st.polls++;
     const ok = (sigs || []).filter((s) => !s.err && s.blockTime);
     act[w.a] = { t: ok[0] ? ok[0].blockTime * 1000 : act[w.a]?.t || 0, at: Date.now() };
     saveAct();
@@ -277,36 +348,53 @@ export function createTracker({ getWallets, addWallet, removeWallet, toast, solU
       fresh.push(s);
     }
     if (ok[0]) S.lastSig.set(w.a, ok[0].signature);
-    // Seeding: the last few hours of trades; polling: whatever is new since the last look.
-    // (the history fetched at start is capped: ~200 KOLs would flood the free RPC)
-    const horizon = seed ? 6 * 3_600_000 : 30 * 60_000;
-    const n = seed ? Math.min(w.mine ? 3 : 1, S.seedBudget) : 6;
+    // Seeding: the last few hours of trades (capped: ~200 KOLs would flood the free RPC);
+    // polling: whatever is new since the last look.
+    const horizon = seed ? 6 * 3_600_000 : 60 * 60_000;
+    const n = seed ? Math.min(w.mine ? 3 : 1, S.seedBudget) : 8;
     for (const s of fresh.slice(0, n)) {
       if (Date.now() - s.blockTime * 1000 >= horizon || seen.has(s.signature)) continue;
       if (seed) S.seedBudget--;
       readTx(s.signature, w.a);
     }
   }
-  let checkTurn = 0;
+  /** How often a followed wallet is polled: own ones and the busiest KOLs most often. */
+  function pollEvery(w) {
+    const healthy = wsHealthy() && conns.some((c) => c.subs.has(w.a));
+    if (healthy) return w.mine ? 60_000 : 300_000; // live signals cover it: polling only as a net
+    if (w.mine) return 15_000;
+    const since = act[w.a]?.t ? Date.now() - act[w.a].t : Infinity;
+    return since < 3_600_000 ? 45_000 : since < DAY ? 180_000 : 600_000;
+  }
+  let bgTurn = 0;
   function background() {
-    if (!set.on || document.hidden) return;
+    if (!set.on || document.hidden || queue.length > 3) return;
+    bgTurn++;
+    // The most overdue followed wallet first.
+    // (own wallets before KOLs; a wallet never polled counts from its activity check)
+    let best = null;
+    let late = 0;
+    for (const mineFirst of [true, false]) {
+      for (const w of liveList()) {
+        if (!!w.mine !== mineFirst) continue;
+        const over = Date.now() - (S.polled.get(w.a) || act[w.a]?.at || 0) - pollEvery(w);
+        if (over > late) (late = over), (best = w);
+      }
+      if (best) break;
+    }
+    // Activity checks (once per 30 min each, own wallets first) when nothing is overdue, and
+    // every third turn anyway so the first pass over ~200 KOLs ends in minutes.
     const all = universe().filter((w) => !set.off[w.a]);
-    // Activity: every wallet checked once per 30 min — own wallets first; at most ~1 request a second.
     const stale = all.filter((w) => Date.now() - (act[w.a]?.at || 0) > 30 * 60_000).sort((x, y) => (y.mine ? 1 : 0) - (x.mine ? 1 : 0));
-    if (stale.length && queue.length < 3 && (checkTurn++ % (S.mode === 'poll' ? 2 : 1) === 0)) {
+    if (stale.length && (!best || bgTurn % 3 === 0)) {
       const w = stale[0];
       act[w.a] = { ...(act[w.a] || {}), at: Date.now() - 29 * 60_000 }; // not twice at once
-      checkWallet(w, !S.lastSig.has(w.a));
+      S.polled.set(w.a, Date.now());
+      return void checkWallet(w, !S.lastSig.has(w.a));
     }
-    // Polling mode: each followed wallet in turn.
-    if (S.mode === 'poll' && queue.length < 4) {
-      const live = liveList();
-      const w = live.sort((x, y) => (S.polled.get(x.a) || 0) - (S.polled.get(y.a) || 0))[0];
-      if (w && Date.now() - (S.polled.get(w.a) || 0) > Math.max(15_000, live.length * 700)) {
-        S.polled.set(w.a, Date.now());
-        checkWallet(w, false);
-      }
-    }
+    if (!best) return;
+    S.polled.set(best.a, Date.now());
+    checkWallet(best, !S.lastSig.has(best.a));
   }
 
   // ---------- PnL of sells: the wallet's token-account history, average cost ----------
@@ -401,9 +489,26 @@ export function createTracker({ getWallets, addWallet, removeWallet, toast, solU
   };
   function statusHtml() {
     const live = liveList().length;
-    const st = !set.on ? ['off', 'Wyłączony'] : S.mode === 'ws' && S.wsOk ? ['ok', `Na żywo · ${S.subs.size}/${live} portfeli`] : S.mode === 'poll' ? ['warn', `Odpytywanie co kilkanaście s · ${live} portfeli`] : ['warn', 'Łączenie z Solaną…'];
-    return `<div class="tk-status ${st[0]}"><i></i><span>${st[1]}</span><button data-tk-on>${set.on ? 'Wyłącz' : 'Włącz'}</button></div>
+    const subs = subCount();
+    const st = !set.on ? ['off', 'Wyłączony'] : wsHealthy() ? ['ok', `Na żywo · ${subs}/${live} portfeli`] : S.st.rpcOk ? ['warn', `Odpytywanie portfeli po kolei · ${live}${subs ? ` · WebSocket ${subs}` : ''}`] : ['warn', 'Łączenie z Solaną…'];
+    return `<div class="tk-status ${st[0]}"><i></i><span>${st[1]}</span><button data-tk-diag class="${S.diag ? 'on' : ''}">🩺</button><button data-tk-on>${set.on ? 'Wyłącz' : 'Włącz'}</button></div>${S.diag ? diagHtml() : ''}
       <div class="pf-seg tk-tabs"><button data-tk-tab="live" class="${set.tab === 'live' ? 'on' : ''}">Na żywo</button><button data-tk-tab="wallets" class="${set.tab === 'wallets' ? 'on' : ''}">Portfele <small>${universe().length}</small></button></div>`;
+  }
+  /** What the connection is doing: enough to tell from one screenshot what fails. */
+  function diagHtml() {
+    const now = Date.now();
+    const st = S.st;
+    const rows = endpoints().map((u) => {
+      const c = conns.find((x) => x.url === u);
+      const name = u.replace(/^wss?:\/\//, '').replace(/\?.*$/, '');
+      if (!c) return `<div><b>${esc(name)}</b> <span class="muted">nieużywany</span></div>`;
+      return `<div><b>${esc(name)}</b> ${esc(c.ws?.readyState === 1 ? 'połączony' : c.state)} · subskrypcje ${c.subs.size} ✓ / ${c.err} ✗ · sygnały ${c.notes}${c.lastNote ? ` (ostatni ${ago(c.lastNote, now)} temu)` : ''}${c.lastErr ? `<br><small class="down">${esc(c.lastErr)}</small>` : ''}</div>`;
+    });
+    return `<div class="card tk-diag"><h3>🩺 Diagnostyka</h3>${rows.join('')}
+      <div><b>RPC</b> ok ${st.rpcOk} · błędy ${st.rpcErr} · kolejka ${queue.length}${st.lastRpcErr ? `<br><small class="down">${esc(st.lastRpcErr)}</small>` : ''}</div>
+      <div><b>Transakcje</b> odczytane ${st.txOk} · jeszcze niedostępne ${st.txNull} · kupna/sprzedaże ${st.swaps} · odpytania portfeli ${st.polls}</div>
+      <div><b>Portfele</b> śledzone ${liveList().length} z ${universe().length} · sprawdzona aktywność ${universe().filter((w) => act[w.a]?.at).length}</div>
+    </div>`;
   }
   function tradeView(x, wmap, su) {
     const w = wmap.get(x.w) || { name: short(x.w), emoji: '👛' };
@@ -508,6 +613,9 @@ export function createTracker({ getWallets, addWallet, removeWallet, toast, solU
       <div class="tk-kolhead"><h3 class="pos-h">⭐ KOL-e z kolscan.io (${KOLS.length})</h3><button class="tk-tg ${set.kol ? 'on' : ''}" data-tk-kol>${set.kol ? 'ON' : 'OFF'}</button></div>
       <label class="toggle-row"><input type="checkbox" data-tk-hide ${set.hide ? 'checked' : ''} /> <span>Śledź tylko aktywnych KOL-i (transakcja w ostatnich ${set.days} dniach)</span></label>
       ${set.kol ? kols.map(row).join('') || '<p class="note">Lista KOL-i jest pusta.</p>' : '<p class="note">Lista KOL-i wyłączona.</p>'}
+      <div class="card tk-rpc"><h3>⚙️ Własny RPC <small>opcjonalnie, za darmo</small></h3>
+        <label class="pf-field"><span>URL</span><input data-tk-rpc type="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://mainnet.helius-rpc.com/?api-key=…" value="${esc(set.rpc || '')}" /></label>
+        <p class="note">Publiczne węzły Solany mają limity. Darmowe konto na helius.dev daje własny klucz — wklej tu link RPC (https://mainnet.helius-rpc.com/?api-key=…), a tracker użyje go najpierw (także dla WebSocket).</p></div>
       <p class="note">Aktywność sprawdzana na łańcuchu co 30 min. Lista KOL-i: publicznie podane portfele z kolscan.io — mogą się zmienić, a KOL może handlować też z innych portfeli.</p>`;
   }
   function render() {
@@ -524,9 +632,10 @@ export function createTracker({ getWallets, addWallet, removeWallet, toast, solU
     if (!b || b.tagName === 'A') return;
     const d = b.dataset;
     if (d.tkTab) set.tab = d.tkTab;
+    else if (d.tkDiag !== undefined) S.diag = !S.diag;
     else if (d.tkOn !== undefined) {
       set.on = !set.on;
-      if (!set.on && S.ws) S.ws.close();
+      if (!set.on) for (const c of conns) c.ws?.close();
     } else if (d.tkSide) set.side = d.tkSide;
     else if (d.tkWho) set.who = d.tkWho;
     else if (d.tkMin) set.min = Number(d.tkMin);
@@ -555,6 +664,18 @@ export function createTracker({ getWallets, addWallet, removeWallet, toast, solU
     render();
   }
   function onChange(e) {
+    if (e.target.dataset.tkRpc !== undefined) {
+      const v = String(e.target.value || '').trim();
+      if (v && !/^https:\/\/[^\s]+$/i.test(v)) return toast('Podaj adres https://…');
+      set.rpc = v;
+      saveSet();
+      // Start over on the new endpoints.
+      for (const c of conns.splice(0)) c.ws?.close();
+      rpcIdx = 0;
+      toast(v ? 'Własny RPC zapisany' : 'Wracam do publicznych węzłów');
+      S.dirty = true;
+      return;
+    }
     if (e.target.dataset.tkHide !== undefined) {
       set.hide = e.target.checked;
       saveSet();
@@ -574,10 +695,8 @@ export function createTracker({ getWallets, addWallet, removeWallet, toast, solU
   setInterval(() => {
     tick++;
     if (set.on && !document.hidden) {
-      if (S.mode === 'ws' || tick % 60 === 0) wsConnect(); // poll mode retries the socket once a minute
-      if (S.ws && S.ws.readyState === 1 && tick % 5 === 0) syncSubs();
-      // A socket that went silent for 3 minutes with many wallets: reconnect.
-      if (S.ws && S.wsOk && Date.now() - S.lastMsg > 180_000 && S.subs.size > 20) S.ws.close();
+      if (tick % 5 === 1) wsConnect();
+      if (tick % 30 === 0) keepAlive();
       background();
       if (tick % 2 === 0) loadTokens();
       if (visible() && set.tab === 'live' && S.shown) pnlPass(S.shown);

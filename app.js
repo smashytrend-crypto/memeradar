@@ -1543,7 +1543,7 @@ function openSheet(name) {
 state.walletMode = LS.get('walletMode', 'spot') === 'perps' ? 'perps' : 'spot';
 // Loaded as its own module: if it can't load (e.g. the single-file preview), only perps are off.
 let perps = null;
-import('./perps.js?v=mv2oem6j')
+import('./perps.js?v=mv2qi6wu')
   .then(({ createPerps }) => {
     perps = createPerps({
       toast: (m) => toast(m),
@@ -1560,7 +1560,7 @@ import('./perps.js?v=mv2oem6j')
   });
 // Wallet Tracker (own wallets + KOLs, live buys / sells over free Solana RPC).
 let tracker = null;
-import('./tracker.js?v=mv2oem6j')
+import('./tracker.js?v=mv2qi6wu')
   .then(({ createTracker }) => {
     tracker = createTracker({
       getWallets: () => state.wallets,
