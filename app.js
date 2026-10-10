@@ -1556,7 +1556,7 @@ function openSheet(name) {
 state.walletMode = LS.get('walletMode', 'spot') === 'perps' ? 'perps' : 'spot';
 // Loaded as its own module: if it can't load (e.g. the single-file preview), only perps are off.
 let perps = null;
-import('./perps.js?v=mv2uwc6i')
+import('./perps.js?v=mv2xgu7u')
   .then(({ createPerps }) => {
     perps = createPerps({
       toast: (m) => toast(m),
@@ -2992,8 +2992,7 @@ function recordTraders(mint, list, d = state.detail?.m === mint ? state.detail :
   const isEarly = (fb) => fb != null && (ca ? fb - ca <= Math.max(3600e3, (list[0].t - ca) * 0.1) : fb - t0 <= span * 0.3);
   const firstBuy = new Map();
   for (const t of list) if (t.side === 'buy' && t.wallet && (!firstBuy.has(t.wallet) || t.t < firstBuy.get(t.wallet))) firstBuy.set(t.wallet, t.t);
-  let disc = LS.get('disc', {});
-  if (!disc || typeof disc !== 'object') disc = {};
+  const disc = getDisc();
   const now = Date.now();
   for (const o of topTraders(list, price, 40)) {
     if (o.pnl == null || !o.w) continue;
@@ -3006,13 +3005,28 @@ function recordTraders(mint, list, d = state.detail?.m === mint ? state.detail :
     e.at = now;
     e.c = ENGINE?.chain || 'solana';
   }
+  // Bounded: results older than 8 days (the ranking shows 7) and the stalest wallets go.
+  for (const [w, e] of Object.entries(disc)) {
+    for (const [m, x] of Object.entries(e.n || {})) if (now - (x[4] || e.at || 0) > 8 * DAY_MS) delete e.n[m];
+    if (!Object.keys(e.n || {}).length) delete disc[w];
+  }
   const keys = Object.keys(disc);
   if (keys.length > 2000) for (const k of keys.sort((a, b) => disc[a].at - disc[b].at).slice(0, keys.length - 2000)) delete disc[k];
   LS.set('disc', disc);
 }
+// Wallet results, read from storage once and kept in memory (the Tracker redraws every 2 s).
+let discMem = null;
+function getDisc() {
+  if (!discMem) {
+    const d = LS.get('disc', {});
+    discMem = d && typeof d === 'object' ? d : {};
+  }
+  return discMem;
+}
+window.addEventListener('storage', (e) => e.key === 'mr:disc' && (discMem = null));
 /** Wallets in profit on 3+ different tokens, best first. */
 function discoveredWallets() {
-  const disc = LS.get('disc', {}) || {};
+  const disc = getDisc();
   return Object.entries(disc)
     .map(([w, e]) => {
       const toks = Object.values(e.n || {});
@@ -3054,7 +3068,7 @@ setTimeout(scanTick, 8_000);
 const DAY_MS = 86_400_000;
 /** Ranking of wallets on the network on screen: profit, win rate, hits, early entries, best trade. */
 function topWallets() {
-  const disc = LS.get('disc', {}) || {};
+  const disc = getDisc();
   const chain = ENGINE?.chain || 'solana';
   const since = Date.now() - state.lb.days * DAY_MS;
   const win = (x) => x[0] >= Math.max(50, 0.2 * (x[3] || 0));
@@ -3097,7 +3111,7 @@ function topWalletsCard() {
 
 function discoveryCard() {
   const list = discoveredWallets();
-  const seen = Object.keys(LS.get('disc', {}) || {}).length;
+  const seen = Object.keys(getDisc()).length;
   return `<div class="card wallet-disc"><h3>🔍 Odkryte portfele <small>${seen} zapamiętanych</small></h3>
     ${list.length
       ? list.map((x) => `<div class="wd-row"><div><b class="mono">${esc(fmt.short(x.w))}</b><small>na plusie w ${x.wins}/${x.n} tokenach${x.early ? ` · ${x.early}× wcześnie` : ''} · ${x.pnl >= 0 ? '+' : '−'}${fmt.usd(Math.abs(x.pnl))}${x.syms.length ? ` · ${x.syms.map((s) => '$' + esc(s)).join(' ')}` : ''}</small></div><button data-wd-track="${esc(x.w)}">Śledź</button></div>`).join('')

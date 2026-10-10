@@ -3,15 +3,15 @@
 // cross-origin reads). One engine per network, created the first time the viewer opens it; only
 // the network on screen polls its sources, the others pause (and keep their data for a quick
 // switch back).
-import { Store } from './server/store.js?v=mv2uwc6i';
-import { RateLimiter, every, getJSON, num } from './server/util.js?v=mv2uwc6i';
-import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=mv2uwc6i';
-import { startPumpPortal } from './server/sources/pumpportal.js?v=mv2uwc6i';
-import { startDexScreener } from './server/sources/dexscreener.js?v=mv2uwc6i';
-import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=mv2uwc6i';
-import { startJupiter } from './server/sources/jupiter.js?v=mv2uwc6i';
-import { startRugCheck } from './server/sources/rugcheck.js?v=mv2uwc6i';
-import { startGoPlus } from './server/sources/goplus.js?v=mv2uwc6i';
+import { Store } from './server/store.js?v=mv2xgu7u';
+import { RateLimiter, every, getJSON, num } from './server/util.js?v=mv2xgu7u';
+import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=mv2xgu7u';
+import { startPumpPortal } from './server/sources/pumpportal.js?v=mv2xgu7u';
+import { startDexScreener } from './server/sources/dexscreener.js?v=mv2xgu7u';
+import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=mv2xgu7u';
+import { startJupiter } from './server/sources/jupiter.js?v=mv2xgu7u';
+import { startRugCheck } from './server/sources/rugcheck.js?v=mv2xgu7u';
+import { startGoPlus } from './server/sources/goplus.js?v=mv2xgu7u';
 
 const baseConfig = {
   demo: false,
@@ -67,7 +67,13 @@ function createEngine(chainId) {
   const tradesCache = new Map(); // mint -> { at, list }
   const whaleUsd = WHALE_USD[chain.id] || 1000;
   /** Feed items for big trades and tracked wallets among trades not seen before. */
-  function processTrades(t, list) {
+  function processTrades(t, list, quiet = false) {
+    // Background scans (TOP wallets) only learn whether the creator sold: no feed alerts.
+    if (quiet) {
+      const dev = t.creator ? normAddr(chain, t.creator) : null;
+      if (dev) for (const tr of list) if (tr.side === 'sell' && normAddr(chain, tr.wallet) === dev && tr.t > (t.devSoldAt || 0)) t.devSoldAt = tr.t;
+      return;
+    }
     let seen = seenTx.get(t.mint);
     const first = !seen;
     if (!seen) seenTx.set(t.mint, (seen = new Set()));
@@ -97,15 +103,22 @@ function createEngine(chainId) {
     }
     if (seen.size > 2000) seenTx.set(t.mint, new Set([...seen].slice(-800)));
   }
-  async function trades(mint, priority = false) {
+  async function trades(mint, priority = false, quiet = false) {
     const t = store.get(normAddr(chain, mint));
     if (!t?.pairAddress) return null;
     const c = tradesCache.get(t.mint);
-    if (c && c.pool === t.pairAddress && Date.now() - c.at < 25_000) return c.list;
+    if (c && c.pool === t.pairAddress && Date.now() - c.at < 25_000) {
+      // Fetched by a quiet scan: the first regular reader still raises the alerts.
+      if (c.quiet && !quiet) {
+        c.quiet = false;
+        processTrades(t, c.list);
+      }
+      return c.list;
+    }
     const list = await src.gt.trades(t, priority);
-    tradesCache.set(t.mint, { at: Date.now(), pool: t.pairAddress, list });
+    tradesCache.set(t.mint, { at: Date.now(), pool: t.pairAddress, list, quiet });
     if (tradesCache.size > 60) tradesCache.delete(tradesCache.keys().next().value);
-    processTrades(t, list);
+    processTrades(t, list, quiet);
     return list;
   }
   // Watched tokens and open positions: one of them every 45 s (shared GeckoTerminal budget).
@@ -287,7 +300,7 @@ function createEngine(chainId) {
     /** Latest trades of the token's main pool (cached 25 s), newest first; null without a pool. */
     trades: (mint) => trades(mint, true),
     /** Trades for the background wallet scanner: no priority, the chart's requests go first. */
-    scan: (mint) => trades(mint, false),
+    scan: (mint) => trades(mint, false, true),
     /** Candles [ms, o, h, l, c, vol] for the chart (cached 50 s per timeframe). */
     async candles(mint, tf) {
       const t = store.get(normAddr(chain, mint));

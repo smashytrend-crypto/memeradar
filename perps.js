@@ -2,7 +2,7 @@
 // candles straight from Hyperliquid's public API (free, no key), trading rules from perps-math.js.
 // The account lives in this browser only (localStorage 'mr:perps') — virtual dollars.
 
-import * as M from './perps-math.js?v=mv2uwc6i';
+import * as M from './perps-math.js?v=mv2xgu7u';
 
 const API = 'https://api.hyperliquid.xyz/info';
 const WS_URL = 'wss://api.hyperliquid.xyz/ws';

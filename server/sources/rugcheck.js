@@ -1,5 +1,5 @@
 // RugCheck (https://api.rugcheck.xyz/swagger/index.html): safety report for top tokens.
-import { RateLimiter, errMsg, every, getJSON } from '../util.js?v=mv2uwc6i';
+import { RateLimiter, errMsg, every, getJSON } from '../util.js?v=mv2xgu7u';
 
 const BASE = 'https://api.rugcheck.xyz/v1';
 const NAME = 'rugcheck';
