@@ -2,7 +2,7 @@
 // candles straight from Hyperliquid's public API (free, no key), trading rules from perps-math.js.
 // The account lives in this browser only (localStorage 'mr:perps') — virtual dollars.
 
-import * as M from './perps-math.js?v=mv2qoo8l';
+import * as M from './perps-math.js?v=mv2qxiya';
 
 const API = 'https://api.hyperliquid.xyz/info';
 const WS_URL = 'wss://api.hyperliquid.xyz/ws';
@@ -1160,11 +1160,43 @@ export function createPerps({ toast, loadLW, onChange, nav }) {
   }
 
   // ---------- UI: perps wallet ----------
+  /** PnL calendar like the spot one: realised result per day (after fees and funding, liquidations included). */
+  function calendarHtml() {
+    const back = S.calMonth || 0;
+    const now = new Date();
+    const first = new Date(now.getFullYear(), now.getMonth() - back, 1);
+    const days = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+    const byDay = new Map();
+    for (const r of A.hist) {
+      const dt = new Date(r.t);
+      if (dt.getFullYear() !== first.getFullYear() || dt.getMonth() !== first.getMonth()) continue;
+      const k = dt.getDate();
+      const o = byDay.get(k) || { pnl: 0, n: 0 };
+      o.pnl += r.pnl - (r.fees || 0) - (r.funding || 0);
+      o.n++;
+      byDay.set(k, o);
+    }
+    const total = [...byDay.values()].reduce((a, o) => a + o.pnl, 0);
+    const lead = (first.getDay() + 6) % 7; // Monday first
+    const cells = [];
+    for (let i = 0; i < lead; i++) cells.push('<div class="cal-d empty"></div>');
+    const today = back === 0 ? now.getDate() : -1;
+    const short = (v) => (Math.abs(v) >= 1000 ? `${(v / 1000).toFixed(1)}k` : Math.abs(v) >= 10 ? Math.round(v) : v.toFixed(1));
+    for (let dd = 1; dd <= days; dd++) {
+      const o = byDay.get(dd);
+      const c = o ? (o.pnl > 0 ? 'win' : o.pnl < 0 ? 'loss' : 'flat') : '';
+      cells.push(`<div class="cal-d ${c}${dd === today ? ' today' : ''}" title="${o ? `${o.n} zamknięć · ${money(o.pnl, true)}` : ''}"><span>${dd}</span>${o ? `<b>${o.pnl >= 0 ? '+' : '−'}${short(Math.abs(o.pnl))}</b>` : ''}</div>`);
+    }
+    const month = first.toLocaleString('pl-PL', { month: 'long', year: 'numeric' });
+    return `<h3 class="pos-h">Kalendarz PnL</h3>
+      <div class="cal"><div class="cal-head"><button data-pw-cal="1" aria-label="Poprzedni miesiąc">‹</button><b>${month}</b><span class="${total > 0 ? 'up' : total < 0 ? 'down' : 'muted'}">${byDay.size ? money(total, true) : '—'}</span><button data-pw-cal="-1" ${back === 0 ? 'disabled' : ''} aria-label="Następny miesiąc">›</button></div>
+        <div class="cal-grid">${['Pn', 'Wt', 'Śr', 'Cz', 'Pt', 'So', 'Nd'].map((x) => `<div class="cal-w">${x}</div>`).join('')}${cells.join('')}</div></div>`;
+  }
   const TXL = { deposit: ['⬇️', 'Doładowanie'], open: ['📈', 'Otwarcie'], close: ['✅', 'Zamknięcie'], liq: ['💥', 'Likwidacja'], reset: ['♻️', 'Reset walletu'] };
   function walletRender(body) {
     if (!body) return;
     if (!body.querySelector('#pwCard')) {
-      body.innerHTML = `<div id="pwCard"></div>
+      body.innerHTML = `<div id="pwCard"></div><div id="pwCal"></div>
         <div class="card wallet-top"><h3>Doładuj wallet Perpetuals <small>DEMO</small></h3>
           <div class="pos-form">
             <input id="pwTopUp" type="number" inputmode="decimal" min="0" step="any" placeholder="Kwota w $" />
@@ -1190,6 +1222,7 @@ export function createPerps({ toast, loadLW, onChange, nav }) {
         <div class="wallet-sub"><div><span>uPnL</span><b class="${cls(up)}">${money(up, true)}</b></div><div><span>Pozycje</span><b>${Object.keys(A.pos).length}</b></div><div><span>Zlecenia</span><b>${A.orders.length}</b></div></div>
       </div>`,
     );
+    put($('#pwCal', body), calendarHtml());
     const closed = A.hist.filter((r) => r.full !== false || r.reason !== 'trade');
     const wins = closed.filter((r) => r.pnl - (r.fees || 0) - (r.funding || 0) > 0).length;
     put(
@@ -1219,6 +1252,10 @@ export function createPerps({ toast, loadLW, onChange, nav }) {
   function onWalletClick(e) {
     const b = e.target.closest('button');
     if (!b) return;
+    if (b.dataset.pwCal) {
+      S.calMonth = Math.max(0, Math.min(24, (S.calMonth || 0) + Number(b.dataset.pwCal)));
+      return walletRender(e.currentTarget);
+    }
     syncFromStorage();
     const amt = b.dataset.pwAmt;
     const act = b.dataset.pw;

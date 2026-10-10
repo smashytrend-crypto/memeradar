@@ -839,6 +839,7 @@ function connect() {
       applySnapshot(ENGINE.snapshot(state.view, filters, lim, state.view === 'watch' ? watchedHere() : []));
       if (sheetOpen('pos') && !sheetBusy()) renderPositions();
       if (sheetOpen('wallet') && !sheetBusy()) renderWallet();
+      if (sheetOpen('track') && !sheetBusy()) renderTracker();
     };
     // Interval first: a connect() re-entered from the first run clears it instead of leaking it.
     state.tick = setInterval(run, 2000);
@@ -1498,7 +1499,7 @@ function renderWallet() {
     </div>`;
   const body = $('#walletBody');
   if (!body.querySelector('#wCard')) {
-    body.innerHTML = `<div id="wCard"></div><div id="wCal"></div>${form}<div id="wFees"></div><div id="wTrack"></div><div id="wDisc"></div><div id="wHist"></div>
+    body.innerHTML = `<div id="wCard"></div><div id="wCal"></div>${form}<div id="wFees"></div><div id="wHist"></div>
       <div class="d-acts" style="margin-top:16px"><button data-wallet="reset">♻️ Wyzeruj wallet DEMO</button></div>`;
   }
   const put = (id, html) => {
@@ -1511,16 +1512,27 @@ function renderWallet() {
   put('#wCard', card);
   put('#wCal', pnlCalendar()); // PnL calendar under the balance, before the top-up
   put('#wFees', feesCard);
-  put('#wTrack', walletTrackerCard());
-  put('#wDisc', discoveryCard());
   put('#wHist', hist);
 }
 
-const SHEETS = { pos: ['#posSheet', renderPositions], wallet: ['#walletSheet', renderWallet], perps: ['#perpSheet', () => perps?.render()] };
+// ---------- tracker sheet: tracked + discovered wallets ----------
+function renderTracker() {
+  const body = $('#trackBody');
+  if (!body.querySelector('#tTrack')) body.innerHTML = '<div id="tTrack"></div><div id="tDisc"></div>';
+  for (const [id, html] of [['#tTrack', walletTrackerCard()], ['#tDisc', discoveryCard()]]) {
+    const el = body.querySelector(id);
+    // Not while typing in the add form (iOS would close the keyboard).
+    if (el.dataset.html === html || (el.contains(document.activeElement) && /INPUT|SELECT/.test(document.activeElement.tagName))) continue;
+    el.dataset.html = html;
+    el.innerHTML = html;
+  }
+}
+
+const SHEETS = { track: ['#trackSheet', renderTracker], pos: ['#posSheet', renderPositions], wallet: ['#walletSheet', renderWallet], perps: ['#perpSheet', () => perps?.render()] };
 // While a finger is on a sheet, live re-renders wait: replacing a button mid-tap loses the tap
 // on iOS Safari.
 let sheetTouch = 0;
-for (const sel of ['#posSheet', '#walletSheet', '#perpSheet']) {
+for (const sel of ['#posSheet', '#walletSheet', '#perpSheet', '#trackSheet']) {
   $(sel).addEventListener('touchstart', () => (sheetTouch = Date.now() + 60_000), { passive: true });
   for (const ev of ['touchend', 'touchcancel']) $(sel).addEventListener(ev, () => (sheetTouch = Date.now() + 400), { passive: true });
 }
@@ -1544,7 +1556,7 @@ function openSheet(name) {
 state.walletMode = LS.get('walletMode', 'spot') === 'perps' ? 'perps' : 'spot';
 // Loaded as its own module: if it can't load (e.g. the single-file preview), only perps are off.
 let perps = null;
-import('./perps.js?v=mv2qoo8l')
+import('./perps.js?v=mv2qxiya')
   .then(({ createPerps }) => {
     perps = createPerps({
       toast: (m) => toast(m),
@@ -2760,25 +2772,6 @@ $('#walletSheet').addEventListener('click', (e) => {
     state.calMonth = Math.max(0, Math.min(24, state.calMonth + Number(cal.dataset.cal)));
     return renderWallet();
   }
-  if (e.target.closest('[data-wt-add]')) {
-    const a = $('#wtAddr')?.value || '';
-    trackWallet(a, $('#wtName')?.value || '', $('#wtEmoji')?.value || '👛');
-    if (walletOf(a)) renderWallet();
-    return;
-  }
-  const wd = e.target.closest('[data-wd-track]');
-  if (wd) {
-    const name = prompt(`Nazwa dla portfela ${fmt.short(wd.dataset.wdTrack)}:`, 'Smart');
-    if (name == null) return;
-    trackWallet(wd.dataset.wdTrack, name || 'Smart', '🧠');
-    return renderWallet();
-  }
-  const del = e.target.closest('[data-wt-del]');
-  if (del) {
-    untrackWallet(del.dataset.wtDel);
-    toast('Przestałem śledzić portfel');
-    return renderWallet();
-  }
   const quick = e.target.closest('[data-wallet-amt]');
   const act = e.target.closest('[data-wallet]')?.dataset.wallet;
   if (quick || act === 'topup') {
@@ -2805,6 +2798,31 @@ $('#walletSheet').addEventListener('click', (e) => {
 });
 $('#perpSheet').addEventListener('click', (e) => {
   if (e.target.closest('[data-sheet-close]')) closeSheets();
+});
+$('#trackSheet').addEventListener('click', (e) => {
+  if (e.target.closest('[data-sheet-close]')) return closeSheets();
+  if (e.target.closest('[data-wt-add]')) {
+    const a = $('#wtAddr')?.value || '';
+    trackWallet(a, $('#wtName')?.value || '', $('#wtEmoji')?.value || '👛');
+    if (walletOf(a)) {
+      document.activeElement?.blur?.();
+      renderTracker();
+    }
+    return;
+  }
+  const wd = e.target.closest('[data-wd-track]');
+  if (wd) {
+    const name = prompt(`Nazwa dla portfela ${fmt.short(wd.dataset.wdTrack)}:`, 'Smart');
+    if (name == null) return;
+    trackWallet(wd.dataset.wdTrack, name || 'Smart', '🧠');
+    return renderTracker();
+  }
+  const del = e.target.closest('[data-wt-del]');
+  if (del) {
+    untrackWallet(del.dataset.wtDel);
+    toast('Przestałem śledzić portfel');
+    return renderTracker();
+  }
 });
 $('#posSheet').addEventListener('click', (e) => {
   if (e.target.closest('[data-sheet-close]')) return closeSheets();

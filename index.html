@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=mv2qoo8l" />
+  <link rel="stylesheet" href="styles.css?v=mv2qxiya" />
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -193,6 +193,15 @@
     <div class="sheet-body" id="walletPerpBody" hidden></div>
   </section>
 
+  <!-- Wallet tracker: tracked + discovered wallets (from the bottom bar) -->
+  <section class="sheet" id="trackSheet" hidden aria-label="Tracker portfeli">
+    <div class="sheet-head">
+      <h2>👀 Tracker</h2>
+      <button class="d-close" data-sheet-close aria-label="Zamknij">✕</button>
+    </div>
+    <div class="sheet-body" id="trackBody"></div>
+  </section>
+
   <!-- Perpetuals DEMO on live Hyperliquid data (from the bottom bar) -->
   <section class="sheet" id="perpSheet" hidden aria-label="Perpetuals DEMO">
     <div class="sheet-head">
@@ -207,6 +216,7 @@
     <button data-nav="radar" class="on"><svg class="bi" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/><path d="M12 12l5.5-5.5"/><circle cx="12" cy="12" r="1" class="dot"/></svg><span class="bl">Radar</span></button>
     <button data-nav="pos"><svg class="bi" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="7.5" width="17" height="12" rx="2.5"/><path d="M9 7.5V6a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v1.5M3.5 12.5h17"/></svg><span class="bl">Pozycje</span><span class="bb-count" id="c-pos"></span></button>
     <button data-nav="wallet"><svg class="bi" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5A2.5 2.5 0 0 1 6.5 5H17a1 1 0 0 1 1 1v1.5"/><rect x="4" y="7.5" width="16" height="11.5" rx="2.5"/><path d="M20 11h-3.5a2 2 0 0 0 0 4H20"/><circle cx="16.6" cy="13" r=".6" class="dot"/></svg><span class="bl">Wallet</span></button>
+    <button data-nav="track"><svg class="bi" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="1" class="dot"/></svg><span class="bl">Tracker</span></button>
     <button data-nav="perps"><svg class="bi" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v3M7 15v5M17 4v5M17 17v3"/><rect x="5" y="7" width="4" height="8" rx="1"/><rect x="15" y="9" width="4" height="8" rx="1"/></svg><span class="bl">Perpy</span><span class="bb-count" id="c-perp"></span></button>
   </nav>
 
@@ -214,6 +224,6 @@
     Dane: PumpPortal (on-chain), DexScreener, GeckoTerminal, Jupiter, RugCheck, GoPlus, X API. To nie jest porada inwestycyjna — memecoiny są skrajnie ryzykowne.
   </footer>
 
-  <script type="module" src="boot.js?v=mv2qoo8l"></script>
+  <script type="module" src="boot.js?v=mv2qxiya"></script>
 </body>
 </html>
