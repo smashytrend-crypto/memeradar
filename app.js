@@ -1515,11 +1515,11 @@ function renderWallet() {
   put('#wHist', hist);
 }
 
-const SHEETS = { pos: ['#posSheet', renderPositions], wallet: ['#walletSheet', renderWallet], perps: ['#perpSheet', () => perps?.render()], track: ['#trackSheet', () => tracker?.render()] };
+const SHEETS = { pos: ['#posSheet', renderPositions], wallet: ['#walletSheet', renderWallet], perps: ['#perpSheet', () => perps?.render()] };
 // While a finger is on a sheet, live re-renders wait: replacing a button mid-tap loses the tap
 // on iOS Safari.
 let sheetTouch = 0;
-for (const sel of ['#posSheet', '#walletSheet', '#perpSheet', '#trackSheet']) {
+for (const sel of ['#posSheet', '#walletSheet', '#perpSheet']) {
   $(sel).addEventListener('touchstart', () => (sheetTouch = Date.now() + 60_000), { passive: true });
   for (const ev of ['touchend', 'touchcancel']) $(sel).addEventListener(ev, () => (sheetTouch = Date.now() + 400), { passive: true });
 }
@@ -1543,7 +1543,7 @@ function openSheet(name) {
 state.walletMode = LS.get('walletMode', 'spot') === 'perps' ? 'perps' : 'spot';
 // Loaded as its own module: if it can't load (e.g. the single-file preview), only perps are off.
 let perps = null;
-import('./perps.js?v=mv2qi6wu')
+import('./perps.js?v=mv2qm0je')
   .then(({ createPerps }) => {
     perps = createPerps({
       toast: (m) => toast(m),
@@ -1557,30 +1557,6 @@ import('./perps.js?v=mv2qi6wu')
   })
   .catch(() => {
     $('#perpBody').innerHTML = '<div class="empty"><b>Perpetuals niedostępne</b>Nie udało się wczytać modułu.</div>';
-  });
-// Wallet Tracker (own wallets + KOLs, live buys / sells over free Solana RPC).
-let tracker = null;
-import('./tracker.js?v=mv2qi6wu')
-  .then(({ createTracker }) => {
-    tracker = createTracker({
-      getWallets: () => state.wallets,
-      addWallet: (a, name, emoji) => trackWallet(a, name, emoji),
-      removeWallet: (a) => untrackWallet(a),
-      toast: (m) => toast(m),
-      solUsd: () => state.nativeUsd.solana || 0,
-      pushFeed: (it) => addFeed(it),
-      emojis: WALLET_EMOJI,
-      // A token tapped in the tracker opens in the radar's token window (on Solana).
-      openToken: (mint) => {
-        closeSheets();
-        if (ENGINE && ENGINE.chain !== 'solana') setChain('solana');
-        openDetail(mint);
-      },
-    });
-    if (sheetOpen('track')) tracker.render();
-  })
-  .catch(() => {
-    $('#trackBody').innerHTML = '<div class="empty"><b>Tracker niedostępny</b>Nie udało się wczytać modułu.</div>';
   });
 /** Opens the wallet on its Spot (memecoins) or Perpetuals side. */
 function openWallet(mode) {
@@ -2824,9 +2800,6 @@ $('#walletSheet').addEventListener('click', (e) => {
 $('#perpSheet').addEventListener('click', (e) => {
   if (e.target.closest('[data-sheet-close]')) closeSheets();
 });
-$('#trackSheet').addEventListener('click', (e) => {
-  if (e.target.closest('[data-sheet-close]')) closeSheets();
-});
 $('#posSheet').addEventListener('click', (e) => {
   if (e.target.closest('[data-sheet-close]')) return closeSheets();
   if (e.target.closest('[data-sheet-wallet]')) return openWallet('spot');
@@ -2934,7 +2907,6 @@ function walletOf(a) {
 function saveWallets() {
   LS.set('wallets', state.wallets);
   ENGINE?.setWallets(state.wallets);
-  tracker?.walletsChanged();
 }
 function trackWallet(a, name, emoji = '👛') {
   const addr = normWallet(a);

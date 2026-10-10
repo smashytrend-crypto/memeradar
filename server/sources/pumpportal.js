@@ -1,6 +1,6 @@
 // On-chain stream of pump.fun / bonk.fun launches, trades and migrations via PumpPortal's
 // free WebSocket (https://pumpportal.fun/data-api/real-time). One connection only — their rule.
-import { num } from '../util.js?v=mv2qi6wu';
+import { num } from '../util.js?v=mv2qm0je';
 
 const WS_URL = 'wss://pumpportal.fun/api/data';
 const NAME = 'pumpportal';
