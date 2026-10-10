@@ -1,7 +1,7 @@
 // Supported networks: ids used by each data source, native coin, address format, explorer links.
 // Solana keeps its own sources (PumpPortal, Jupiter, RugCheck); the EVM chains run on
 // DexScreener + GeckoTerminal for market data and GoPlus for safety checks and holder counts.
-import { isMint } from './util.js?v=mv2bfqxf';
+import { isMint } from './util.js?v=mv2dlcgj';
 
 const EVM_RE = /^0x[0-9a-fA-F]{40}$/;
 export const isEvmAddress = (s) => typeof s === 'string' && EVM_RE.test(s);

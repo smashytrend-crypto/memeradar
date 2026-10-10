@@ -136,3 +136,30 @@ export function posValue(p, priceNative) {
   const pnl = value != null ? value + p.got - p.spent : null;
   return { value, pnl, pct: pnl != null && p.spent > 0 ? (pnl / p.spent) * 100 : null };
 }
+
+/**
+ * Candles from individual prices (trades + live ticks): [{ t (ms), p, v? }] → [[ms, o, h, l, c, vol]]
+ * per `ms` bucket. Each candle opens where the previous one closed, so the line stays continuous
+ * (a second without trades simply has no candle).
+ */
+export function tickCandles(points, ms) {
+  const pts = points.filter((x) => x.p > 0 && x.t > 0).sort((a, b) => a.t - b.t);
+  const out = [];
+  let cur = null;
+  let prevClose = null;
+  for (const x of pts) {
+    const b = Math.floor(x.t / ms) * ms;
+    if (!cur || cur[0] !== b) {
+      if (cur) prevClose = cur[4];
+      const o = prevClose ?? x.p;
+      cur = [b, o, Math.max(o, x.p), Math.min(o, x.p), x.p, x.v || 0];
+      out.push(cur);
+    } else {
+      cur[2] = Math.max(cur[2], x.p);
+      cur[3] = Math.min(cur[3], x.p);
+      cur[4] = x.p;
+      cur[5] += x.v || 0;
+    }
+  }
+  return out;
+}

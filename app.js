@@ -1,6 +1,10 @@
 // DMN frontend — vanilla JS, no build step. Server pushes snapshots over SSE every 2s;
 // rows are keyed by mint and patched in place (with FLIP re-ordering) so updates stay smooth.
 
+import { iconImg, installIconFallbacks, setHtml } from './img.js?v=mv2dlcgj';
+
+installIconFallbacks();
+
 // Static preview: a snapshot embedded by scripts/build-preview.mjs replaces the server.
 const STATIC = window.__MR_SNAPSHOT || null;
 // Serverless build: the engine runs in this page (web/engine.js).
@@ -159,9 +163,10 @@ function hashHue(str) {
 function avatar(d, size = '') {
   const hue = hashHue(d.m);
   const initials = esc((d.s || d.n || '?').replace(/[^\p{L}\p{N}]/gu, '').slice(0, 2) || '?');
-  const img = safeUrl(d.i);
+  // Resized icon from a fast source, with fallbacks (img.js); the initials show until it loads.
+  const img = iconImg(d.i, size === 'xl' ? 58 : size === 'lg' ? 48 : 36, { lazy: size !== 'xl' });
   return `<div class="av ${size}" style="background:linear-gradient(135deg,hsl(${hue},70%,45%),hsl(${(hue + 50) % 360},75%,35%))">
-    <span class="av-i">${initials}</span>${img ? `<img src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">` : ''}
+    <span class="av-i">${initials}</span>${img}
     <span class="av-live"></span></div>`;
 }
 
@@ -1447,7 +1452,7 @@ function renderPositions() {
   const html = summary + `<h3 class="pos-h">Otwarte (${list.length})</h3>` + cards + history + pnlCalendar();
   if (body.dataset.html !== html) {
     body.dataset.html = html;
-    body.innerHTML = html;
+    setHtml(body, html);
   }
 }
 
@@ -1508,7 +1513,7 @@ function renderWallet() {
     const el = body.querySelector(id);
     if (el.dataset.html !== html) {
       el.dataset.html = html;
-      el.innerHTML = html;
+      setHtml(el, html);
     }
   };
   put('#wCard', card);
@@ -1547,7 +1552,7 @@ const WALLET_MODES = ['spot', 'trench', 'perps'];
 state.walletMode = WALLET_MODES.includes(LS.get('walletMode', 'spot')) ? LS.get('walletMode', 'spot') : 'spot';
 // Loaded as its own module: if it can't load (e.g. the single-file preview), only perps are off.
 let perps = null;
-import('./perps.js?v=mv2bfqxf')
+import('./perps.js?v=mv2dlcgj')
   .then(({ createPerps }) => {
     perps = createPerps({
       toast: (m) => toast(m),
@@ -1565,7 +1570,7 @@ import('./perps.js?v=mv2bfqxf')
 // Trenches DEMO (launchpad columns, one-tap memecoin trading; own wallet per network).
 let trenches = null;
 if (ENGINE?.trenches)
-  import('./trenches.js?v=mv2bfqxf')
+  import('./trenches.js?v=mv2dlcgj')
     .then(({ createTrenches }) => {
       trenches = createTrenches({
         engine: ENGINE,
@@ -2262,7 +2267,7 @@ function renderDetail(d) {
     if (el) {
       // Inner scroll boxes (trades tables) keep their position across the refresh.
       const keep = [...el.querySelectorAll('.tr-wrap')].map((w) => w.scrollTop);
-      el.innerHTML = html;
+      setHtml(el, html);
       el.querySelectorAll('.tr-wrap').forEach((w, i) => {
         if (keep[i]) w.scrollTop = keep[i];
       });

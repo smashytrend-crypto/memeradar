@@ -4,13 +4,16 @@
 // and Jupiter's Tokens API on Solana; the radar's own data on EVM networks. Swaps are priced with
 // trench-math.js (pump.fun curve / AMM pools, real fees). Virtual money, own wallet per network.
 
-import * as T from './trench-math.js?v=mv2bfqxf';
+import * as T from './trench-math.js?v=mv2dlcgj';
+import { iconImg, setHtml } from './img.js?v=mv2dlcgj';
 
 const KEY = 'mr:trench';
+// Chart timeframes: seconds ones are built here from trades + the live price (APIs stop at 1 min).
+const TF_MS = { '1s': 1e3, '15s': 15e3, '30s': 30e3, '1m': 60e3, '5m': 300e3, '15m': 900e3, '1h': 3600e3 };
+const SUB_TF = new Set(['1s', '15s', '30s']);
 const SET_KEY = 'mr:trenchSet';
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-const safeImg = (u) => (/^https:\/\//i.test(u || '') ? u : '');
 const ls = {
   get(k, d) {
     try {
@@ -68,7 +71,20 @@ const PRESETS = { solana: [0.1, 0.5, 1, 2], bsc: [0.02, 0.05, 0.1, 0.5], base: [
 const TOPUP = { solana: [1, 5, 10, 50], bsc: [0.5, 1, 5, 10], base: [0.1, 0.5, 1, 5], ethereum: [0.1, 0.5, 1, 5], robinhood: [0.1, 0.5, 1, 5] };
 const COLS = { solana: [['new', 'Nowe'], ['stretch', 'Final Stretch'], ['migrated', 'Migrated']], evm: [['new', 'Nowe pary'], ['hot', 'Trending'], ['surge', 'Wybicia']] };
 const SHORT = { solana: 'SOL', bsc: 'BNB', base: 'Base', ethereum: 'ETH', robinhood: 'HOOD' };
-const LP = { pump: 'pump', 'pump.fun': 'pump', bonk: 'bonk', 'letsbonk.fun': 'bonk', 'raydium-launchlab': 'bonk', 'met-dbc': 'dbc', 'jup-studio': 'jup', believe: 'believe' };
+/** Launchpad id from Jupiter's / PumpPortal's name. */
+function lpOf(name) {
+  const n = String(name || '').toLowerCase();
+  if (!n) return null;
+  for (const [re, id] of [[/pump/, 'pump'], [/bonk|launchlab/, 'bonk'], [/bags/, 'bags'], [/moon/, 'moonshot'], [/believe/, 'believe'], [/heaven/, 'heaven'], [/boop/, 'boop'], [/dbc|meteora/, 'dbc'], [/jup/, 'jup'], [/daos/, 'daos']])
+    if (re.test(n)) return id;
+  return n;
+}
+// Axiom-style protocol chips.
+const PROTOCOLS = [['pump', 'Pump'], ['bonk', 'Bonk'], ['bags', 'Bags'], ['moonshot', 'Moonshot'], ['believe', 'Believe'], ['heaven', 'Heaven'], ['boop', 'Boop'], ['dbc', 'Meteora DBC'], ['jup', 'Jup Studio'], ['other', 'Inne']];
+const KNOWN_LP = new Set(PROTOCOLS.map(([k]) => k));
+// Range filters: [key, label, unit multiplier, ends: 'mm' min + max, 'x' max only, 'n' min only].
+const AUDIT = [['t10', 'Top 10 %', 1, 'mm'], ['dv', 'Dev trzyma %', 1, 'mm'], ['h', 'Holderzy', 1, 'mm'], ['org', 'Organic score', 1, 'mm'], ['dm', 'Tokeny deva', 1, 'x'], ['dmg', 'Migracje deva', 1, 'n'], ['age', 'Wiek (min)', 1, 'mm'], ['prog', 'Krzywa %', 1, 'mm']];
+const METRICS = [['mc', 'MC (tys. $)', 1000, 'mm'], ['lq', 'Płynność (tys. $)', 1000, 'mm'], ['v5', 'Wolumen 5m (tys. $)', 1000, 'mm'], ['tx', 'Transakcje 5m', 1, 'mm'], ['b5', 'Kupna 5m', 1, 'mm'], ['tr5', 'Traderzy 5m', 1, 'mm']];
 
 export function createTrenches({ engine, chains, chain, setChain, nativeUsd, toast, loadLW, nav }) {
   // ---------- wallet ----------
@@ -105,7 +121,7 @@ export function createTrenches({ engine, chains, chain, setChain, nativeUsd, toa
   };
   window.addEventListener('storage', (e) => e.key === `${KEY}:rev` && (sync(), (S.dirty = true)));
 
-  const set = Object.assign({ slip: 20, prio: 0.001, tip: 0.001, quick: {}, presets: {}, sells: [10, 25, 50, 100], f: {} }, ls.get(SET_KEY, {}) || {});
+  const set = Object.assign({ slip: 20, prio: 0.001, tip: 0.001, quick: {}, presets: {}, sells: [10, 25, 50, 100] }, ls.get(SET_KEY, {}) || {});
   const saveSet = () => ls.set(SET_KEY, set);
 
   // ---------- runtime ----------
@@ -115,7 +131,8 @@ export function createTrenches({ engine, chains, chain, setChain, nativeUsd, toa
     open: null, // mint on the token page
     live: null, // { p, mc, at }
     trades: null,
-    tf: '1m',
+    tf: TF_MS[set.tf] ? set.tf : '1m',
+    ticks: [], // live prices of the open token [{ t, p }] (second candles)
     candles: null,
     chart: null,
     busy: false,
@@ -143,7 +160,7 @@ export function createTrenches({ engine, chains, chain, setChain, nativeUsd, toa
     const s5 = j.stats5m || {};
     const s1 = j.stats1h || {};
     const t = S.tk.get(j.id) || { m: j.id, seen: Date.now() };
-    const lp = LP[String(j.launchpad || '').toLowerCase()] || (j.launchpad ? String(j.launchpad).toLowerCase() : t.lp || null);
+    const lp = lpOf(j.launchpad) || t.lp || null;
     Object.assign(t, {
       n: j.name ?? t.n,
       s: j.symbol ?? t.s,
@@ -164,6 +181,8 @@ export function createTrenches({ engine, chains, chain, setChain, nativeUsd, toa
       b5: num(s5.numBuys) || 0,
       s5: num(s5.numSells) || 0,
       c5: num(s5.priceChange),
+      tr5: num(s5.numTraders) || 0,
+      org: num(j.organicScore) ?? t.org,
       grad: !!j.graduatedPool || t.grad || false,
       ga: toMs(j.graduatedAt) || t.ga || null,
       soc: { tw: j.twitter || t.soc?.tw, tg: j.telegram || t.soc?.tg, web: j.website || t.soc?.web },
@@ -200,6 +219,7 @@ export function createTrenches({ engine, chains, chain, setChain, nativeUsd, toa
       if (S.col === 'new') S.dirty = true;
     } else if (type.includes('migrat')) {
       const t = S.tk.get(msg.mint) || { m: msg.mint, seen: Date.now(), upd: 0 };
+      t.lp ||= msg.pool === 'bonk' || msg.pool === 'launchlab' ? 'bonk' : 'pump';
       t.grad = true;
       t.ga = t.ga || Date.now();
       t.prog = 100;
@@ -239,7 +259,9 @@ export function createTrenches({ engine, chains, chain, setChain, nativeUsd, toa
       for (const p of myPos()) if (p.chain === 'solana') want.add(p.mint);
       if (S.open && isSol()) want.add(S.open);
       if (vis) {
-        const shown = columns().flatMap(([k]) => colList(k).slice(0, 30));
+        // What each column would hold before filters: hidden tokens keep getting fresh data,
+        // so they reappear once they meet the limits.
+        const shown = columns().flatMap(([k]) => colList(k, { raw: true }).slice(0, 30));
         shown.sort((a, b) => (a.upd || 0) - (b.upd || 0));
         for (const t of shown) if (want.size < 100) want.add(t.m);
       }
@@ -256,7 +278,8 @@ export function createTrenches({ engine, chains, chain, setChain, nativeUsd, toa
   /** EVM: the radar's rows of the network on screen. */
   function evmRows() {
     try {
-      return (engine.trenches.list('hype', 200) || []).map((r) => ({ m: r.m, n: r.n, s: r.s, i: r.i, ca: r.ca, mc: r.mc, lq: r.lq, p: r.p, h: r.h, t10: r.t10, dv: r.dv, v5: r.v5, v1: r.v1, b5: r.b5, s5: r.s5, c5: r.c5, c1: r.c1, grad: true, soc: {}, hype: r.hs ?? r.score ?? 0 }));
+      // Radar rows know which socials exist (sf), not their links (soc stays for links only).
+      return (engine.trenches.list('hype', 200) || []).map((r) => ({ m: r.m, n: r.n, s: r.s, i: r.i, ca: r.ca, mc: r.mc, lq: r.lq, p: r.p, h: r.h, t10: r.t10, dv: r.dv, v5: r.v5, v1: r.v1, b5: r.b5, s5: r.s5, c5: r.c5, c1: r.c1, grad: true, soc: {}, sf: { tw: !!r.tw, tg: !!r.tg, web: !!r.web }, hype: r.hs ?? r.score ?? 0 }));
     } catch {
       return [];
     }
@@ -264,23 +287,74 @@ export function createTrenches({ engine, chains, chain, setChain, nativeUsd, toa
 
   // ---------- columns ----------
   const columns = () => (isSol() ? COLS.solana : COLS.evm);
-  function passes(t) {
-    const f = set.f;
-    if (f.soc && !(t.soc?.tw || t.soc?.tg || t.soc?.web)) return false;
-    if (f.t10 && t.t10 != null && t.t10 > 30) return false;
-    if (f.dev && t.dv != null && t.dv > 10) return false;
-    if (f.h && !(t.h >= 50)) return false;
+  // ---------- filters (per column, like Axiom's Pulse) ----------
+  const fKey = (k) => `${isSol() ? 'sol' : 'evm'}:${k}`;
+  // Settings of older versions: the four quick toggles become the same filters on every column.
+  if (!set.fc) {
+    const o = set.f || {};
+    const base = { ...(o.soc ? { any: true } : {}), ...(o.t10 ? { t10: [null, 30] } : {}), ...(o.dev ? { dv: [null, 10] } : {}), ...(o.h ? { h: [50, null] } : {}) };
+    set.fc = {};
+    for (const g of ['sol', 'evm']) for (const [k] of COLS[g === 'sol' ? 'solana' : 'evm']) set.fc[`${g}:${k}`] = structuredClone(base);
+    delete set.f;
+  }
+  const colF = (k) => (set.fc[fKey(k)] ||= {});
+  const RANGES = [...AUDIT, ...METRICS];
+  function activeCount(f) {
+    let n = 0;
+    for (const [k] of RANGES) if (f[k] && (f[k][0] != null || f[k][1] != null)) n++;
+    if (f.lp?.length) n++;
+    if (f.inc) n++;
+    if (f.exc) n++;
+    for (const k of ['tw', 'tg', 'web', 'any']) if (f[k]) n++;
+    return n;
+  }
+  const words = (v) => String(v || '').toLowerCase().split(',').map((w) => w.trim()).filter(Boolean);
+  function passes(t, f, now = Date.now()) {
+    if (!f) return true;
+    if (f.lp?.length) {
+      const lp = t.lp && KNOWN_LP.has(t.lp) ? t.lp : 'other';
+      if (!f.lp.includes(lp)) return false;
+    }
+    const text = `${t.s || ''} ${t.n || ''}`.toLowerCase();
+    const inc = words(f.inc);
+    if (inc.length && !inc.some((w) => text.includes(w))) return false;
+    if (words(f.exc).some((w) => text.includes(w))) return false;
+    const val = {
+      t10: t.t10, dv: t.dv, h: t.h, org: t.org, dm: t.dm, dmg: t.dmg,
+      // As the card shows it: since migration on Migrated, since launch before.
+      age: (t.grad && t.ga) || t.ca ? (now - ((t.grad && t.ga) || t.ca)) / 60_000 : null,
+      prog: t.grad ? 100 : t.prog,
+      mc: t.mc, lq: t.lq, v5: t.v5,
+      tx: t.b5 != null || t.s5 != null ? (t.b5 || 0) + (t.s5 || 0) : null,
+      b5: t.b5, tr5: t.tr5,
+    };
+    for (const [k, , mul] of RANGES) {
+      const r = f[k];
+      if (!r) continue;
+      const v = val[k];
+      // Not known yet (very fresh token): a "max" limit lets it through, a "min" limit doesn't.
+      if (r[0] != null && !(v != null && v >= r[0] * mul)) return false;
+      if (r[1] != null && v != null && v > r[1] * mul) return false;
+    }
+    const soc = t.sf || t.soc || {};
+    if (f.tw && !soc.tw) return false;
+    if (f.tg && !soc.tg) return false;
+    if (f.web && !soc.web) return false;
+    if (f.any && !(soc.tw || soc.tg || soc.web)) return false;
     return true;
   }
-  function colList(k) {
+  /** Tokens of a column, filtered (raw: before filters). */
+  function colList(k, { raw = false } = {}) {
     const now = Date.now();
+    const f = raw ? null : colF(k);
+    const ok = (t) => passes(t, f, now);
     if (!isSol()) {
-      const rows = evmRows().filter(passes);
+      const rows = evmRows().filter(ok);
       if (k === 'new') return rows.filter((r) => r.ca).sort((a, b) => b.ca - a.ca).slice(0, 50);
       if (k === 'surge') return rows.filter((r) => r.v5 > 0).sort((a, b) => (b.v5 || 0) - (a.v5 || 0)).slice(0, 50);
       return rows.slice(0, 50);
     }
-    const all = [...S.tk.values()].filter(passes);
+    const all = [...S.tk.values()].filter(ok);
     if (k === 'new') return all.filter((t) => !t.grad && t.ca && now - t.ca < 60 * 60_000).sort((a, b) => b.ca - a.ca).slice(0, 60);
     if (k === 'stretch') return all.filter((t) => !t.grad && t.prog >= 40 && now - (t.upd || t.seen) < 30 * 60_000).sort((a, b) => b.prog - a.prog).slice(0, 50);
     return all.filter((t) => t.grad && t.ga && now - t.ga < 24 * 3600_000).sort((a, b) => b.ga - a.ga).slice(0, 50);
@@ -312,7 +386,7 @@ export function createTrenches({ engine, chains, chain, setChain, nativeUsd, toa
   const failFee = () => (isSol() ? Number(set.prio) + T.TFEES.solBase : netFee() * 0.4);
   function metaOf(mint) {
     const t = tokenData(mint) || {};
-    return { sym: t.s || mint.slice(0, 4), name: t.n || '', icon: safeImg(t.i) };
+    return { sym: t.s || mint.slice(0, 4), name: t.n || '', icon: t.i || '' };
   }
   function buy(mint, amount) {
     sync();
@@ -405,6 +479,7 @@ export function createTrenches({ engine, chains, chain, setChain, nativeUsd, toa
     S.live = null;
     S.trades = null;
     S.candles = null;
+    S.ticks = [];
     S.draft = {};
     S.dirty = true;
     render();
@@ -421,12 +496,20 @@ export function createTrenches({ engine, chains, chain, setChain, nativeUsd, toa
     const mint = S.open;
     const tf = S.tf;
     if (!mint) return;
+    if (SUB_TF.has(tf)) {
+      // Second candles: every trade's price plus the live price sampled each second.
+      // Trades come newest first: oldest first, so the last trade of a second closes its candle.
+      const pts = [...(S.trades?.list || [])].reverse().filter((x) => x.price > 0).map((x) => ({ t: x.t, p: x.price, v: x.usd }));
+      S.candles = { key: `${mint}|${tf}`, list: T.tickCandles(pts.concat(S.ticks), TF_MS[tf]), at: Date.now(), sub: true };
+      return drawChart();
+    }
     try {
       const list = await engine.candles(mint, tf);
       if (S.open !== mint || S.tf !== tf) return;
       S.candles = { key: `${mint}|${tf}`, list: list || [], at: Date.now() };
     } catch {
-      if (S.open === mint) S.candles = { key: `${mint}|${tf}`, list: [], at: Date.now() - 40_000, err: true };
+      if (S.open !== mint || S.tf !== tf) return; // switched meanwhile: not this chart's result
+      S.candles = { key: `${mint}|${tf}`, list: [], at: Date.now() - 40_000, err: true };
     }
     drawChart();
   }
@@ -440,6 +523,7 @@ export function createTrenches({ engine, chains, chain, setChain, nativeUsd, toa
       if (S.open === mint) S.trades = { list: S.trades?.list || [], at: Date.now() - 15_000 };
     }
     S.dirty = true;
+    if (S.open === mint && SUB_TF.has(S.tf)) loadCandles(); // new trades into the second candles
   }
   async function liveTick() {
     const mint = S.open;
@@ -449,6 +533,8 @@ export function createTrenches({ engine, chains, chain, setChain, nativeUsd, toa
       const l = await engine.live(mint);
       if (S.open === mint && l?.p > 0) {
         S.live = { p: l.p, mc: l.mc, at: Date.now() };
+        S.ticks.push({ t: S.live.at, p: l.p });
+        if (S.ticks.length > 7200) S.ticks.splice(0, S.ticks.length - 7200);
         S.px[T.posKey(C(), mint)] = { ...(S.px[T.posKey(C(), mint)] || {}), p: l.p, mc: l.mc, at: Date.now() };
         applyLive();
       }
@@ -458,7 +544,6 @@ export function createTrenches({ engine, chains, chain, setChain, nativeUsd, toa
       S.liveBusy = false;
     }
   }
-  const TF_MS = { '1m': 60e3, '5m': 300e3, '15m': 900e3, '1h': 3600e3 };
   function mcK() {
     const { p, mc } = priceData(S.open);
     return p > 0 && mc > 0 ? mc / p : 0;
@@ -523,9 +608,13 @@ export function createTrenches({ engine, chains, chain, setChain, nativeUsd, toa
     const ch = S.chart;
     const c = S.candles;
     const key = `${S.open}|${S.tf}`;
+    if (ch.secs !== SUB_TF.has(S.tf)) {
+      ch.secs = SUB_TF.has(S.tf);
+      ch.chart.timeScale().applyOptions({ secondsVisible: ch.secs });
+    }
     if (!c || c.key !== key || !c.list.length) {
       msg.hidden = false;
-      msg.textContent = !c ? 'Ładowanie świec…' : c.err ? 'Limit darmowego API — ponawiam…' : 'Świece pojawią się za chwilę (bardzo nowy token) — cena na żywo poniżej';
+      msg.textContent = !c ? 'Ładowanie świec…' : c.err ? 'Limit darmowego API — ponawiam…' : c.sub ? 'Zbieram transakcje i cenę na żywo…' : 'Świece pojawią się za chwilę (bardzo nowy token) — cena na żywo poniżej';
       if (ch.key && ch.key !== key) {
         ch.candle.setData([]);
         ch.key = '';
@@ -545,7 +634,8 @@ export function createTrenches({ engine, chains, chain, setChain, nativeUsd, toa
       const bars = c.list.map((k) => ({ time: Math.floor(k[0] / 1000), open: k[1] * ch.K, high: k[2] * ch.K, low: k[3] * ch.K, close: k[4] * ch.K }));
       ch.candle.setData(bars);
       ch.last = bars.length ? { ...bars[bars.length - 1] } : null;
-      if (ch.key !== key) ch.chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, bars.length - 80), to: bars.length + 3 });
+      const show = c.sub ? 120 : 80;
+      if (ch.key !== key) ch.chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, bars.length - show), to: bars.length + 3 });
       ch.key = key;
       ch.dataAt = c.at;
     }
@@ -564,12 +654,11 @@ export function createTrenches({ engine, chains, chain, setChain, nativeUsd, toa
     if (!el || el.dataset.html === html) return;
     if (el.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;
     el.dataset.html = html;
-    el.innerHTML = html;
+    setHtml(el, html); // keeps the icons that are still loading
   };
   const icon = (t, size = 44) => {
-    const img = safeImg(t.i);
     const letter = esc((t.s || '?').slice(0, 1).toUpperCase());
-    return `<span class="tr-ic" style="width:${size}px;height:${size}px">${img ? `<img src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">` : ''}<b>${letter}</b></span>`;
+    return `<span class="tr-ic" style="width:${size}px;height:${size}px">${iconImg(t.i, size, { lazy: size < 40 || !S.open })}<b>${letter}</b></span>`;
   };
   const SOC = { tw: '𝕏', tg: '✈︎', web: '🌐' };
   function cardHtml(t, now) {
@@ -580,7 +669,7 @@ export function createTrenches({ engine, chains, chain, setChain, nativeUsd, toa
     if (t.t10 != null) chips.push(`<span class="chip ${t.t10 > 30 ? 'down' : t.t10 > 20 ? 'warn' : 'up'}" title="Top 10 holderów">T10 ${Math.round(t.t10)}%</span>`);
     if (t.dv != null) chips.push(`<span class="chip ${t.dv > 10 ? 'down' : t.dv > 3 ? 'warn' : 'up'}" title="Dev trzyma">DEV ${t.dv < 0.1 ? 0 : t.dv.toFixed(t.dv < 10 ? 1 : 0)}%</span>`);
     if (t.dm != null) chips.push(`<span class="chip ${t.dm >= 5 && !(t.dmg > 0) ? 'down' : t.dmg > 0 ? 'up' : ''}" title="Tokeny deva / zmigrowane">👨‍🍳 ${t.dm}${t.dmg != null ? `/${t.dmg}` : ''}</span>`);
-    for (const k of ['tw', 'tg', 'web']) if (t.soc?.[k]) chips.push(`<span class="chip soc">${SOC[k]}</span>`);
+    for (const k of ['tw', 'tg', 'web']) if (t.soc?.[k] || t.sf?.[k]) chips.push(`<span class="chip soc">${SOC[k]}</span>`);
     return `<div class="tr-card${held ? ' held' : ''}" data-tr-open="${esc(t.m)}">
       <div class="tr-left">${icon(t)}${prog != null ? `<i class="tr-prog ${pc}"><i style="width:${Math.max(3, Math.min(100, prog)).toFixed(0)}%"></i></i>` : ''}</div>
       <div class="tr-mid">
@@ -621,20 +710,58 @@ export function createTrenches({ engine, chains, chain, setChain, nativeUsd, toa
     </div>`;
   }
   function filtersHtml() {
-    const f = set.f;
-    const b = (k, label) => `<button data-tr-f="${k}" class="${f[k] ? 'active' : ''}">${label}</button>`;
-    return `<div class="chips tr-filters">${b('soc', 'Socials')}${b('t10', 'Top10 ≤ 30%')}${b('dev', 'Dev ≤ 10%')}${b('h', '👥 50+')}</div>`;
+    const f = colF(S.col);
+    const n = activeCount(f);
+    const colName = (columns().find(([k]) => k === S.col) || [])[1] || '';
+    const sum = [];
+    for (const [k, label, mul] of RANGES) {
+      const r = f[k];
+      if (!r || (r[0] == null && r[1] == null)) continue;
+      const pctUnit = / %$/.test(label);
+      const name = label.replace(/ \(.*\)$/, '').replace(/ %$/, '');
+      const u = mul === 1000 ? 'k$' : k === 'age' ? ' min' : pctUnit ? '%' : '';
+      sum.push(`${name} ${r[0] != null ? `≥${r[0]}${u}` : ''}${r[0] != null && r[1] != null ? ' ' : ''}${r[1] != null ? `≤${r[1]}${u}` : ''}`);
+    }
+    if (f.lp?.length) sum.push(f.lp.map((x) => (PROTOCOLS.find(([k]) => k === x) || [x, x])[1]).join('/'));
+    if (f.inc) sum.push(`+${f.inc}`);
+    if (f.exc) sum.push(`−${f.exc}`);
+    for (const [k, l] of [['tw', '𝕏'], ['tg', 'TG'], ['web', 'WWW'], ['any', 'Socials']]) if (f[k]) sum.push(l);
+    const bar = `<div class="tr-fbar"><button data-tr-fopen class="${S.fopen ? 'on' : ''}">🎚️ Filtry${n ? ` <b>${n}</b>` : ''}</button>${n ? '<button data-tr-fclear>Wyczyść</button>' : ''}<span class="tr-fsum">${sum.map((x) => `<i>${esc(x)}</i>`).join('')}</span></div>`;
+    if (!S.fopen) return bar;
+    const range = ([k, label, , ends]) => {
+      const r = f[k] || [null, null];
+      const inp = (i, ph) => `<input data-tr-range="${k}|${i}" type="number" inputmode="decimal" step="any" placeholder="${ph}" value="${r[i] ?? ''}" />`;
+      return `<div class="tr-frow"><span>${esc(label)}</span>${ends === 'x' ? '<i></i>' : inp(0, 'min')}${ends === 'n' ? '<i></i>' : inp(1, 'max')}</div>`;
+    };
+    const chip = (attr, on, label) => `<button ${attr} class="${on ? 'active' : ''}">${label}</button>`;
+    const sol = isSol();
+    return `${bar}<div class="card tr-fpanel">
+      <div class="tr-fhead"><b>Filtry: ${esc(colName)}</b><button data-tr-fall>Kopiuj do wszystkich kolumn</button></div>
+      ${sol ? `<h4>Protokoły</h4><div class="chips">${PROTOCOLS.map(([k, l]) => chip(`data-tr-lp="${k}"`, f.lp?.includes(k), l)).join('')}</div>` : ''}
+      <h4>Słowa kluczowe <small>nazwa lub ticker, po przecinku</small></h4>
+      <div class="tr-kw"><label class="pf-field"><span>Szukaj</span><input data-tr-kw="inc" type="text" autocapitalize="off" autocomplete="off" placeholder="np. cat, ai" value="${esc(f.inc || '')}" /></label>
+        <label class="pf-field"><span>Wyklucz</span><input data-tr-kw="exc" type="text" autocapitalize="off" autocomplete="off" placeholder="np. test" value="${esc(f.exc || '')}" /></label></div>
+      <h4>Audyt</h4>${AUDIT.filter(([k]) => sol || !['dm', 'dmg', 'org', 'prog'].includes(k)).map(range).join('')}
+      <h4>Metryki</h4>${METRICS.filter(([k]) => sol || k !== 'tr5').map(range).join('')}
+      <h4>Socials</h4><div class="chips">${chip('data-tr-soc="tw"', f.tw, '𝕏 Twitter')}${chip('data-tr-soc="tg"', f.tg, 'Telegram')}${chip('data-tr-soc="web"', f.web, 'Strona')}${chip('data-tr-soc="any"', f.any, 'Min. jeden')}</div>
+      <p class="note">Puste pole = bez limitu. Gdy danych jeszcze nie ma (bardzo świeży token), limit „max” go przepuszcza, a „min” ukrywa. Snipers / insiders / bundles nie są dostępne w darmowych danych.</p>
+    </div>`;
+  }
+  function tabsHtml() {
+    const cols = columns();
+    if (!cols.some(([k]) => k === S.col)) S.col = cols[0][0];
+    return `<div class="pf-seg tr-tabs">${cols.map(([k, l]) => `<button data-tr-col="${k}" class="${k === S.col ? 'on' : ''}">${l}<small>${colList(k).length}</small></button>`).join('')}</div>`;
   }
   function listHtml() {
     const cols = columns();
     if (!cols.some(([k]) => k === S.col)) S.col = cols[0][0];
     const now = Date.now();
     const list = colList(S.col);
-    const tabs = `<div class="pf-seg tr-tabs">${cols.map(([k, l]) => `<button data-tr-col="${k}" class="${k === S.col ? 'on' : ''}">${l}<small>${colList(k).length}</small></button>`).join('')}</div>`;
     const empty = isSol()
       ? `<div class="empty"><b>${S.err ? 'Brak połączenia z Jupiterem' : 'Ładuję tokeny…'}</b>${S.err ? esc(S.err) + ' — ponawiam.' : 'Nowe launche pump.fun pojawiają się co kilka sekund.'}</div>`
       : '<div class="empty"><b>Brak tokenów</b>Dane z radaru tej sieci ładują się.</div>';
-    return tabs + filtersHtml() + (list.length ? `<div class="tr-list">${list.map((t) => cardHtml(t, now)).join('')}</div>` : empty);
+    if (!list.length && activeCount(colF(S.col)) && !S.err && colList(S.col, { raw: true }).length) return '<div class="empty"><b>Filtry ukrywają wszystkie tokeny</b>Poluzuj filtry tej kolumny albo „Wyczyść”.</div>';
+    return list.length ? `<div class="tr-list">${list.map((t) => cardHtml(t, now)).join('')}</div>` : empty;
   }
   function posListHtml() {
     const u = nUsd();
@@ -723,7 +850,7 @@ export function createTrenches({ engine, chains, chain, setChain, nativeUsd, toa
       body.dataset.mode = mode;
       body.innerHTML =
         mode === 'list'
-          ? '<div id="trHead"></div><div id="trSet"></div><div id="trMy"></div><div id="trList"></div><p class="note">Dane na żywo: PumpPortal (launche, migracje) i Jupiter (MC, holderzy, top 10, dev). Wirtualne pieniądze — trening, nie porada inwestycyjna.</p>'
+          ? '<div id="trHead"></div><div id="trSet"></div><div id="trMy"></div><div id="trTabs"></div><div id="trFilt"></div><div id="trList"></div><p class="note">Dane na żywo: PumpPortal (launche, migracje) i Jupiter (MC, holderzy, top 10, dev). Wirtualne pieniądze — trening, nie porada inwestycyjna.</p>'
           : `<div id="trTok"></div><div class="card tr-chart"><div class="tf-row" id="trTf">${Object.keys(TF_MS).map((x) => `<button data-tr-tf="${x}">${x}</button>`).join('')}</div><div class="tr-chart-box" id="tcChart"><div class="lw-msg" id="tcMsg">Ładowanie świec…</div></div></div><div id="trTrade"></div><div id="trTrades"></div>`;
       S.chart = null;
     }
@@ -731,6 +858,8 @@ export function createTrenches({ engine, chains, chain, setChain, nativeUsd, toa
       put($('#trHead'), headHtml());
       put($('#trSet'), settingsHtml());
       put($('#trMy'), posListHtml());
+      put($('#trTabs'), tabsHtml());
+      put($('#trFilt'), filtersHtml());
       put($('#trList'), listHtml());
     } else {
       put($('#trTok'), tokenHtml());
@@ -762,8 +891,27 @@ export function createTrenches({ engine, chains, chain, setChain, nativeUsd, toa
       set.quick[C()] = Number(d.trQset);
       saveSet();
     } else if (d.trSettings !== undefined) S.settings = !S.settings;
-    else if (d.trF) {
-      set.f[d.trF] = !set.f[d.trF];
+    else if (d.trFopen !== undefined) S.fopen = !S.fopen;
+    else if (d.trFclear !== undefined) {
+      set.fc[fKey(S.col)] = {};
+      saveSet();
+    } else if (d.trFall !== undefined) {
+      const f = colF(S.col);
+      for (const [k] of columns()) set.fc[fKey(k)] = structuredClone(f);
+      saveSet();
+      toast('Filtry skopiowane do wszystkich kolumn');
+    } else if (d.trLp) {
+      const f = colF(S.col);
+      const lp = new Set(f.lp || []);
+      if (lp.has(d.trLp)) lp.delete(d.trLp);
+      else lp.add(d.trLp);
+      if (lp.size) f.lp = [...lp];
+      else delete f.lp;
+      saveSet();
+    } else if (d.trSoc) {
+      const f = colF(S.col);
+      if (f[d.trSoc]) delete f[d.trSoc];
+      else f[d.trSoc] = true;
       saveSet();
     } else if (d.trBuy) buy(S.open, Number(d.trBuy));
     else if (d.trBuyc !== undefined) {
@@ -773,6 +921,8 @@ export function createTrenches({ engine, chains, chain, setChain, nativeUsd, toa
     else if (d.trInit !== undefined) sellInit(S.open);
     else if (d.trTf) {
       S.tf = d.trTf;
+      set.tf = S.tf;
+      saveSet();
       S.candles = null;
       loadCandles();
     } else if (d.trCopy) {
@@ -784,6 +934,28 @@ export function createTrenches({ engine, chains, chain, setChain, nativeUsd, toa
   }
   function onChange(e) {
     const el = e.target;
+    if (el.dataset.trRange) {
+      const [k, i] = el.dataset.trRange.split('|');
+      const f = colF(S.col);
+      const r = f[k] || [null, null];
+      const raw = String(el.value).trim().replace(',', '.');
+      const v = raw === '' ? null : Number(raw);
+      r[Number(i)] = Number.isFinite(v) ? v : null;
+      if (r[0] == null && r[1] == null) delete f[k];
+      else f[k] = r;
+      saveSet();
+      S.dirty = true;
+      return;
+    }
+    if (el.dataset.trKw) {
+      const f = colF(S.col);
+      const v = String(el.value).trim().slice(0, 120);
+      if (v) f[el.dataset.trKw] = v;
+      else delete f[el.dataset.trKw];
+      saveSet();
+      S.dirty = true;
+      return;
+    }
     if (el.dataset.set) {
       const k = el.dataset.set;
       if (k === 'presets') {
@@ -932,7 +1104,7 @@ export function createTrenches({ engine, chains, chain, setChain, nativeUsd, toa
     }
     if (vis && S.open) {
       liveTick();
-      if (tick % 20 === 0) loadTrades();
+      if (tick % (SUB_TF.has(S.tf) ? 13 : 20) === 0) loadTrades();
       if (S.candles && Date.now() - S.candles.at > 50_000) loadCandles();
     }
     checkExits();

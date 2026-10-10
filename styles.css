@@ -1211,3 +1211,19 @@ svg.candles .th { fill: #e4c15a; stroke: #0b0f17; stroke-width: 1.2; }
 .tr-trades > div > span:first-child { font-weight: 800; }
 .trench-card { background: linear-gradient(135deg, rgba(255, 216, 77, 0.14), rgba(255, 122, 46, 0.14)), var(--panel); border-color: #524a2e; }
 .trench-card > small { display: block; margin-top: 2px; font: 600 12px/1.2 var(--mono); }
+.tr-fbar { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; min-width: 0; }
+.tr-fbar > button { flex: none; height: 30px; padding: 0 10px; border-radius: 9px; border: 1px solid var(--line2); background: var(--panel2); color: var(--text); font: 700 12px/1 var(--sans); cursor: pointer; }
+.tr-fbar > button.on { border-color: var(--accent); background: rgba(255, 122, 46, 0.18); }
+.tr-fbar > button b { display: inline-block; min-width: 16px; padding: 1px 4px; margin-left: 3px; border-radius: 8px; background: var(--accent); color: #fff; font: 800 10px/1.3 var(--mono); }
+.tr-fsum { display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none; min-width: 0; }
+.tr-fsum i { flex: none; font: 600 10.5px/1 var(--mono); font-style: normal; padding: 5px 7px; border-radius: 7px; background: var(--panel3); color: var(--muted); white-space: nowrap; }
+.tr-fpanel { margin-bottom: 10px; }
+.tr-fpanel h4 { margin: 12px 0 6px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.tr-fpanel h4 small { text-transform: none; letter-spacing: 0; color: var(--dim); font-weight: 500; }
+.tr-fhead { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.tr-fhead button { height: 28px; padding: 0 9px; border-radius: 8px; border: 1px solid var(--line2); background: var(--panel2); color: var(--text); font: 600 11.5px/1 var(--sans); cursor: pointer; }
+.tr-frow { display: grid; grid-template-columns: minmax(0, 1fr) 84px 84px; gap: 6px; align-items: center; margin-bottom: 5px; font-size: 12.5px; }
+.tr-frow input { width: 100%; height: 34px; padding: 0 8px; border-radius: 8px; border: 1px solid var(--line2); background: var(--panel2); color: var(--text); font: 500 16px/1 var(--mono); min-width: 0; }
+.tr-kw { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.tr-kw .pf-field { margin-top: 0; }
+.tr-kw .pf-field input { text-align: left; }
