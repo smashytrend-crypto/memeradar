@@ -1116,3 +1116,19 @@ svg.candles .th { fill: #e4c15a; stroke: #0b0f17; stroke-width: 1.2; }
 .bottombar { width: min(400px, calc(100vw - 24px)); }
 .bottombar button { min-width: 0; padding: 6px 2px; }
 .bottombar .bl { white-space: nowrap; }
+
+/* TOP wallets (tracker) */
+.lb-card { margin-bottom: 12px; }
+.lb-f { margin-bottom: 6px; align-items: center; }
+.lb-sep { width: 1px; height: 18px; background: var(--line2); margin: 0 2px; }
+.lb-row { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto auto; gap: 8px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.lb-rank { font: 800 12px/1 var(--mono); color: var(--muted); text-align: center; }
+.lb-main { min-width: 0; }
+.lb-main b { display: block; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lb-main small { display: block; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lb-num { text-align: right; }
+.lb-num b { display: block; font: 800 13px/1.2 var(--mono); }
+.lb-num small { font: 600 10.5px/1.2 var(--mono); color: var(--muted); }
+.lb-acts { display: flex; align-items: center; gap: 6px; }
+.lb-acts button { height: 28px; padding: 0 9px; border-radius: 8px; border: 1px solid var(--line2); background: var(--panel2); color: var(--text); font: 700 11.5px/1 var(--sans); cursor: pointer; }
+.lb-acts a { color: var(--blue); text-decoration: none; font-weight: 700; }

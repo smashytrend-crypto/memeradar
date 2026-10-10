@@ -3,15 +3,15 @@
 // cross-origin reads). One engine per network, created the first time the viewer opens it; only
 // the network on screen polls its sources, the others pause (and keep their data for a quick
 // switch back).
-import { Store } from './server/store.js?v=mv2qxiya';
-import { RateLimiter, every, getJSON, num } from './server/util.js?v=mv2qxiya';
-import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=mv2qxiya';
-import { startPumpPortal } from './server/sources/pumpportal.js?v=mv2qxiya';
-import { startDexScreener } from './server/sources/dexscreener.js?v=mv2qxiya';
-import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=mv2qxiya';
-import { startJupiter } from './server/sources/jupiter.js?v=mv2qxiya';
-import { startRugCheck } from './server/sources/rugcheck.js?v=mv2qxiya';
-import { startGoPlus } from './server/sources/goplus.js?v=mv2qxiya';
+import { Store } from './server/store.js?v=mv2uwc6i';
+import { RateLimiter, every, getJSON, num } from './server/util.js?v=mv2uwc6i';
+import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=mv2uwc6i';
+import { startPumpPortal } from './server/sources/pumpportal.js?v=mv2uwc6i';
+import { startDexScreener } from './server/sources/dexscreener.js?v=mv2uwc6i';
+import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=mv2uwc6i';
+import { startJupiter } from './server/sources/jupiter.js?v=mv2uwc6i';
+import { startRugCheck } from './server/sources/rugcheck.js?v=mv2uwc6i';
+import { startGoPlus } from './server/sources/goplus.js?v=mv2uwc6i';
 
 const baseConfig = {
   demo: false,
@@ -286,6 +286,8 @@ function createEngine(chainId) {
     },
     /** Latest trades of the token's main pool (cached 25 s), newest first; null without a pool. */
     trades: (mint) => trades(mint, true),
+    /** Trades for the background wallet scanner: no priority, the chart's requests go first. */
+    scan: (mint) => trades(mint, false),
     /** Candles [ms, o, h, l, c, vol] for the chart (cached 50 s per timeframe). */
     async candles(mint, tf) {
       const t = store.get(normAddr(chain, mint));
@@ -426,6 +428,7 @@ export const engine = {
   },
   search: (q) => current.search(q),
   trades: (mint) => current.trades(mint),
+  scanTrades: (mint) => current.scan(mint),
   copies: (mint) => current.copies(mint),
   live: (mint) => current.live(mint),
   candles: (mint, tf) => current.candles(mint, tf),
