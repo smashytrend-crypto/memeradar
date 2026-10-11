@@ -1533,8 +1533,8 @@ function renderWallet() {
 // ---------- tracker sheet: tracked + discovered wallets ----------
 function renderTracker() {
   const body = $('#trackBody');
-  if (!body.querySelector('#tTrack')) body.innerHTML = '<div id="tTop"></div><div id="tTrack"></div><div id="tDisc"></div>';
-  for (const [id, html] of [['#tTop', topWalletsCard()], ['#tTrack', walletTrackerCard()], ['#tDisc', discoveryCard()]]) {
+  if (!body.querySelector('#tTrack')) body.innerHTML = '<div id="tTrack"></div><div id="tDisc"></div>';
+  for (const [id, html] of [['#tTrack', walletTrackerCard()], ['#tDisc', discoveryCard()]]) {
     const el = body.querySelector(id);
     // Not while typing in the add form (iOS would close the keyboard).
     if (el.dataset.html === html || (el.contains(document.activeElement) && /INPUT|SELECT/.test(document.activeElement.tagName))) continue;
@@ -1571,7 +1571,7 @@ function openSheet(name) {
 state.walletMode = LS.get('walletMode', 'spot') === 'perps' ? 'perps' : 'spot';
 // Loaded as its own module: if it can't load (e.g. the single-file preview), only perps are off.
 let perps = null;
-import('./perps.js?v=mv2zx1lk')
+import('./perps.js?v=mv3q1cma')
   .then(({ createPerps }) => {
     perps = createPerps({
       toast: (m) => toast(m),
@@ -2821,20 +2821,6 @@ $('#perpSheet').addEventListener('click', (e) => {
 });
 $('#trackSheet').addEventListener('click', (e) => {
   if (e.target.closest('[data-sheet-close]')) return closeSheets();
-  const lb = e.target.closest('[data-lb-sort], [data-lb-days], [data-lb-min]');
-  if (lb) {
-    if (lb.dataset.lbSort) state.lb.sort = lb.dataset.lbSort;
-    if (lb.dataset.lbDays) state.lb.days = Number(lb.dataset.lbDays);
-    if (lb.dataset.lbMin) state.lb.min = Number(lb.dataset.lbMin);
-    LS.set('lb', state.lb);
-    return renderTracker();
-  }
-  const lt = e.target.closest('[data-lb-track]');
-  if (lt) {
-    const rank = topWallets().findIndex((x) => x.w === lt.dataset.lbTrack) + 1;
-    trackWallet(lt.dataset.lbTrack, `TOP #${rank || '?'}`, '🏆');
-    return renderTracker();
-  }
   if (e.target.closest('[data-wt-add]')) {
     const a = $('#wtAddr')?.value || '';
     trackWallet(a, $('#wtName')?.value || '', $('#wtEmoji')?.value || '👛');
@@ -3070,74 +3056,13 @@ function discoveredWallets() {
     .sort((a, b) => b.wins - a.wins || b.early - a.early || b.pnl - a.pnl)
     .slice(0, 15);
 }
-// ---------- TOP wallets: results on the radar's tokens (background trade scanner) ----------
-// Every 45 s one of the radar's top tokens (not scanned in the last 30 min) has its recent trades
-// read, without priority (the chart's requests go first), and each wallet's result on it is
-// recorded (recordTraders). The ranking adds those results up per wallet.
-const SCAN = { at: LS.get('scanAt', {}) || {}, n: 0, last: null };
-state.lb = Object.assign({ sort: 'pnl', days: 7, min: 2 }, LS.get('lb', {}) || {});
-function scanTick() {
-  if (!ENGINE?.scanTrades || document.hidden || state.selected) return;
-  const rows = (state.hypeRows || []).slice(0, 50);
-  const now = Date.now();
-  const row = rows.find((r) => now - (SCAN.at[r.m] || 0) > 30 * 60_000 && r.p > 0);
-  if (!row) return;
-  SCAN.at[row.m] = now;
-  for (const k of Object.keys(SCAN.at)) if (now - SCAN.at[k] > DAY_MS) delete SCAN.at[k];
-  LS.set('scanAt', SCAN.at);
-  const chain = ENGINE.chain || 'solana'; // the network can change before the answer comes
-  ENGINE.scanTrades(row.m)
-    .then((list) => {
-      if (list?.length) recordTraders(row.m, list, row, chain);
-      SCAN.n++;
-      SCAN.last = { s: row.s || fmt.short(row.m), t: Date.now() };
-      if (sheetOpen('track') && !sheetBusy()) renderTracker();
-    })
-    .catch(() => (SCAN.at[row.m] = now - 25 * 60_000)); // rate-limited: try again in ~5 min
-}
-setInterval(scanTick, 45_000);
-setTimeout(scanTick, 8_000);
 const DAY_MS = 86_400_000;
-/** Ranking of wallets on the network on screen: profit, win rate, hits, early entries, best trade. */
-function topWallets() {
-  const disc = getDisc();
-  const chain = ENGINE?.chain || 'solana';
-  const since = Date.now() - state.lb.days * DAY_MS;
-  const win = (x) => x[0] >= Math.max(50, 0.2 * (x[3] || 0));
-  const out = [];
-  for (const [w, e] of Object.entries(disc)) {
-    const toks = Object.values(e.n || {}).filter((x) => discChain(x, e) === chain && (x[4] || e.at || 0) >= since);
-    if (toks.length < state.lb.min) continue;
-    const wins = toks.filter(win);
-    const best = toks.reduce((b, x) => (!b || x[0] > b[0] ? x : b), null);
-    out.push({ w, n: toks.length, wins: wins.length, rate: wins.length / toks.length, pnl: toks.reduce((a, x) => a + x[0], 0), early: wins.filter((x) => x[1]).length, best });
-  }
-  const by = { pnl: (a, b) => b.pnl - a.pnl, rate: (a, b) => b.rate - a.rate || b.wins - a.wins || b.pnl - a.pnl, wins: (a, b) => b.wins - a.wins || b.pnl - a.pnl };
-  return out.sort(by[state.lb.sort] || by.pnl).slice(0, 30);
-}
-function topWalletsCard() {
-  const list = topWallets();
-  const chip = (attr, v, cur, label) => `<button data-${attr}="${v}" class="${String(cur) === String(v) ? 'active' : ''}">${label}</button>`;
-  const ex = chainCfg().explorer;
-  const rows = list
-    .map((x, i) => {
-      const t = walletOf(x.w);
-      return `<div class="lb-row">
-        <span class="lb-rank">${i + 1}</span>
-        <div class="lb-main"><b>${t ? `${esc(t.emoji || '👛')} ${esc(t.name)}` : `<span class="mono">${esc(fmt.short(x.w))}</span>`}</b>
-          <small>${x.wins}/${x.n} tokenów na plus${x.early ? ` · 🎯 ${x.early} wczesnych` : ''}${x.best && x.best[0] > 0 ? ` · najlepszy ${esc(x.best[2] || '?')} +${fmt.usd(x.best[0])}` : ''}</small></div>
-        <div class="lb-num"><b class="${x.pnl >= 0 ? 'up' : 'down'}">${x.pnl >= 0 ? '+' : '−'}${fmt.usd(Math.abs(x.pnl))}</b><small>${Math.round(x.rate * 100)}% skut.</small></div>
-        <div class="lb-acts">${t ? '<span class="chip up">śledzony</span>' : `<button data-lb-track="${esc(x.w)}">Śledź</button>`}${ex ? `<a href="${esc(ex(x.w).replace('/token/', chainCfg().evm ? '/address/' : '/account/'))}" target="_blank" rel="noopener">↗</a>` : ''}</div>
-      </div>`;
-    })
-    .join('');
-  const status = SCAN.last ? `Przeskanowano ${SCAN.n} tokenów w tej sesji · ostatni: ${esc(SCAN.last.s)} ${fmt.ago(SCAN.last.t)} temu` : ENGINE ? 'Skaner startuje — pierwszy token za kilka sekund' : 'Skaner działa w wersji przeglądarkowej';
-  return `<div class="card lb-card"><h3>🏆 TOP Wallety <small>z tokenów radaru · ${esc(chainCfg().name || '')}</small></h3>
-    <div class="chips lb-f">${chip('lb-sort', 'pnl', state.lb.sort, 'Profit')}${chip('lb-sort', 'rate', state.lb.sort, 'Skuteczność')}${chip('lb-sort', 'wins', state.lb.sort, 'Trafienia')}<span class="lb-sep"></span>${chip('lb-days', 1, state.lb.days, '24h')}${chip('lb-days', 7, state.lb.days, '7 dni')}</div>
-    <div class="chips lb-f">${chip('lb-min', 1, state.lb.min, 'min. 1 token')}${chip('lb-min', 2, state.lb.min, '2+')}${chip('lb-min', 3, state.lb.min, '3+')}${chip('lb-min', 5, state.lb.min, '5+')}</div>
-    ${rows || '<p class="note">Lista wypełnia się w miarę skanowania tokenów z radaru (ok. 1 token na 45 s). Zajrzyj za kilka minut.</p>'}
-    <p class="note">${status}. Wynik = zysk z ostatnich ~300 transakcji każdego tokena (zrealizowany + niezrealizowany po bieżącej cenie); „na plus” = min. $50 i 20% włożonej kwoty. To nie pełny PnL portfela — tylko tokeny z radaru.</p>
-  </div>`;
+// Left behind by the removed TOP wallets ranking.
+try {
+  localStorage.removeItem('mr:scanAt');
+  localStorage.removeItem('mr:lb');
+} catch {
+  /* private mode */
 }
 
 function discoveryCard() {
