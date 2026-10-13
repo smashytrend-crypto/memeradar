@@ -1113,8 +1113,56 @@ svg.candles .th { fill: #e4c15a; stroke: #0b0f17; stroke-width: 1.2; }
 .perp-card { background: linear-gradient(135deg, rgba(31, 214, 143, 0.14), rgba(82, 168, 255, 0.14)), var(--panel); border-color: #2e4a52; }
 .perp-card .wallet-sub + .wallet-sub { margin-top: 8px; }
 /* Five buttons in the bottom bar (Radar, Pozycje, Wallet, Tracker, Perpy). */
-.bottombar { width: min(400px, calc(100vw - 24px)); }
+.bottombar { width: min(460px, calc(100vw - 16px)); }
+.bottombar button { padding: 6px 2px; font-size: 10px; }
+.bottombar.mini { width: min(260px, calc(100vw - 32px)); }
 .bottombar button { min-width: 0; padding: 6px 2px; }
 .bottombar .bl { white-space: nowrap; }
 
 /* TOP wallets (tracker) */
+
+/* ---------- trading bot DEMO (BOT tab: panel above the radar list) ---------- */
+.bot-panel { margin: 10px 16px 4px; padding: 14px; border-radius: var(--radius); border: 1px solid var(--line2); background: linear-gradient(180deg, rgba(255, 122, 46, 0.07), rgba(255, 45, 149, 0.03)), var(--panel); }
+.bot-panel[hidden] { display: none; }
+.bot-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.bot-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.bot-title b { font-size: 16px; font-weight: 800; }
+.bot-pill { padding: 3px 8px; border-radius: 999px; font: 700 11px/1.2 var(--sans); color: var(--muted); background: var(--panel2); border: 1px solid var(--line2); }
+.bot-pill.on { color: var(--up); background: var(--up-bg); border-color: rgba(31, 214, 143, 0.35); }
+.bot-toggle { height: 38px; padding: 0 18px; border: 0; border-radius: 11px; background: var(--up); color: #04120b; font: 800 14px/1 var(--sans); cursor: pointer; }
+.bot-toggle.stop { background: var(--down); color: #fff; }
+.bot-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: 8px; margin-top: 12px; }
+.bot-stats div { padding: 8px 10px; border-radius: 10px; background: var(--panel2); border: 1px solid var(--line); min-width: 0; }
+.bot-stats span { display: block; font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.bot-stats b { display: block; margin-top: 3px; font: 800 14px/1.2 var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bot-stats b small { font-size: 10.5px; color: var(--muted); font-weight: 600; }
+.bot-warn { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-top: 10px; padding: 9px 11px; border-radius: 10px; background: var(--warn-bg); color: var(--warn); font-size: 13px; font-weight: 600; }
+.bot-warn button { height: 30px; padding: 0 10px; border-radius: 8px; border: 1px solid rgba(255, 178, 36, 0.4); background: transparent; color: var(--warn); font: 700 12px/1 var(--sans); cursor: pointer; }
+.bot-scan { margin: 8px 0 0; }
+.bot-set { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+.bot-set summary { cursor: pointer; font-weight: 700; font-size: 14px; list-style: none; }
+.bot-set summary::-webkit-details-marker { display: none; }
+.bot-set summary::after { content: ' ▾'; color: var(--muted); }
+.bot-set:not([open]) summary::after { content: ' ▸'; }
+.bot-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin-top: 10px; }
+.bot-grid label { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.bot-grid span { font-size: 11.5px; color: var(--muted); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bot-grid span small { color: var(--dim); }
+.bot-grid input { width: 100%; height: 38px; padding: 0 10px; border-radius: 9px; border: 1px solid var(--line2); background: var(--bg2); color: var(--text); font: 600 16px/1 var(--mono); }
+.bot-set .toggle-row { display: flex; align-items: center; gap: 10px; margin: 10px 0 4px; font-size: 13.5px; font-weight: 600; cursor: pointer; }
+.bot-set .toggle-row input { width: 20px; height: 20px; accent-color: var(--accent); }
+.bot-acts { margin-top: 8px; }
+.bot-acts button { height: 32px; padding: 0 12px; border-radius: 9px; border: 1px solid var(--line2); background: var(--panel2); color: var(--text); font: 600 12.5px/1 var(--sans); cursor: pointer; }
+.bot-pos { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.bot-tok { display: flex; align-items: center; gap: 8px; min-width: 0; border: 0; background: none; color: var(--text); padding: 0; text-align: left; cursor: pointer; }
+.bot-tok img { width: 26px; height: 26px; border-radius: 50%; object-fit: cover; flex: none; }
+.bot-tok b { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bot-tok small { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.bot-pnl { text-align: right; }
+.bot-pnl b { display: block; font: 800 13.5px/1.2 var(--mono); }
+.bot-pnl small { font: 600 11px/1.2 var(--mono); color: var(--muted); }
+.bot-sell { height: 32px; padding: 0 10px; border-radius: 9px; border: 1px solid rgba(255, 77, 106, 0.4); background: var(--down-bg); color: var(--down); font: 700 12px/1 var(--sans); cursor: pointer; }
+.bot-log { font-size: 12.5px; line-height: 1.5; max-height: 190px; overflow-y: auto; }
+.bot-log div { padding: 3px 0; border-bottom: 1px dashed var(--line); }
+.bot-log small { color: var(--dim); font-family: var(--mono); margin-right: 4px; }
+@media (min-width: 900px) { .bot-panel { margin: 12px 24px 6px; } }

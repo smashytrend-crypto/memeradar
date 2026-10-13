@@ -841,7 +841,7 @@ function connect() {
       // Demo positions on this network stay loaded even when off the list.
       const posHere = Object.keys(state.positions).filter((m) => (state.positions[m].chain || 'solana') === ENGINE.chain);
       // …and with the watched ones, their trades feed the whale / tracked-wallet alerts.
-      ENGINE.track([...new Set([...posHere, ...watchedHere()])]);
+      ENGINE.track([...new Set([...posHere, ...watchedHere(), ...(bot?.tracked() || [])])]);
       applySnapshot(ENGINE.snapshot(state.view, filters, lim, state.view === 'watch' ? watchedHere() : []));
       if (sheetOpen('pos') && !sheetBusy()) renderPositions();
       if (sheetOpen('wallet') && !sheetBusy()) renderWallet();
@@ -1471,9 +1471,12 @@ function renderPositions() {
 function renderWallet() {
   // Spot (memecoin positions) or Perpetuals: two separate demo wallets.
   const perpMode = state.walletMode === 'perps';
-  $('#walletBody').hidden = perpMode;
+  const botMode = state.walletMode === 'bot';
+  $('#walletBody').hidden = perpMode || botMode;
   $('#walletPerpBody').hidden = !perpMode;
-  $$('#walletSeg button').forEach((b) => b.classList.toggle('on', (b.dataset.wmode === 'perps') === perpMode));
+  $('#walletBotBody').hidden = !botMode;
+  $$('#walletSeg button').forEach((b) => b.classList.toggle('on', b.dataset.wmode === state.walletMode));
+  if (botMode) return bot ? bot.renderWallet($('#walletBotBody')) : ($('#walletBotBody').innerHTML = '<p class="note">Bot ładuje się…</p>');
   if (perpMode) return perps ? perps.renderWallet($('#walletPerpBody')) : ($('#walletPerpBody').innerHTML = '<p class="note">Perpetuals ładują się…</p>');
   const w = state.wallet;
   const list = positionList();
@@ -1568,10 +1571,11 @@ function openSheet(name) {
   $(SHEETS[name][0]).scrollTop = 0;
 }
 // Perpetuals DEMO (live Hyperliquid data; own wallet).
-state.walletMode = LS.get('walletMode', 'spot') === 'perps' ? 'perps' : 'spot';
+const WALLET_MODES = ['spot', 'perps', 'bot'];
+state.walletMode = WALLET_MODES.includes(LS.get('walletMode', 'spot')) ? LS.get('walletMode', 'spot') : 'spot';
 // Loaded as its own module: if it can't load (e.g. the single-file preview), only perps are off.
 let perps = null;
-import('./perps.js?v=mv3q1cma')
+import('./perps.js?v=mv75c9is')
   .then(({ createPerps }) => {
     perps = createPerps({
       toast: (m) => toast(m),
@@ -1588,22 +1592,52 @@ import('./perps.js?v=mv3q1cma')
   });
 /** Opens the wallet on its Spot (memecoins) or Perpetuals side. */
 function openWallet(mode) {
-  state.walletMode = mode === 'perps' ? 'perps' : 'spot';
+  state.walletMode = WALLET_MODES.includes(mode) ? mode : 'spot';
   LS.set('walletMode', state.walletMode);
   openSheet('wallet');
 }
 $('#walletSeg').addEventListener('click', (e) => {
   const b = e.target.closest('[data-wmode]');
   if (!b) return;
-  state.walletMode = b.dataset.wmode === 'perps' ? 'perps' : 'spot';
+  state.walletMode = WALLET_MODES.includes(b.dataset.wmode) ? b.dataset.wmode : 'spot';
   LS.set('walletMode', state.walletMode);
   renderWallet();
 });
 function closeSheets() {
   for (const [sel] of Object.values(SHEETS)) $(sel).hidden = true;
   document.body.classList.remove('sheet-open');
-  $$('#bottombar button').forEach((b) => b.classList.toggle('on', b.dataset.nav === 'radar'));
+  $$('#bottombar button').forEach((b) => b.classList.toggle('on', b.dataset.nav === (state.botView ? 'bot' : 'radar')));
 }
+
+// ---------- trading bot DEMO (BOT tab: the radar with the bot's panel on top) ----------
+let bot = null;
+import('./bot.js?v=mv75c9is')
+  .then(({ createBot }) => {
+    bot = createBot({
+      toast: (m) => toast(m),
+      engine: () => ENGINE,
+      tradeFee: (usd, chain) => tradeFee(usd, chain),
+      excluded: (r) => state.hidden.has(r.m) || (r.cr && state.blocked.has(r.cr)),
+      openToken: (m) => openDetail(m),
+      openWallet: () => openWallet('bot'),
+      onChange: () => ($('#c-bot').textContent = bot?.count() || ''),
+      fmt,
+      esc,
+    });
+    $('#c-bot').textContent = bot.count() || '';
+    if (state.botView) bot.render($('#botPanel'));
+    if (sheetOpen('wallet')) renderWallet();
+  })
+  .catch(() => {
+    $('#botPanel').innerHTML = '<div class="empty"><b>Bot niedostępny</b>Nie udało się wczytać modułu.</div>';
+  });
+function setBotView(on) {
+  state.botView = on;
+  $('#botPanel').hidden = !on;
+  document.body.classList.toggle('bot-view', on);
+  if (on) bot?.render($('#botPanel'));
+}
+setInterval(() => state.botView && !document.hidden && bot?.render($('#botPanel')), 2000);
 const sheetOpen = (name) => !$(SHEETS[name][0]).hidden;
 
 // ---------- holder structure icons (Axiom-style) ----------
@@ -2774,6 +2808,7 @@ $('#bottombar').addEventListener('click', (e) => {
   if (state.selected) closeDetail();
   if (SHEETS[b.dataset.nav]) openSheet(b.dataset.nav);
   else {
+    setBotView(b.dataset.nav === 'bot');
     closeSheets();
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
