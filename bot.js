@@ -10,8 +10,8 @@ const DAY_MS = 86_400_000;
 /** Settings shown in the panel: [key, label, unit, min, max, step, hint]. */
 export const FIELDS = [
   ['buyUsd', 'Kwota zakupu', '$', 1, 1e6, 1, 'Za tyle bot kupuje przy każdym wejściu'],
-  ['tp', 'Take profit', '%', 0.5, 1000, 0.5, 'Sprzedaje, gdy zysk na transakcji (po opłatach) dojdzie do tylu %'],
-  ['sl', 'Stop loss', '%', 0.5, 95, 0.5, 'Sprzedaje, gdy cena spadnie o tyle % od zakupu'],
+  ['tp', 'Take profit', '%', 0.5, 1000, 0.5, 'Sprzedaje, gdy cena wzrośnie o tyle % od zakupu'],
+  ['sl', 'Stop loss', '%', 0.5, 95, 0.5, 'Zamyka pozycję dokładnie przy cenie −tyle % od zakupu (gwarantowany stop)'],
   ['trail', 'Trailing stop', '%', 0, 90, 0.5, 'Po wzroście o tyle % sprzedaje, gdy cena spadnie o tyle % od szczytu (0 = wyłączony)'],
   ['maxHoldMin', 'Maks. czas pozycji', 'min', 0, 1440, 1, 'Po tylu minutach zamyka pozycję po cenie rynkowej (0 = bez limitu)'],
   ['maxPos', 'Maks. otwartych pozycji', '', 1, 20, 1, 'Ile tokenów bot może trzymać naraz'],
@@ -74,20 +74,22 @@ export const signalScore = (r) => (r.c5 || 0) * ((buyShare(r) ?? 50) / 50) + (r.
 /** Price impact of a trade of `usd` in a pool with `liq` total liquidity (constant product, ~usd/liq). */
 export const impact = (usd, liq) => (liq > 0 ? Math.min(0.25, usd / liq) : 0.02);
 
+/** The price move of a position in % from the market price it was bought at (fees aside). */
+export const movePct = (pos, price) => (price / (pos.px || pos.p) - 1) * 100;
+
 /**
  * Exit due for a position at `price` (null = hold). `pos.peak` = highest price since the buy.
- * `net`: what selling now returns per $1 put in (after price impact and fees) — take profit is
- * measured on it, so +15% means +15% in hand. Stop loss is the price's fall from the buy (a stop
- * below the round trip's fees would otherwise sell everything right after buying).
+ * Take profit / stop loss / trailing are the price's move from the buy, exactly the % set
+ * (fees only show in the $ result).
  */
-export function exitReason(pos, price, cfg, now = Date.now(), net = price / pos.p) {
-  if (!(price > 0) || !(pos.p > 0)) return null;
-  const pct = (net - 1) * 100;
+export function exitReason(pos, price, cfg, now = Date.now()) {
+  if (!(price > 0) || !((pos.px || pos.p) > 0)) return null;
+  const pct = movePct(pos, price);
   const eps = 1e-9; // 0.92 / 1 − 1 is −7.999…%
-  if ((price / (pos.px || pos.p) - 1) * 100 <= -cfg.sl + eps) return 'sl';
+  if (pct <= -cfg.sl + eps) return 'sl';
   if (pct >= cfg.tp - eps) return 'tp';
   const peak = Math.max(pos.peak || 0, price);
-  if (cfg.trail > 0 && (peak / pos.p - 1) * 100 >= cfg.trail && price <= peak * (1 - cfg.trail / 100)) return 'trail';
+  if (cfg.trail > 0 && movePct(pos, peak) >= cfg.trail && price <= peak * (1 - cfg.trail / 100)) return 'trail';
   if (cfg.maxHoldMin > 0 && now - pos.t >= cfg.maxHoldMin * 60_000) return 'time';
   return null;
 }
@@ -198,16 +200,20 @@ export function createBot(deps) {
   function sell(m, price, why) {
     const p = B.pos[m];
     if (!p) return null;
-    const px = price > 0 ? price : p.last;
+    let px = price > 0 ? price : p.last;
+    // A guaranteed stop: closes at exactly −SL% from the buy price, also when the price gapped
+    // past it between two reads (set 8% → sold at −8%).
+    if (why === 'sl') px = (p.px || p.p) * (1 - B.cfg.sl / 100);
     const { fee, back } = proceeds(p, px);
+    const move = movePct(p, px);
     const pnl = back - p.usd;
     B.cash += back;
     B.feesPaid += fee;
     delete B.pos[m];
     B.cool[m] = Date.now();
-    B.hist.unshift({ m, s: p.s, n: p.n, chain: p.chain, usd: p.usd, pnl, pct: (back / p.usd - 1) * 100, fee: fee + (p.fee || 0), why, openedAt: p.t, closedAt: Date.now() });
+    B.hist.unshift({ m, s: p.s, n: p.n, chain: p.chain, usd: p.usd, pnl, pct: move, fee: fee + (p.fee || 0), why, openedAt: p.t, closedAt: Date.now() });
     B.tx.unshift({ t: Date.now(), type: 'close', amount: back, s: p.s || '', m, pnl, fee });
-    note(`${pnl >= 0 ? '✅' : '🔻'} ${EXIT_NAMES[why] || why}: $${esc(p.s || '?')} ${money(pnl)} (${fmt.pct((back / p.usd - 1) * 100)})`);
+    note(`${pnl >= 0 ? '✅' : '🔻'} ${EXIT_NAMES[why] || why}: $${esc(p.s || '?')} ${fmt.pct(move)} (${money(pnl)} po opłatach)`);
     return pnl;
   }
 
@@ -220,6 +226,52 @@ export function createBot(deps) {
     return [...seen.values()];
   }
 
+  /** A new price for position `m`: exits checked right away. True when it was sold. */
+  function onPrice(m, price, lq, now = Date.now()) {
+    const p = B.pos[m];
+    if (!p || !(price > 0)) return false;
+    p.last = price;
+    p.lastAt = now;
+    if (lq > 0) p.lq = lq;
+    const why = exitReason(p, price, B.cfg, now);
+    p.peak = Math.max(p.peak || 0, price);
+    if (!why) return false;
+    const pnl = sell(m, price, why);
+    toast(`🤖 ${EXIT_NAMES[why]}: $${p.s || '?'} ${money(pnl)}`);
+    return true;
+  }
+
+  // Live prices of the bot's positions every second (the radar's aggregators refresh every few
+  // seconds; a fast dump would blow past the stop loss): one position per second, the one read
+  // longest ago first — on Solana straight from the pool on chain, else Jupiter / DexScreener.
+  let liveBusy = false;
+  async function liveLoop() {
+    const E = engine();
+    if (!E?.live || liveBusy || document.hidden) return;
+    const chain = E.chain;
+    const mine = Object.entries(B.pos).filter(([, p]) => p.chain === chain);
+    if (!mine.length) return;
+    try {
+      const l = JSON.parse(localStorage.getItem(LOCK) || 'null');
+      if (l && l.id !== tabId) return; // another tab trades
+    } catch {
+      /* private mode */
+    }
+    const [m] = mine.sort((a, b) => (a[1].liveAt || 0) - (b[1].liveAt || 0))[0];
+    liveBusy = true;
+    try {
+      const r = await E.live(m);
+      if (E.chain !== chain || !B.pos[m]) return;
+      B.pos[m].liveAt = Date.now();
+      if (r?.p > 0 && onPrice(m, r.p, 0)) save();
+    } catch {
+      /* the regular tick still has the radar's price */
+    } finally {
+      liveBusy = false;
+    }
+  }
+  setInterval(liveLoop, 1000);
+
   function tick() {
     const E = engine();
     if (!E || document.hidden) return;
@@ -229,19 +281,9 @@ export function createBot(deps) {
     let changed = false;
     // Exits first, on fresh prices (a paused network's positions wait until it is back on screen).
     const live = liveRows();
-    for (const [m, p] of Object.entries(B.pos)) {
+    for (const m of Object.keys(B.pos)) {
       const r = live.get(m);
-      if (!r) continue;
-      p.last = r.p;
-      p.lastAt = now;
-      if (r.lq > 0) p.lq = r.lq;
-      const why = exitReason(p, r.p, cfg, now, proceeds(p, r.p).back / p.usd);
-      p.peak = Math.max(p.peak || 0, r.p);
-      if (why) {
-        const pnl = sell(m, r.p, why);
-        toast(`🤖 ${EXIT_NAMES[why]}: $${p.s || '?'} ${money(pnl)}`);
-        changed = true;
-      }
+      if (r && !(B.pos[m].liveAt > (r.pa || 0))) changed = onPrice(m, r.p, r.lq, now) || changed;
     }
     if (B.on && cfg.maxDayLoss > 0 && pnlToday() <= -cfg.maxDayLoss) {
       B.on = false;
@@ -295,7 +337,7 @@ export function createBot(deps) {
     return Object.entries(B.pos)
       .map(([m, p]) => {
         const ratio = p.last > 0 ? proceeds(p, p.last).back / p.usd : null;
-        return { m, p, pct: ratio ? (ratio - 1) * 100 : null, pnl: ratio ? p.usd * (ratio - 1) : null, value: ratio ? p.usd * ratio : p.usd, stale: now - (p.lastAt || 0) > 60_000, other: p.chain !== chainNow() };
+        return { m, p, pct: p.last > 0 ? movePct(p, p.last) : null, pnl: ratio ? p.usd * (ratio - 1) : null, value: ratio ? p.usd * ratio : p.usd, stale: now - (p.lastAt || 0) > 60_000, other: p.chain !== chainNow() };
       })
       .sort((a, b) => b.p.t - a.p.t);
   }
@@ -313,7 +355,7 @@ export function createBot(deps) {
       <div class="bot-grid">${FIELDS.map(([k, label, unit, min, max, step, hint]) => `<label title="${esc(hint)}"><span>${label}${unit ? ` <small>${unit}</small>` : ''}</span><input type="number" inputmode="decimal" data-bot-cfg="${k}" min="${min}" max="${max}" step="${step}" value="${c[k]}" /></label>`).join('')}</div>
       <label class="toggle-row"><input type="checkbox" data-bot-cfg="gradOnly" ${c.gradOnly ? 'checked' : ''} /> <span>Tylko tokeny po graduacji (bez bonding curve)</span></label>
       <div class="bot-acts"><button data-bot="defaults">↺ Domyślne</button></div>
-      <p class="note">Jak działa: co 2 s bot przegląda listy Hype i Wybicia wolumenu na wybranej sieci i kupuje token, którego wykres właśnie rośnie (wzrost w 5 min w Twoim zakresie, rosnące ostatnie ceny, przewaga kupujących, wolumen, płynność, MCap i bezpieczeństwo). Wychodzi na take profit, stop loss, trailing stop albo po limicie czasu. Take profit liczony na czysto — po opłatach (jak w Wallet → Spot) i poślizgiem ceny zależnym od płynności; kupno i sprzedaż razem kosztują ok. 3%, więc TP poniżej ~3% nie ma sensu. Bot działa, gdy aplikacja jest otwarta na ekranie.</p>
+      <p class="note">Jak działa: co 2 s bot przegląda listy Hype i Wybicia wolumenu na wybranej sieci i kupuje token, którego wykres właśnie rośnie (wzrost w 5 min w Twoim zakresie, rosnące ostatnie ceny, przewaga kupujących, wolumen, płynność, MCap i bezpieczeństwo). Wychodzi na take profit, stop loss, trailing stop albo po limicie czasu. Procenty TP / SL to zmiana ceny od zakupu — dokładnie tyle, ile ustawisz (stop loss gwarantowany: 8% = sprzedaż przy −8%, nawet gdy cena przeskoczy ten poziom). % przy pozycji to też zmiana ceny; kwota w $ pokazuje wynik po opłatach (jak w Wallet → Spot, ok. 3% za kupno i sprzedaż razem). Ceny pozycji bota czytane są na żywo co ~1 s. Bot działa, gdy aplikacja jest otwarta na ekranie.</p>
     </details>`;
   }
 
