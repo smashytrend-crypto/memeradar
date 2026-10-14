@@ -1575,7 +1575,7 @@ const WALLET_MODES = ['spot', 'perps', 'bot'];
 state.walletMode = WALLET_MODES.includes(LS.get('walletMode', 'spot')) ? LS.get('walletMode', 'spot') : 'spot';
 // Loaded as its own module: if it can't load (e.g. the single-file preview), only perps are off.
 let perps = null;
-import('./perps.js?v=mv75y801')
+import('./perps.js?v=mv7p1tkk')
   .then(({ createPerps }) => {
     perps = createPerps({
       toast: (m) => toast(m),
@@ -1611,7 +1611,7 @@ function closeSheets() {
 
 // ---------- trading bot DEMO (BOT tab: the radar with the bot's panel on top) ----------
 let bot = null;
-import('./bot.js?v=mv75y801')
+import('./bot.js?v=mv7p1tkk')
   .then(({ createBot }) => {
     bot = createBot({
       toast: (m) => toast(m),

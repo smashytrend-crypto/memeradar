@@ -7,30 +7,55 @@ const LOCK = 'mr:botLock';
 const TICK_MS = 2000;
 const DAY_MS = 86_400_000;
 
-/** Settings shown in the panel: [key, label, unit, min, max, step, hint]. */
-export const FIELDS = [
-  ['buyUsd', 'Kwota zakupu', '$', 1, 1e6, 1, 'Za tyle bot kupuje przy każdym wejściu'],
-  ['tp', 'Take profit', '%', 0.5, 1000, 0.5, 'Sprzedaje, gdy cena wzrośnie o tyle % od zakupu'],
-  ['sl', 'Stop loss', '%', 0.5, 95, 0.5, 'Zamyka pozycję dokładnie przy cenie −tyle % od zakupu (gwarantowany stop)'],
-  ['trail', 'Trailing stop', '%', 0, 90, 0.5, 'Po wzroście o tyle % sprzedaje, gdy cena spadnie o tyle % od szczytu (0 = wyłączony)'],
-  ['maxHoldMin', 'Maks. czas pozycji', 'min', 0, 1440, 1, 'Po tylu minutach zamyka pozycję po cenie rynkowej (0 = bez limitu)'],
-  ['maxPos', 'Maks. otwartych pozycji', '', 1, 20, 1, 'Ile tokenów bot może trzymać naraz'],
-  ['minC5', 'Wzrost 5 min od', '%', 0, 500, 0.5, 'Minimalny wzrost ceny w ostatnich 5 minutach'],
-  ['maxC5', 'Wzrost 5 min do', '%', 1, 5000, 1, 'Pomija tokeny, które już wystrzeliły ponad tyle % (wejście na szczycie)'],
-  ['minBuys', 'Przewaga kupujących od', '%', 0, 100, 1, 'Udział kupna w transakcjach z ostatnich 5 minut'],
-  ['minVol5', 'Wolumen 5 min od', '$', 0, 1e8, 100, 'Minimalny obrót w ostatnich 5 minutach'],
-  ['minLiq', 'Płynność od', '$', 0, 1e9, 1000, 'Minimalna płynność puli (mniejsza = większy poślizg ceny)'],
-  ['minMc', 'MCap od', '$', 0, 1e10, 1000, ''],
-  ['maxMc', 'MCap do', '$', 0, 1e12, 1000, '0 = bez limitu'],
-  ['minSafety', 'Bezpieczeństwo od', '/100', 0, 100, 1, 'Minimalny wynik bezpieczeństwa tokena (0 = nie sprawdzaj)'],
-  ['cooldownMin', 'Przerwa po wyjściu', 'min', 0, 1440, 1, 'Tyle minut bot nie wraca do tego samego tokena'],
-  ['maxDayLoss', 'Dzienny limit straty', '$', 0, 1e9, 1, 'Bot sam się zatrzyma po takiej stracie w ciągu dnia (0 = bez limitu)'],
+/** Settings shown in the panel, in groups: [key, label, unit, min, max, step, hint]. */
+export const FIELD_GROUPS = [
+  ['💰 Kwota i wyjścia', [
+    ['buyUsd', 'Kwota zakupu', '$', 1, 1e6, 1, 'Za tyle bot kupuje przy każdym wejściu'],
+    ['tp', 'Take profit', '%', 0.5, 1000, 0.5, 'Sprzedaje, gdy cena wzrośnie o tyle % od zakupu'],
+    ['sl', 'Stop loss', '%', 0.5, 95, 0.5, 'Zamyka pozycję dokładnie przy cenie −tyle % od zakupu (gwarantowany stop)'],
+    ['be', 'Stop na zero po', '%', 0, 1000, 0.5, 'Po wzroście o tyle % sprzedaje, gdy cena wróci do ceny zakupu — zysk nie zamieni się w stratę (0 = wyłączony)'],
+    ['trail', 'Trailing stop', '%', 0, 90, 0.5, 'Sprzedaje, gdy cena spadnie o tyle % od szczytu (0 = wyłączony)'],
+    ['trailArm', 'Trailing od wzrostu', '%', 0, 1000, 0.5, 'Trailing włącza się dopiero po takim wzroście (0 = od wzrostu równego trailingowi)'],
+    ['partAt', 'Sprzedaj połowę przy', '%', 0, 1000, 0.5, 'Przy takim zysku sprzedaje połowę, reszta jedzie dalej do TP (0 = wyłączone)'],
+    ['stallSec', 'Wyjście bez ruchu po', 's', 0, 7200, 10, 'Jeśli po tylu sekundach pozycja nie urosła o wartość niżej — zamyka ją i szuka lepszej (0 = wyłączone)'],
+    ['stallPk', '…gdy wzrost poniżej', '%', 0, 100, 0.5, 'Próg dla wyjścia bez ruchu'],
+    ['maxHoldMin', 'Maks. czas pozycji', 'min', 0, 1440, 1, 'Po tylu minutach zamyka pozycję po cenie rynkowej (0 = bez limitu)'],
+    ['maxPos', 'Maks. otwartych pozycji', '', 1, 20, 1, 'Ile tokenów bot może trzymać naraz'],
+    ['cooldownMin', 'Przerwa po wyjściu', 'min', 0, 1440, 1, 'Tyle minut bot nie wraca do tego samego tokena'],
+    ['maxDayLoss', 'Dzienny limit straty', '$', 0, 1e9, 1, 'Bot sam się zatrzyma po takiej stracie w ciągu dnia (0 = bez limitu)'],
+  ]],
+  ['🎯 Wejście — co kupować', [
+    ['minC5', 'Wzrost 5 min od', '%', 0, 500, 0.5, 'Minimalny wzrost ceny w ostatnich 5 minutach (wybicie)'],
+    ['maxC5', 'Wzrost 5 min do', '%', 1, 5000, 1, 'Pomija tokeny, które już wystrzeliły ponad tyle %'],
+    ['minVolAcc', 'Wolumen vs zwykły od', '×', 0, 50, 0.5, 'Wolumen z 5 min względem średnich 5 min z ostatniej godziny (3× = trzy razy większy ruch niż zwykle; 0 = nie sprawdzaj)'],
+    ['minBuys', 'Kupujący od', '%', 0, 100, 1, 'Udział kupna w obrocie z ostatnich 5 minut'],
+    ['maxBuys', 'Kupujący do', '%', 0, 100, 1, 'Prawie samo kupno to często sztuczny ruch (0 = bez limitu)'],
+    ['minVol5', 'Wolumen 5 min od', '$', 0, 1e8, 100, 'Minimalny obrót w ostatnich 5 minutach'],
+    ['minLiq', 'Płynność od', '$', 0, 1e9, 1000, 'Minimalna płynność puli (mniejsza = większy poślizg)'],
+    ['maxLiq', 'Płynność do', '$', 0, 1e9, 1000, 'Małe, wczesne pule ruszają się najmocniej (0 = bez limitu)'],
+    ['minMc', 'MCap od', '$', 0, 1e10, 1000, ''],
+    ['maxMc', 'MCap do', '$', 0, 1e12, 1000, '0 = bez limitu'],
+    ['maxAgeH', 'Wiek tokena do', 'h', 0, 10000, 0.5, 'Tylko tokeny młodsze niż tyle godzin (0 = dowolny)'],
+    ['maxHype', 'Hype score do', '', 0, 100, 1, 'Najwyższy hype to zwykle tokeny, które już urosły — spóźnione wejście (0 = bez limitu)'],
+    ['minSafety', 'Bezpieczeństwo od', '/100', 0, 100, 1, 'Minimalny wynik bezpieczeństwa tokena (0 = nie sprawdzaj)'],
+    ['minC1', 'Wzrost 1h od', '%', -100, 100000, 1, '−100 = nie sprawdzaj'],
+    ['maxC1', 'Wzrost 1h do', '%', 0, 100000, 1, 'Tokeny po +kilkuset % w godzinę często kończą się zrzutem (0 = bez limitu)'],
+    ['maxR30', 'Maks. skok w 30 s', '%', 0, 1000, 0.5, 'Nie kupuje tuż po gwałtownym skoku — zwykle zaraz oddaje (0 = nie sprawdzaj)'],
+  ]],
 ];
+export const FIELDS = FIELD_GROUPS.flatMap(([, f]) => f);
+// The recommended strategy — chosen on 4 hours of recorded live Solana radar data (two
+// independent sessions, every hour in profit after fees): enter only strong breakouts (+30% in
+// 5 min on 3× the usual volume) in small, early pools that the hype ranking hasn't priced in
+// yet; cut what doesn't move within 2 minutes, let the winners run to +150%.
 export const DEFAULTS = {
-  buyUsd: 25, tp: 15, sl: 8, trail: 5, maxHoldMin: 20, maxPos: 3,
-  minC5: 3, maxC5: 40, minBuys: 55, minVol5: 3000, minLiq: 15000, minMc: 30000, maxMc: 20_000_000,
-  minSafety: 60, cooldownMin: 30, maxDayLoss: 0, gradOnly: false,
+  buyUsd: 25, tp: 150, sl: 8, be: 0, trail: 0, trailArm: 0, partAt: 0, stallSec: 120, stallPk: 3, maxHoldMin: 20, maxPos: 3,
+  cooldownMin: 60, maxDayLoss: 0,
+  minC5: 30, maxC5: 300, minVolAcc: 3, minBuys: 50, maxBuys: 80, minVol5: 8000, minLiq: 15000, maxLiq: 50000, minMc: 0, maxMc: 0,
+  maxAgeH: 12, maxHype: 50, minSafety: 40, minC1: 0, maxC1: 300, maxR30: 0, minR60: -100, rising: false, gradOnly: false,
 };
+/** Bumped when the recommended strategy changes: saved settings move to the new one. */
+const CFG_VER = 2;
 
 // ---------- pure logic (tested) ----------
 
@@ -50,21 +75,43 @@ export function risingNow(ph) {
   return last > p[p.length - 4] && last >= peak * 0.97;
 }
 
-/** Why a row doesn't qualify for a buy (null = it does). */
-export function rejectReason(r, cfg, now = Date.now()) {
+/**
+ * Why a row doesn't qualify for a buy (null = it does). `ret(ms)`: the token's own price change in
+ * % over the last `ms` (from the prices the bot saw), or null while it has no such history.
+ */
+export function rejectReason(r, cfg, now = Date.now(), ret = () => null) {
   if (!(r.p > 0)) return 'brak ceny';
   if (r.hpt || r.rk === 'danger') return 'ryzyko';
   if (cfg.minSafety > 0 && !(r.sc >= cfg.minSafety)) return 'bezpieczeństwo';
   if (cfg.gradOnly && r.bp != null) return 'bonding curve';
   if (r.ds && now - r.ds < 15 * 60_000) return 'dev sprzedaje';
+  if (cfg.maxAgeH > 0 && !(r.ca > 0 && now - r.ca <= cfg.maxAgeH * 3600e3)) return 'wiek';
   if (!(r.c5 >= cfg.minC5) || r.c5 > cfg.maxC5) return 'wzrost 5m';
-  if (cfg.minBuys > 0 && !(buyShare(r) >= cfg.minBuys)) return 'kupujący';
+  if (cfg.minC1 > -100 && !(r.c1 >= cfg.minC1)) return 'wzrost 1h';
+  if (cfg.maxC1 > 0 && r.c1 > cfg.maxC1) return 'wzrost 1h';
+  const bs = buyShare(r);
+  if (cfg.minBuys > 0 && !(bs >= cfg.minBuys)) return 'kupujący';
+  if (cfg.maxBuys > 0 && bs > cfg.maxBuys) return 'kupujący';
   const vol5 = r.v5 ?? ((r.bv5 || 0) + (r.sv5 || 0) || null);
   if (cfg.minVol5 > 0 && !(vol5 >= cfg.minVol5)) return 'wolumen';
+  // Volume speeding up: the last 5 minutes against the hour's average 5 minutes.
+  if (cfg.minVolAcc > 0 && !(vol5 > 0 && r.v1 > 0 && vol5 / (r.v1 / 12) >= cfg.minVolAcc)) return 'wolumen';
   if (cfg.minLiq > 0 && !(r.lq >= cfg.minLiq)) return 'płynność';
+  if (cfg.maxLiq > 0 && r.lq > cfg.maxLiq) return 'płynność';
   if (cfg.minMc > 0 && !(r.mc >= cfg.minMc)) return 'mcap';
   if (cfg.maxMc > 0 && r.mc > cfg.maxMc) return 'mcap';
-  if (!risingNow(r.ph)) return 'wykres';
+  // The hype list's top scores are tokens that already ran: late entries.
+  if (cfg.maxHype > 0 && r.hs > cfg.maxHype) return 'przegrzany';
+  // Not chasing a spike: a jump in the last 30 s mostly gives back right after.
+  if (cfg.maxR30 > 0) {
+    const r30 = ret(30_000);
+    if (r30 == null || r30 > cfg.maxR30) return 'skok';
+  }
+  if (cfg.minR60 > -100) {
+    const r60 = ret(60_000);
+    if (r60 == null || r60 < cfg.minR60) return 'wykres';
+  }
+  if (cfg.rising && !risingNow(r.ph)) return 'wykres';
   return null;
 }
 
@@ -87,27 +134,53 @@ export function exitReason(pos, price, cfg, now = Date.now()) {
   const pct = movePct(pos, price);
   const eps = 1e-9; // 0.92 / 1 − 1 is −7.999…%
   if (pct <= -cfg.sl + eps) return 'sl';
-  if (pct >= cfg.tp - eps) return 'tp';
   const peak = Math.max(pos.peak || 0, price);
-  if (cfg.trail > 0 && movePct(pos, peak) >= cfg.trail && price <= peak * (1 - cfg.trail / 100)) return 'trail';
+  const top = movePct(pos, peak);
+  // Half off at the first target, the rest rides on to take profit / trailing.
+  if (cfg.partAt > 0 && !pos.part && pct >= cfg.partAt - eps) return 'part';
+  if (pct >= cfg.tp - eps) return 'tp';
+  // Break even: once up by `be`%, a fall back to the buy price closes it (no winner turns loser).
+  if (cfg.be > 0 && top >= cfg.be && pct <= 0.5) return 'be';
+  const arm = cfg.trailArm > 0 ? cfg.trailArm : cfg.trail;
+  if (cfg.trail > 0 && top >= arm && price <= peak * (1 - cfg.trail / 100)) return 'trail';
+  // Dead trade: nothing happened in the first minutes — the money works better elsewhere.
+  if (cfg.stallSec > 0 && now - pos.t >= cfg.stallSec * 1000 && top < cfg.stallPk) return 'stall';
   if (cfg.maxHoldMin > 0 && now - pos.t >= cfg.maxHoldMin * 60_000) return 'time';
   return null;
 }
 
-export const EXIT_NAMES = { tp: '🎯 Take profit', sl: '🛑 Stop loss', trail: '📉 Trailing stop', time: '⏱️ Limit czasu', manual: '✋ Ręcznie', reset: '♻️ Reset' };
+/**
+ * Price feed glitch guard: a read more than ×3 away from the last accepted price is held back
+ * (`pend`) and only taken when the next read confirms it (a real dump / pump stays there).
+ */
+export function checkGlitch(last, pend, price) {
+  if (!(last > 0)) return { ok: true, pend: null };
+  const r = price / last;
+  if (r <= 3 && r >= 1 / 3) return { ok: true, pend: null };
+  if (pend > 0 && price / pend < 1.5 && price / pend > 1 / 1.5) return { ok: true, pend: null };
+  return { ok: false, pend: price };
+}
+
+export const EXIT_NAMES = { tp: '🎯 Take profit', part: '🎯 Połowa zysku', sl: '🛑 Stop loss', be: '🛡️ Stop na zero', trail: '📉 Trailing stop', stall: '😴 Brak ruchu', time: '⏱️ Limit czasu', manual: '✋ Ręcznie', reset: '♻️ Reset' };
 
 // ---------- the bot ----------
 
 export function createBot(deps) {
   const { toast, engine, tradeFee, excluded, openToken, openWallet, onChange, fmt, esc } = deps;
   const tabId = Math.random().toString(36).slice(2);
-  const fresh = () => ({ cash: 0, deposits: 0, on: false, cfg: { ...DEFAULTS }, pos: {}, hist: [], tx: [], log: [], cool: {}, feesPaid: 0, rev: 0 });
+  const fresh = () => ({ cfgVer: CFG_VER, cash: 0, deposits: 0, on: false, cfg: { ...DEFAULTS }, pos: {}, hist: [], tx: [], log: [], cool: {}, feesPaid: 0, rev: 0 });
   const load = () => {
     try {
       const v = JSON.parse(localStorage.getItem(KEY));
       if (v && typeof v === 'object') {
         const b = { ...fresh(), ...v };
         b.cfg = { ...DEFAULTS, ...(v.cfg || {}) };
+        // A new recommended strategy: settings move to it (the stake and the daily limit stay).
+        if ((v.cfgVer || 1) < CFG_VER) {
+          b.cfg = { ...DEFAULTS, buyUsd: b.cfg.buyUsd, maxDayLoss: b.cfg.maxDayLoss, open: b.cfg.open };
+          b.cfgVer = CFG_VER;
+          b.log = [{ t: Date.now(), msg: '🧠 Nowa strategia bota (z testów na danych z rynku) — ustawienia zaktualizowane' }, ...(b.log || [])];
+        }
         for (const k of ['hist', 'tx', 'log']) if (!Array.isArray(b[k])) b[k] = [];
         if (!b.pos || typeof b.pos !== 'object') b.pos = {};
         if (!b.cool || typeof b.cool !== 'object') b.cool = {};
@@ -119,7 +192,7 @@ export function createBot(deps) {
     return fresh();
   };
   let B = load();
-  const S = { calMonth: 0, touch: 0, lastScan: null, dirty: true };
+  const S = { calMonth: 0, touch: 0, lastScan: null, dirty: true, px: new Map() };
   const save = () => {
     B.hist = B.hist.slice(0, 2000).filter((h) => Date.now() - h.closedAt < 400 * DAY_MS);
     B.tx = B.tx.slice(0, 200);
@@ -197,21 +270,34 @@ export function createBot(deps) {
     return { gross, fee, back: gross - fee };
   }
 
-  function sell(m, price, why) {
+  /** Sells position `m` (all of it, or `frac` of it) at `price`; returns the result in $. */
+  function sell(m, price, why, frac = 1) {
     const p = B.pos[m];
     if (!p) return null;
     let px = price > 0 ? price : p.last;
     // A guaranteed stop: closes at exactly −SL% from the buy price, also when the price gapped
     // past it between two reads (set 8% → sold at −8%).
     if (why === 'sl') px = (p.px || p.p) * (1 - B.cfg.sl / 100);
-    const { fee, back } = proceeds(p, px);
+    // …and take profit sells at its level (a jump past it doesn't add a windfall).
+    else if (why === 'tp') px = Math.min(px, (p.px || p.p) * (1 + B.cfg.tp / 100));
+    else if (why === 'part') px = Math.min(px, (p.px || p.p) * (1 + B.cfg.partAt / 100));
+    const f = Math.min(1, Math.max(0, frac));
+    const part = { ...p, usd: p.usd * f };
+    const { fee, back } = proceeds(part, px);
     const move = movePct(p, px);
-    const pnl = back - p.usd;
+    const buyFee = (p.fee || 0) * f;
+    const pnl = back - part.usd;
     B.cash += back;
     B.feesPaid += fee;
-    delete B.pos[m];
-    B.cool[m] = Date.now();
-    B.hist.unshift({ m, s: p.s, n: p.n, chain: p.chain, usd: p.usd, pnl, pct: move, fee: fee + (p.fee || 0), why, openedAt: p.t, closedAt: Date.now() });
+    if (f >= 1) {
+      delete B.pos[m];
+      B.cool[m] = Date.now();
+    } else {
+      p.usd -= part.usd;
+      p.fee = (p.fee || 0) - buyFee;
+      p.part = true;
+    }
+    B.hist.unshift({ m, s: p.s, n: p.n, chain: p.chain, usd: part.usd, pnl, pct: move, fee: fee + buyFee, why, f, openedAt: p.t, closedAt: Date.now() });
     B.tx.unshift({ t: Date.now(), type: 'close', amount: back, s: p.s || '', m, pnl, fee });
     note(`${pnl >= 0 ? '✅' : '🔻'} ${EXIT_NAMES[why] || why}: $${esc(p.s || '?')} ${fmt.pct(move)} (${money(pnl)} po opłatach)`);
     return pnl;
@@ -222,21 +308,44 @@ export function createBot(deps) {
     if (!E) return [];
     const base = { minMcap: 0, minLiq: 0, maxAgeH: 0, safe: false, q: '' };
     const seen = new Map();
-    for (const [view, n] of [['hype', 150], ['surge', 80]]) for (const r of E.snapshot(view, base, n).rows) seen.set(r.m, r);
+    for (const [view, n] of [['hype', 150], ['surge', 80], ['new', 40]]) for (const r of E.snapshot(view, base, n).rows) seen.set(r.m, r);
+    const now = Date.now();
+    // Own price history (last 5 min) of every token on the lists: the 30 s / 60 s moves.
+    for (const r of seen.values()) {
+      if (!(r.p > 0)) continue;
+      let h = S.px.get(r.m);
+      if (!h) S.px.set(r.m, (h = []));
+      if (!h.length || h[h.length - 1][1] !== r.p) h.push([now, r.p]);
+      while (h.length && now - h[0][0] > 300_000) h.shift();
+    }
+    if (S.px.size > 1500) for (const [m, h] of S.px) if (!h.length || now - h[h.length - 1][0] > 300_000) S.px.delete(m);
     return [...seen.values()];
+  }
+  /** The token's price change in % over the last `ms` (null without history that long). */
+  function ret(m, ms, now = Date.now()) {
+    const h = S.px.get(m);
+    if (!h || !h.length || now - h[0][0] < ms * 0.8) return null;
+    let a = h[0][1];
+    for (const [t, p] of h) if (t <= now - ms) a = p;
+    const b = h[h.length - 1][1];
+    return a > 0 ? (b / a - 1) * 100 : null;
   }
 
   /** A new price for position `m`: exits checked right away. True when it was sold. */
   function onPrice(m, price, lq, now = Date.now()) {
     const p = B.pos[m];
     if (!p || !(price > 0)) return false;
+    // A feed glitch (one read ×3 off) must not sell: such a price counts once the next read agrees.
+    const g = checkGlitch(p.last, p.pend, price);
+    p.pend = g.pend;
+    if (!g.ok) return false;
     p.last = price;
     p.lastAt = now;
     if (lq > 0) p.lq = lq;
     const why = exitReason(p, price, B.cfg, now);
     p.peak = Math.max(p.peak || 0, price);
     if (!why) return false;
-    const pnl = sell(m, price, why);
+    const pnl = sell(m, price, why, why === 'part' ? 0.5 : 1);
     toast(`🤖 ${EXIT_NAMES[why]}: $${p.s || '?'} ${money(pnl)}`);
     return true;
   }
@@ -307,7 +416,7 @@ export function createBot(deps) {
             // A fresh price only (a paused network's rows are hours old for a moment after a switch).
             if (!(r.pa > 0) || now - r.pa > 60_000 || (E.since > 0 && r.pa < E.since)) return false;
             checked++;
-            return !rejectReason(r, cfg, now);
+            return !rejectReason(r, cfg, now, (ms) => ret(r.m, ms, now));
           })
           .sort((a, b) => signalScore(b) - signalScore(a));
         S.lastScan = { t: now, n: checked, hits: best.length, chain };
@@ -352,10 +461,12 @@ export function createBot(deps) {
   function settingsHtml() {
     const c = B.cfg;
     return `<details class="bot-set" ${B.cfg.open === false ? '' : 'open'}><summary>⚙️ Ustawienia bota</summary>
-      <div class="bot-grid">${FIELDS.map(([k, label, unit, min, max, step, hint]) => `<label title="${esc(hint)}"><span>${label}${unit ? ` <small>${unit}</small>` : ''}</span><input type="number" inputmode="decimal" data-bot-cfg="${k}" min="${min}" max="${max}" step="${step}" value="${c[k]}" /></label>`).join('')}</div>
+      ${FIELD_GROUPS.map(([title, fields]) => `<h4 class="bot-gh">${title}</h4><div class="bot-grid">${fields.map(([k, label, unit, min, max, step, hint]) => `<label title="${esc(hint)}"><span>${label}${unit ? ` <small>${unit}</small>` : ''}</span><input type="number" inputmode="decimal" data-bot-cfg="${k}" min="${min}" max="${max}" step="${step}" value="${c[k]}" /></label>`).join('')}</div>`).join('')}
+      <label class="toggle-row"><input type="checkbox" data-bot-cfg="rising" ${c.rising ? 'checked' : ''} /> <span>Wymagaj rosnących ostatnich cen</span></label>
       <label class="toggle-row"><input type="checkbox" data-bot-cfg="gradOnly" ${c.gradOnly ? 'checked' : ''} /> <span>Tylko tokeny po graduacji (bez bonding curve)</span></label>
-      <div class="bot-acts"><button data-bot="defaults">↺ Domyślne</button></div>
-      <p class="note">Jak działa: co 2 s bot przegląda listy Hype i Wybicia wolumenu na wybranej sieci i kupuje token, którego wykres właśnie rośnie (wzrost w 5 min w Twoim zakresie, rosnące ostatnie ceny, przewaga kupujących, wolumen, płynność, MCap i bezpieczeństwo). Wychodzi na take profit, stop loss, trailing stop albo po limicie czasu. Procenty TP / SL to zmiana ceny od zakupu — dokładnie tyle, ile ustawisz (stop loss gwarantowany: 8% = sprzedaż przy −8%, nawet gdy cena przeskoczy ten poziom). % przy pozycji to też zmiana ceny; kwota w $ pokazuje wynik po opłatach (jak w Wallet → Spot, ok. 3% za kupno i sprzedaż razem). Ceny pozycji bota czytane są na żywo co ~1 s. Bot działa, gdy aplikacja jest otwarta na ekranie.</p>
+      <div class="bot-acts"><button data-bot="defaults">🏆 Zalecana strategia</button></div>
+      <p class="note"><b>Zalecana strategia</b> (🏆) została dobrana na 4 godzinach nagranych danych z radaru Solany — dwóch niezależnych sesjach, w każdej godzinie na plusie po opłatach. Bot kupuje tylko <b>silne wybicia</b>: +30% w 5 min przy wolumenie 3× większym niż zwykle, w małych, wczesnych pulach (płynność $15–50k, token do 12 h), zanim ranking hype je „przegrzeje”, z przewagą kupujących, bez tokenów po +300% w godzinę (częste zrzuty). Pozycję, która w 2 minuty nie urośnie o 3%, zamyka; stop loss 8%; zwycięzcom pozwala urosnąć do +150% (maks. 20 min). Wygrywa ok. 40–60% transakcji, ale średni zysk jest kilka razy większy niż średnia strata.</p>
+      <p class="note">Co 2 s bot przegląda listy Hype, Wybicia wolumenu i Nowe na wybranej sieci. Procenty TP / SL to zmiana ceny od zakupu — dokładnie tyle, ile ustawisz (stop loss gwarantowany, take profit realizowany na swoim poziomie). Kwota w $ pokazuje wynik po opłatach (ok. 3% za kupno i sprzedaż razem) i poślizgu. Ceny pozycji bota są czytane na żywo co ~1 s, a pojedynczy błędny odczyt ceny (skok ×3, który zaraz wraca) jest ignorowany. Wyniki z przeszłości nie gwarantują przyszłych — rynek memecoinów zmienia się z godziny na godzinę. Bot działa, gdy aplikacja jest otwarta na ekranie.</p>
     </details>`;
   }
 
@@ -458,10 +569,10 @@ export function createBot(deps) {
       save();
       toast(B.on ? '🤖 Bot uruchomiony' : '🤖 Bot zatrzymany');
     } else if (act === 'defaults') {
-      B.cfg = { ...DEFAULTS, open: true };
+      B.cfg = { ...DEFAULTS, buyUsd: B.cfg.buyUsd, maxDayLoss: B.cfg.maxDayLoss, open: true };
       syncInputs(b.closest('#botPanel') || document);
       save();
-      toast('🤖 Przywrócono domyślne ustawienia');
+      toast('🏆 Ustawiono zalecaną strategię');
     } else if (act === 'wallet') openWallet();
     else if (b.dataset.botOpen) openToken(b.dataset.botOpen);
     else if (b.dataset.botSell) {

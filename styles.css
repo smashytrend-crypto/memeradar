@@ -1152,6 +1152,7 @@ svg.candles .th { fill: #e4c15a; stroke: #0b0f17; stroke-width: 1.2; }
 .bot-set .toggle-row { display: flex; align-items: center; gap: 10px; margin: 10px 0 4px; font-size: 13.5px; font-weight: 600; cursor: pointer; }
 .bot-set .toggle-row input { width: 20px; height: 20px; accent-color: var(--accent); }
 .bot-acts { margin-top: 8px; }
+.bot-gh { margin: 14px 0 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
 .bot-acts button { height: 32px; padding: 0 12px; border-radius: 9px; border: 1px solid var(--line2); background: var(--panel2); color: var(--text); font: 600 12.5px/1 var(--sans); cursor: pointer; }
 .bot-pos { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
 .bot-tok { display: flex; align-items: center; gap: 8px; min-width: 0; border: 0; background: none; color: var(--text); padding: 0; text-align: left; cursor: pointer; }
