@@ -11,10 +11,88 @@ const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 
 // ---------- persistence ----------
+// Mode: DEMO (virtual money) or REAL (the user's own Solana wallet). Each mode has its own
+// positions, wallet history and bot; switching reloads the page into the other set.
+const REAL = (() => {
+  try {
+    return localStorage.getItem('mr:mode') === 'real';
+  } catch {
+    return false;
+  }
+})();
+const TAG = REAL ? 'REAL' : 'DEMO';
+const REAL_KEYS = new Set(['positions', 'closedPositions', 'wallet', 'quickBuy', 'realPend', 'realBooked']);
+const lsKey = (k) => `mr:${REAL && REAL_KEYS.has(k) ? 'real:' : ''}${k}`;
+// Real mode never runs inside someone else's frame (a hidden trade button under their page)…
+if (REAL && window.top !== window.self) throw new Error('DMN REAL cannot run in a frame');
+// …and the wallet stays off when another page of this site visibly opened this window or a service
+// worker controls it (this app installs none). Only a basic guard: on a shared origin (several sites
+// under one github.io address) a page of the same origin can still reach this window — the real
+// protection there is an origin used by this app alone.
+const REAL_BLOCK = !REAL
+  ? ''
+  : (() => {
+      try {
+        if (window.opener && window.opener.location.href) return 'Aplikację otworzyła inna strona — otwórz ją bezpośrednio (zakładka / ekran początkowy), żeby użyć walletu.';
+      } catch {
+        /* a cross-origin opener can't reach this window */
+      }
+      return navigator.serviceWorker?.controller ? 'Tę stronę kontroluje obcy service worker — wallet wyłączony dla bezpieczeństwa.' : '';
+    })();
+// The crypto primitives the vault uses can't be swapped out by code that runs later: frozen, and the
+// vault gets the objects captured here (a later getter on window.crypto changes nothing).
+const CRYPTO = globalThis.crypto;
+if (REAL) {
+  try {
+    Object.freeze(SubtleCrypto.prototype);
+    Object.freeze(Crypto.prototype);
+    Object.freeze(CRYPTO.subtle);
+    Object.freeze(CRYPTO);
+    Object.defineProperty(globalThis, 'crypto', { value: CRYPTO, writable: false, configurable: false });
+  } catch {
+    /* older engine */
+  }
+}
+const TAB = Math.random().toString(36).slice(2); // this tab (cross-tab locks of real trades)
+// Which tabs are open: a trade a live tab has in flight is that tab's to finish. Each tab holds a
+// Web Lock while it lives (released when it closes or crashes); a heartbeat where locks are missing.
+const aliveTabs = new Set([TAB]);
+let aliveReady = false;
+if (REAL) {
+  navigator.locks?.request?.(`mr:tab:${TAB}`, () => new Promise(() => {}))?.catch?.(() => {});
+  const refreshAlive = async () => {
+    const next = new Set([TAB]);
+    try {
+      if (!navigator.locks?.query) throw new Error('no locks');
+      const q = await navigator.locks.query();
+      for (const l of q.held || []) if (l.name?.startsWith('mr:tab:')) next.add(l.name.slice(7));
+    } catch {
+      try {
+        const hb = JSON.parse(localStorage.getItem('mr:real:hb') || '{}');
+        hb[TAB] = Date.now();
+        for (const [k, t] of Object.entries(hb)) {
+          if (Date.now() - t < 120_000) next.add(k);
+          else delete hb[k];
+        }
+        localStorage.setItem('mr:real:hb', JSON.stringify(hb));
+      } catch {
+        /* private mode: the only tab */
+      }
+    }
+    aliveTabs.clear();
+    for (const t of next) aliveTabs.add(t);
+    aliveReady = true;
+  };
+  refreshAlive();
+  setInterval(refreshAlive, 5000);
+}
+/** Whether tab `id` is open (until known, any other tab counts as open: nothing is taken over). */
+const tabAlive = (id) => !!id && (id === TAB || !aliveReady || aliveTabs.has(id));
+
 const LS = {
   get(k, d) {
     try {
-      const v = localStorage.getItem(`mr:${k}`);
+      const v = localStorage.getItem(lsKey(k));
       return v == null ? d : JSON.parse(v);
     } catch {
       return d;
@@ -22,7 +100,7 @@ const LS = {
   },
   set(k, v) {
     try {
-      localStorage.setItem(`mr:${k}`, JSON.stringify(v));
+      localStorage.setItem(lsKey(k), JSON.stringify(v));
     } catch {
       /* private mode */
     }
@@ -32,7 +110,8 @@ const LS = {
 // Network on screen (the in-browser engine runs one radar per network).
 const CHAIN_LIST = ENGINE?.chains ? Object.values(ENGINE.chains) : null;
 const chainCfg = () => (ENGINE?.chains && ENGINE.chains[ENGINE.chain]) || { id: 'solana', dex: 'solana', native: 'SOL', evm: false };
-if (ENGINE) ENGINE.setChain(LS.get('chain', 'solana'));
+// Real trading is on Solana: REAL always starts there (stop losses and the bot watch its prices).
+if (ENGINE) ENGINE.setChain(REAL ? 'solana' : LS.get('chain', 'solana'));
 
 const state = {
   view: ((v) => (v === 'pos' ? 'hype' : ENGINE && (v === 'new' || v === 'graduating') ? 'graduated' : v))(LS.get('view', 'hype')), // 'pos' was a tab in an older version
@@ -44,7 +123,7 @@ const state = {
   positions: LS.get('positions', {}), // mint -> { p: entry price, mc, usd, t, chain, n, s, i, last }
   closed: LS.get('closedPositions', []), // closed demo trades (last 90 days) for the 1d / 7d / 30d P&L
   wallet: { cash: 0, deposits: 0, tx: [], ...LS.get('wallet', {}) }, // demo wallet funding the demo positions
-  quickBuy: LS.get('quickBuy', [50, 100, 250, 500]), // the viewer's quick-buy amounts in $
+  quickBuy: LS.get('quickBuy', REAL ? [5, 10, 25, 50] : [50, 100, 250, 500]), // the viewer's quick-buy amounts in $ (separate in REAL)
   fees: LS.get('fees', true) !== false, // demo trades pay realistic fees
   wallets: ((w) => (Array.isArray(w) ? w.filter((x) => x && typeof x.a === 'string') : []))(LS.get('wallets', [])), // tracked wallets [{ a, name, emoji }]
   candleTf: LS.get('candleTf', '5m'), // candle chart timeframe
@@ -156,12 +235,14 @@ function hashHue(str) {
   return Math.abs(h) % 360;
 }
 
+// A token icon that fails to load leaves the initials (no inline onerror: the page's CSP forbids it).
+document.addEventListener('error', (e) => e.target?.tagName === 'IMG' && e.target.parentElement?.classList.contains('av') && e.target.remove(), true);
 function avatar(d, size = '') {
   const hue = hashHue(d.m);
   const initials = esc((d.s || d.n || '?').replace(/[^\p{L}\p{N}]/gu, '').slice(0, 2) || '?');
   const img = safeUrl(d.i);
   return `<div class="av ${size}" style="background:linear-gradient(135deg,hsl(${hue},70%,45%),hsl(${(hue + 50) % 360},75%,35%))">
-    <span class="av-i">${initials}</span>${img ? `<img src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">` : ''}
+    <span class="av-i">${initials}</span>${img ? `<img src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ''}
     <span class="av-live"></span></div>`;
 }
 
@@ -532,7 +613,7 @@ function updateRow(entry, d, idx) {
   if (d.bp != null) chips.push(`${lpChip(d.lp)}<span class="bc"><span class="bc-bar"><i style="width:${d.bp}%"></i></span>${d.bp.toFixed(0)}%</span>`);
   else if (d.gr) chips.push('<span class="chip grad">🎓 DEX</span>');
   const pos = posPnl(d);
-  if (pos) chips.push(`<span class="chip pos ${pos.cls}" title="Twoja pozycja DEMO: ${fmt.pct(pos.pct)}${pos.usd != null ? ` (${pos.usd >= 0 ? '+' : ''}${fmt.usd(pos.usd)})` : ''}">💼 DEMO ${fmt.pct(pos.pct)}</span>`);
+  if (pos) chips.push(`<span class="chip pos ${pos.cls}" title="Twoja pozycja ${TAG}: ${fmt.pct(pos.pct)}${pos.usd != null ? ` (${pos.usd >= 0 ? '+' : ''}${fmt.usd(pos.usd)})` : ''}">💼 DEMO ${fmt.pct(pos.pct)}</span>`);
   if (d.fz && FRESH[d.fz]) chips.push(`<span class="chip fz ${FRESH[d.fz][2]}" title="Hype teraz: ${FRESH[d.fz][1]}">${FRESH[d.fz][0]} ${FRESH[d.fz][1]}</span>`);
   const serial = creatorWarning(d);
   if (serial) chips.push(`<span class="chip warnc" title="${esc(serial.tip)}">${serial.short}</span>`);
@@ -991,7 +1072,8 @@ function networkFee(chain = ENGINE?.chain || 'solana') {
 }
 /** All fees of one trade worth `usd` on `chain` (0 with fees turned off). */
 function tradeFee(usd, chain) {
-  if (!state.fees || !(usd > 0)) return 0;
+  // Real trades pay their real fees inside the fill (SOL spent / received).
+  if (REAL || !state.fees || !(usd > 0)) return 0;
   return usd * (FEES.platform + FEES.pool) + networkFee(chain);
 }
 /** Fee amounts with cents ($1.42, $0.17) — fmt.usd rounds small values to whole dollars. */
@@ -1009,9 +1091,11 @@ function entryAfterFees(price, usd) {
 /** Saves a demo buy; false when it can't be added to the existing position (nothing is charged). */
 function savePosition(mint, price, usd, mc, d = {}, fee = 0) {
   const prev = state.positions[mint];
+  // Real trades are always on Solana (a swap can confirm after the screen moved to another network).
+  const chain = REAL ? 'solana' : ENGINE?.chain || 'solana';
   if (prev && prev.p > 0 && prev.usd > 0) {
     // The same EVM address can be a different token on another network.
-    if ((prev.chain || 'solana') !== (ENGINE?.chain || 'solana')) {
+    if ((prev.chain || 'solana') !== chain) {
       toast('Masz już pozycję DEMO pod tym adresem na innej sieci — najpierw ją sprzedaj');
       return false;
     }
@@ -1024,7 +1108,7 @@ function savePosition(mint, price, usd, mc, d = {}, fee = 0) {
   }
   // Funded from the demo wallet: the stake leaves the balance now and returns (with P&L) on close.
   state.wallet.cash -= usd;
-  walletTx('open', usd, { m: mint, chain: ENGINE?.chain || 'solana', n: d.n || '', s: d.s || '', p: price, ...(fee > 0 ? { fee } : {}) });
+  walletTx('open', usd, { m: mint, chain, n: d.n || '', s: d.s || '', p: price, ...(fee > 0 ? { fee } : {}) });
   saveWallet();
   if (prev && prev.p > 0 && prev.usd > 0) {
     // Buying more: one position with the average entry (weighted by tokens bought).
@@ -1049,7 +1133,7 @@ function savePosition(mint, price, usd, mc, d = {}, fee = 0) {
     fees: fee, // fees paid so far ($), shown with the position
     bf: fee, // of which buying (its share goes with each sale onto the PnL card)
     t: Date.now(),
-    chain: ENGINE?.chain || 'solana',
+    chain,
     // Name / icon and last seen price, for the positions list when the token isn't loaded.
     n: d.n || '',
     s: d.s || '',
@@ -1121,6 +1205,7 @@ function quickBuy(usd) {
   const d0 = state.detail;
   if (!d0 || !state.selected) return;
   const d = tradeQuote(d0);
+  if (REAL) return realBuy(d, usd);
   if (usd > state.wallet.cash + 1e-9) {
     toast(`Za mało środków w walletcie DEMO (saldo ${fmt.usd(state.wallet.cash)}) — doładuj go`);
     closeDetail();
@@ -1131,7 +1216,7 @@ function quickBuy(usd) {
   const buy = entryAfterFees(d.p, usd);
   if (!buy) return toast(`Za mała kwota — opłaty transakcji (${feeUsd(tradeFee(usd))}) zjadłyby większość`);
   if (!savePosition(state.selected, buy.price, usd, d.mc, d, buy.fee)) return;
-  toast(`💼 ${had ? 'Dokupiono' : 'Kupiono'} DEMO za ${fmt.usd(usd)} przy MC ${fmt.usd(d.mc)}${feeNote(buy.fee)}`);
+  toast(`💼 ${had ? 'Dokupiono' : 'Kupiono'} ${TAG} za ${fmt.usd(usd)} przy MC ${fmt.usd(d.mc)}${feeNote(buy.fee)}`);
   renderDetail(d0);
 }
 
@@ -1290,6 +1375,25 @@ function checkExits() {
       : null;
     if (!kind) continue;
     const f = kind === 'tp' ? (x.p.tpf || 100) / 100 : kind === 'safe' ? SAFE_PART : 1;
+    if (REAL) {
+      // A real sale is a swap: started here, booked when confirmed (the flag goes once it sold).
+      if (real.busy.has(x.m) || realSellBusy(x.p)) continue;
+      if (!realUnlocked()) {
+        if (Date.now() - (real.lockWarnAt || 0) > 60_000) {
+          real.lockWarnAt = Date.now();
+          toast(`🔒 ${EXITS[kind].name} na $${x.p.s || '?'} — odblokuj wallet, żeby bot mógł sprzedać`);
+        }
+        continue;
+      }
+      realSell(x.m, f, { [kind]: true }).then((ok) => {
+        const left = state.positions[x.m];
+        if (ok && left) {
+          delete left[kind];
+          LS.set('positions', state.positions);
+        }
+      });
+      continue;
+    }
     const fee = sellPosition(x.m, f, x.r.p, { [kind]: true });
     // A partial take profit / SAFE fires once; the rest of the position stays open without it.
     const left = state.positions[x.m];
@@ -1421,7 +1525,7 @@ function renderPositions() {
   const sign = (v) => (v >= 0 ? '+' : '−');
   const money = (v) => `${sign(v)}${fmt.usd(Math.abs(v))}`;
   const w = [['1d', 86400e3], ['7d', 7 * 86400e3], ['30d', 30 * 86400e3]].map(([k, ms]) => [k, pnlWindow(stat, ms)]);
-  const summary = `<div class="wallet-line">👛 Saldo walletu DEMO: <b>${fmt.usd(state.wallet.cash)}</b> <button data-sheet-wallet>Wallet</button></div>
+  const summary = `<div class="wallet-line">${REAL ? realWalletLine('data-sheet-wallet') : `👛 Saldo walletu DEMO: <b>${fmt.usd(state.wallet.cash)}</b> <button data-sheet-wallet>Wallet</button>`}</div>
     <div class="pos-sum">
       <div><span>Wkład</span><b>${fmt.usd(cost)}</b></div>
       <div><span>Wartość</span><b>${fmt.usd(value)}</b></div>
@@ -1453,7 +1557,7 @@ function renderPositions() {
           </div>`;
         })
         .join('')
-    : '<div class="empty"><b>Brak otwartych pozycji DEMO</b>Otwórz token z listy i w karcie „Pozycja DEMO” wpisz kwotę oraz MC wejścia.</div>';
+    : `<div class="empty"><b>Brak otwartych pozycji ${TAG}</b>${REAL ? 'Otwórz token z listy i kup go w karcie „Pozycja REAL”.' : 'Otwórz token z listy i w karcie „Pozycja DEMO” wpisz kwotę oraz MC wejścia.'}</div>`;
   const recent = state.closed.filter((c) => Date.now() - c.closedAt < 30 * 86400e3).slice(0, 20);
   const history = recent.length
     ? `<h3 class="pos-h">Zamknięte (30 dni)</h3><div class="pos-closed">${recent
@@ -1477,6 +1581,7 @@ function renderWallet() {
   $('#walletBotBody').hidden = !botMode;
   $$('#walletSeg button').forEach((b) => b.classList.toggle('on', b.dataset.wmode === state.walletMode));
   if (botMode) return bot ? bot.renderWallet($('#walletBotBody')) : ($('#walletBotBody').innerHTML = '<p class="note">Bot ładuje się…</p>');
+  if (REAL && !perpMode) return renderRealWallet();
   if (perpMode) return perps ? perps.renderWallet($('#walletPerpBody')) : ($('#walletPerpBody').innerHTML = '<p class="note">Perpetuals ładują się…</p>');
   const w = state.wallet;
   const list = positionList();
@@ -1564,6 +1669,7 @@ for (const ev of ['touchend', 'touchcancel'])
     if (drawerTouch > soon) drawerTouch = soon;
   }, { passive: true, capture: true });
 function openSheet(name) {
+  if (REAL && name !== 'wallet') realWipeForms(); // leaving the wallet: nothing typed stays behind
   for (const [k, [sel]] of Object.entries(SHEETS)) $(sel).hidden = k !== name;
   document.body.classList.add('sheet-open');
   $$('#bottombar button').forEach((b) => b.classList.toggle('on', b.dataset.nav === name));
@@ -1575,7 +1681,8 @@ const WALLET_MODES = ['spot', 'perps', 'bot'];
 state.walletMode = WALLET_MODES.includes(LS.get('walletMode', 'spot')) ? LS.get('walletMode', 'spot') : 'spot';
 // Loaded as its own module: if it can't load (e.g. the single-file preview), only perps are off.
 let perps = null;
-import('./perps.js?v=mvdpxmv5')
+// Perpetuals are demo-only (real perps would need a separate Hyperliquid account and signer).
+(REAL ? Promise.reject(new Error('real')) : import('./perps.js?v=mvef1tbm'))
   .then(({ createPerps }) => {
     perps = createPerps({
       toast: (m) => toast(m),
@@ -1588,22 +1695,26 @@ import('./perps.js?v=mvdpxmv5')
     if (sheetOpen('wallet')) renderWallet();
   })
   .catch(() => {
-    $('#perpBody').innerHTML = '<div class="empty"><b>Perpetuals niedostępne</b>Nie udało się wczytać modułu.</div>';
+    $('#perpBody').innerHTML = REAL
+      ? '<div class="empty"><b>Perpetuals tylko w DEMO</b>W trybie REAL handlujesz memecoinami na Solanie (Spot i BOT). Perpetuals ćwiczysz w trybie DEMO — przełącznik na dolnym pasku.</div>'
+      : '<div class="empty"><b>Perpetuals niedostępne</b>Nie udało się wczytać modułu.</div>';
   });
 /** Opens the wallet on its Spot (memecoins) or Perpetuals side. */
 function openWallet(mode) {
-  state.walletMode = WALLET_MODES.includes(mode) ? mode : 'spot';
+  state.walletMode = WALLET_MODES.includes(mode) && !(REAL && mode === 'perps') ? mode : 'spot';
   LS.set('walletMode', state.walletMode);
   openSheet('wallet');
 }
 $('#walletSeg').addEventListener('click', (e) => {
   const b = e.target.closest('[data-wmode]');
   if (!b) return;
-  state.walletMode = WALLET_MODES.includes(b.dataset.wmode) ? b.dataset.wmode : 'spot';
+  state.walletMode = WALLET_MODES.includes(b.dataset.wmode) && !(REAL && b.dataset.wmode === 'perps') ? b.dataset.wmode : 'spot';
   LS.set('walletMode', state.walletMode);
+  if (REAL && state.walletMode !== 'spot') realWipeForms();
   renderWallet();
 });
 function closeSheets() {
+  if (REAL) realWipeForms(); // no key or password left in a hidden form
   for (const [sel] of Object.values(SHEETS)) $(sel).hidden = true;
   document.body.classList.remove('sheet-open');
   $$('#bottombar button').forEach((b) => b.classList.toggle('on', b.dataset.nav === (state.botView ? 'bot' : 'radar')));
@@ -1611,16 +1722,33 @@ function closeSheets() {
 
 // ---------- trading bot DEMO (BOT tab: the radar with the bot's panel on top) ----------
 let bot = null;
-import('./bot.js?v=mvdpxmv5')
+import('./bot.js?v=mvef1tbm')
   .then(({ createBot }) => {
     bot = createBot({
       toast: (m) => toast(m),
       engine: () => ENGINE,
       tradeFee: (usd, chain) => tradeFee(usd, chain),
-      excluded: (r) => state.hidden.has(r.m) || (r.cr && state.blocked.has(r.cr)),
+      // Real: never a token held as a manual position (both would sell the same wallet tokens).
+      excluded: (r) => state.hidden.has(r.m) || (r.cr && state.blocked.has(r.cr)) || (REAL && (!!state.positions[r.m] || !!realPend[r.m] || real.busy.has(r.m))),
       openToken: (m) => openDetail(m),
       openWallet: () => openWallet('bot'),
-      onChange: () => ($('#c-bot').textContent = bot?.count() || ''),
+      openVault: () => openWallet('spot'),
+      key: REAL ? 'mr:real:bot' : 'mr:bot',
+      tabId: TAB,
+      tabAlive,
+      lockKey: REAL ? 'mr:real:botLock' : 'mr:botLock',
+      exec: REAL
+        ? {
+            buy: (m, usd, o) => realReady.then(() => real.trader.buy(m, usd, o)),
+            sell: (m, raw, o) => realReady.then(() => real.trader.sell(m, raw, o)),
+            resolve: (sig, m, kind, bh) => realReady.then(() => (real.trader ? real.trader.resolve(sig, m, kind, bh) : { state: 'unknown' })),
+          }
+        : null,
+      canTrade: () => realUnlocked() && (ENGINE?.chain || 'solana') === 'solana',
+      onChange: () => {
+        $('#c-bot').textContent = bot?.count() || '';
+        if (REAL) refreshRealBalance();
+      },
       fmt,
       esc,
     });
@@ -1639,6 +1767,678 @@ function setBotView(on) {
 }
 setInterval(() => state.botView && !document.hidden && bot?.render($('#botPanel')), 2000);
 const sheetOpen = (name) => !$(SHEETS[name][0]).hidden;
+
+// ---------- REAL mode: the user's own Solana wallet ----------
+// The private key lives only inside vault.js (encrypted at rest, a non-extractable WebCrypto key
+// while unlocked); this part asks it to sign Jupiter swaps through real.js and can't read it.
+// Settings, always within their limits (whatever is in storage).
+const REAL_LIM = { slipBuy: [0.5, 50, 10], slipSell: [0.5, 50, 15], prio: [0, 0.01, 0.0005], lockMin: [0, 240, 30] };
+const RPC_RE = /^https:\/\/[^\s"'<>]+$/;
+const realCfg = ((v) => {
+  const out = { rpc: typeof v?.rpc === 'string' && RPC_RE.test(v.rpc) ? v.rpc : '' };
+  for (const [k, [lo, hi, def]] of Object.entries(REAL_LIM)) {
+    const n = Number(v?.[k]);
+    out[k] = v?.[k] != null && Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : def;
+  }
+  return out;
+})(LS.get('realCfg', {}));
+const real = { vault: null, trader: null, V: null, sol: null, tokens: null, balAt: 0, busy: new Set(), supported: null, err: REAL_BLOCK, staged: null, resolving: false };
+// Manual buys sent but not yet confirmed (saved with the signature: a reload can resolve them).
+let realPend = ((v) => (v && typeof v === 'object' ? v : {}))(LS.get('realPend', {}));
+const saveRealPend = () => LS.set('realPend', realPend);
+// Signatures already booked (each trade is booked once, whichever tab sees it first).
+const realBooked = () => ((v) => (Array.isArray(v) ? v : []))(LS.get('realBooked', []));
+const isBooked = (sig) => !!sig && realBooked().includes(sig);
+const markBooked = (sig) => sig && LS.set('realBooked', [sig, ...realBooked().filter((x) => x !== sig)].slice(0, 200));
+/** The radar's market price of `m` when fresh (a floor for real swaps that doesn't come from Jupiter). */
+function freshPrice(m) {
+  const r = ENGINE?.rowsFor?.('solana', [m])[0];
+  return r?.p > 0 && r.pa > 0 && Date.now() - r.pa < 60_000 ? r.p : 0;
+}
+const realReady = REAL && !REAL_BLOCK
+  ? Promise.all([import('./vault.js?v=mvef1tbm'), import('./solana.js?v=mvef1tbm'), import('./real.js?v=mvef1tbm')])
+      .then(async ([V, S, R]) => {
+        real.V = V;
+        real.S = S;
+        real.vault = V.createVault(V.idbStore(), CRYPTO);
+        await real.vault.load();
+        real.supported = await real.vault.checkSupport();
+        real.minPass = V.MIN_PASSWORD;
+        real.trader = R.createTrader({
+          vault: real.vault,
+          rpc: S.createRpc(() => realCfg.rpc),
+          solUsd: () => state.nativeUsd.solana || 0,
+          settings: () => ({ slipBuyBps: Math.round(realCfg.slipBuy * 100), slipSellBps: Math.round(realCfg.slipSell * 100), priorityMaxLamports: Math.round(realCfg.prio * 1e9) }),
+        });
+        refreshRealBalance(true);
+        if (sheetOpen('wallet')) renderWallet();
+      })
+      .catch((e) => {
+        real.err = `Nie udało się wczytać modułu walletu (${e?.message || e})`;
+        if (sheetOpen('wallet')) renderWallet();
+      })
+  : null;
+const realUnlocked = () => !!real.vault?.status().unlocked;
+/** Anything that needs the key right now: positions to protect, the bot, trades in flight. */
+const realInUse = () =>
+  Object.keys(state.positions).length || Object.keys(realPend).length || real.busy.size || (bot ? bot.count() || bot.running() || bot.inFlight?.() : storedBotBusy());
+/** Before the bot module loads: whether its saved state has positions, buys in flight or is on. */
+function storedBotBusy() {
+  try {
+    const b = JSON.parse(localStorage.getItem('mr:real:bot') || 'null');
+    return !!(b && (b.on || Object.keys(b.pos || {}).length || Object.keys(b.pend || {}).length));
+  } catch {
+    return false;
+  }
+}
+
+async function refreshRealBalance(force = false) {
+  if (!REAL || !real.trader || !real.vault?.status().hasKey) return;
+  if (!force && Date.now() - real.balAt < 15_000) return;
+  real.balAt = Date.now();
+  try {
+    real.sol = (await real.trader.balance()) / 1e9;
+    real.tokens = await real.trader.tokenBalances();
+    state.wallet.cash = real.sol * (state.nativeUsd.solana || 0);
+    real.err = '';
+  } catch (e) {
+    real.err = `Nie udało się odczytać salda z sieci Solana (${e?.message || e})`;
+  }
+  if (sheetOpen('wallet') && !sheetBusy()) renderWallet();
+}
+setInterval(() => REAL && !document.hidden && refreshRealBalance(), 20_000);
+
+// Auto-lock after inactivity — but never while something depends on the key: open positions
+// (their stop loss / take profit must be able to sell), a running bot or a trade in flight.
+let realTouch = Date.now();
+for (const ev of ['pointerdown', 'keydown']) document.addEventListener(ev, () => (realTouch = Date.now()), { passive: true, capture: true });
+setInterval(() => {
+  if (!REAL || !realUnlocked() || !(realCfg.lockMin > 0)) return;
+  if (realInUse() || Date.now() - realTouch < realCfg.lockMin * 60_000) return;
+  real.vault.lock();
+  toast('🔒 Wallet zablokowany po bezczynności');
+  if (sheetOpen('wallet')) renderWallet();
+}, 30_000);
+
+const solTxt = () => (real.sol != null ? `${real.sol.toFixed(real.sol < 1 ? 4 : 3)} SOL <small>(${fmt.usd(real.sol * (state.nativeUsd.solana || 0))})</small>` : '—');
+/** One line with the real wallet's balance (positions sheet, token window). */
+function realWalletLine(attr) {
+  const st = real.vault?.status();
+  if (!st?.hasKey) return `🔐 Wallet niepodłączony <button ${attr}>Podłącz</button>`;
+  return `👛 Wallet: <b>${solTxt()}</b>${st.unlocked ? '' : ' 🔒'} <button ${attr}>Wallet</button>`;
+}
+
+/** The token window's position card in REAL mode: real buys / sells through Jupiter. */
+function realPosCard(d, pp) {
+  const st = real.vault?.status();
+  const warn = !st?.hasKey
+    ? '<p class="note real-warn">🔐 Najpierw podłącz swój wallet Solana (Wallet → Spot).</p>'
+    : !st.unlocked
+    ? '<p class="note real-warn">🔒 Wallet zablokowany — odblokuj go hasłem w Wallet, żeby kupować i sprzedawać.</p>'
+    : (ENGINE?.chain || 'solana') !== 'solana'
+    ? '<p class="note real-warn">W trybie REAL handel jest tylko na Solanie — przełącz sieć.</p>'
+    : '';
+  const busy = real.busy.has(d.m) || realPend[d.m] || pp?.entry.sellSig ? '<p class="note">⏳ Transakcja w toku…</p>' : '';
+  if (pp) {
+    return `<div class="card"><h3>💼 Pozycja <span class="demo-tag real">REAL</span> <small>od ${fmt.ago(pp.entry.t)}</small></h3>
+      <div class="hstats">
+        <div><span>MC wejścia</span><b>${fmt.usd(pp.entry.mc || (d.mc && d.p ? (pp.entry.p * d.mc) / d.p : null))}</b></div>
+        <div><span>MC teraz</span><b>${fmt.usd(d.mc)}</b></div>
+        <div><span>Wynik</span><b class="${pp.cls}">${fmt.pct(pp.pct)} · ${fmtX(d.p / pp.entry.p)}</b></div>
+        ${pp.usd != null ? `<div><span>Włożone</span><b>${fmt.usd(pp.entry.usd)}</b></div><div><span>Wartość</span><b>${fmt.usd(pp.value)}</b></div><div><span>Zysk / strata</span><b class="${pp.cls}">${pp.usd >= 0 ? '+' : '−'}${fmt.usd(Math.abs(pp.usd))}</b></div>` : ''}
+      </div>
+      ${busy}${warn}
+      ${sellRow('data-sell')}
+      ${exitRows(pp.entry, 'data-exit')}
+      <div class="wallet-line" style="margin-top:10px">${realWalletLine('data-act="wallet-open"')}</div>
+      ${quickBuyRow('Dokup')}</div>`;
+  }
+  return `<div class="card"><h3>💼 Pozycja <span class="demo-tag real">REAL</span> <small>prawdziwe środki</small></h3>
+    <p class="note" style="margin:0 0 8px">Kupujesz prawdziwe tokeny przez Jupiter za SOL z Twojego walletu (poślizg do ${esc(realCfg.slipBuy)}%, opłata sieci do ${esc(realCfg.prio)} SOL). Każda transakcja jest sprawdzana przed podpisem.</p>
+    ${busy}${warn}
+    <div class="wallet-line">${realWalletLine('data-act="wallet-open"')}</div>
+    ${quickBuyRow('Kup')}</div>`;
+}
+
+/** A confirmed real buy into the positions (added to an open one: average entry, tokens summed). */
+function realOpenFromFill(m, e, f) {
+  if (isBooked(f.sig)) return false;
+  markBooked(f.sig);
+  const tokens = Number(f.tokensRaw) / 10 ** (f.decimals ?? 6);
+  if (!(tokens > 0)) {
+    toast(`⚠️ Zakup $${e.s || '?'} przeszedł bez tokenów — sprawdź Wallet → Tokeny`);
+    return false;
+  }
+  const price = f.usdSpent / tokens;
+  const mc = e.px > 0 && e.mc > 0 ? e.mc * (price / e.px) : e.mc;
+  const oldRaw = state.positions[m]?.raw || '0';
+  if (!savePosition(m, price, f.usdSpent, mc, { n: e.n, s: e.s, i: e.i, p: e.px, mc: e.mc }, 0)) {
+    toast('⚠️ Tokeny są w walletcie, ale pozycji nie udało się dopisać — sprzedasz je w Wallet → Tokeny');
+    return false;
+  }
+  const p = state.positions[m];
+  p.raw = String(BigInt(oldRaw) + BigInt(f.tokensRaw));
+  p.dec = f.decimals ?? p.dec ?? 6;
+  p.own = real.vault?.status().pub || p.own; // the wallet holding them
+  if (state.wallet.tx[0]?.type === 'open') state.wallet.tx[0].sig = f.sig;
+  LS.set('positions', state.positions);
+  saveWallet();
+  return true;
+}
+
+async function realBuy(d, usd) {
+  const m = d.m;
+  if (!real.trader) return toast(real.err || 'Moduł walletu jeszcze się ładuje…');
+  const st = real.vault.status();
+  if (!st.hasKey || !st.unlocked) {
+    toast(st.hasKey ? '🔒 Odblokuj wallet hasłem' : '🔐 Najpierw podłącz swój wallet');
+    closeDetail();
+    return openWallet('spot');
+  }
+  if ((ENGINE?.chain || 'solana') !== 'solana') return toast('W trybie REAL handel jest tylko na Solanie');
+  if (real.busy.has(m) || realPend[m] || state.positions[m]?.sellSig) return toast('Transakcja na tym tokenie już trwa…');
+  if (bot?.holds(m)) return toast('Ten token trzyma bot — sprzedaj go w panelu BOT albo poczekaj');
+  const own = state.positions[m]?.own;
+  if (own && own !== st.pub) return toast('Ta pozycja jest w innym walletcie — podłącz tamten klucz');
+  real.busy.add(m);
+  realPend[m] = { usd, t: Date.now(), tab: TAB, px: d.p, mc: d.mc, n: d.n || '', s: d.s || '', i: d.i || '' };
+  saveRealPend();
+  toast(`⏳ Kupuję $${d.s || '?'} za ${fmt.usd(usd)}…`);
+  if (state.detail?.m === m) renderDetail(state.detail);
+  let sentSig = null;
+  const started = realPend[m].t;
+  try {
+    const onSent = ({ sig, blockhash }) => {
+      sentSig = sig;
+      if (realPend[m]) Object.assign(realPend[m], { sig, bh: blockhash });
+      saveRealPend();
+    };
+    const f = await real.trader.buy(m, usd, { onSent, refPx: d.p });
+    const e = realPend[m] || { px: d.p, mc: d.mc, n: d.n, s: d.s, i: d.i };
+    if (realPend[m]?.t === started) delete realPend[m];
+    saveRealPend();
+    if (realOpenFromFill(m, e, f)) toast(`✅ Kupiono $${d.s || '?'} za ${fmt.usd(f.usdSpent)}`);
+  } catch (e) {
+    if ((!sentSig && !e?.sent) || e.failed || e.expired) {
+      if (realPend[m]?.t === started) delete realPend[m];
+      saveRealPend();
+      toast(`❌ Zakup nieudany: ${e?.message || e}`);
+    } else toast(`⚠️ ${e.message} — sprawdzam w sieci; jeśli zakup wszedł, pozycja pojawi się sama`);
+  } finally {
+    real.busy.delete(m);
+    refreshRealBalance(true);
+    if (state.detail?.m === m) renderDetail(state.detail);
+    if (sheetOpen('pos')) renderPositions();
+  }
+}
+
+const clearRealSell = (q) => {
+  for (const k of ['sellSig', 'sellBh', 'sellF', 'sellX', 'sellAt', 'sellTab']) delete q[k];
+};
+/** A sale of this position running in another tab, or sent and not yet resolved. */
+const realSellBusy = (p) => !!p.sellSig || (!!p.sellTab && p.sellTab !== TAB && tabAlive(p.sellTab));
+
+/** Books a confirmed real sale of `fr` of position `m`. */
+function realBookSale(m, fr, extra, r) {
+  const q = state.positions[m];
+  if (!q) return;
+  clearRealSell(q);
+  if (isBooked(r.sig)) return LS.set('positions', state.positions);
+  markBooked(r.sig);
+  const part = (q.usd || 0) * fr;
+  // The sale books at the price that gives exactly what came back (fees are inside it).
+  const exitPx = part > 0 && q.p > 0 ? Math.max(1e-30, q.p * (r.usdReceived / part)) : q.last?.p;
+  if (fr < 1 && q.raw) q.raw = String(BigInt(q.raw) - BigInt(r.tokensSold || '0'));
+  sellPosition(m, fr, exitPx, extra);
+  // A partial take profit / SAFE fires once; the rest of the position stays open without it.
+  const left = state.positions[m];
+  if (left) for (const k of Object.keys(extra)) if (EXITS[k]) delete left[k];
+  if (state.wallet.tx[0]?.type === 'close') state.wallet.tx[0].sig = r.sig;
+  LS.set('positions', state.positions);
+  saveWallet();
+  const pnl = r.usdReceived - part;
+  toast(`✅ Sprzedano $${q.s || '?'} za ${fmt.usd(r.usdReceived)} (${pnl >= 0 ? '+' : '−'}${fmt.usd(Math.abs(pnl))})`);
+}
+
+/** Sells `f` of a real position (a Jupiter swap); true once it sold. */
+async function realSell(m, f, extra = {}) {
+  const p = state.positions[m];
+  if (!p || !real.trader) return false;
+  if (!realUnlocked()) {
+    toast('🔒 Odblokuj wallet hasłem, żeby sprzedać');
+    return false;
+  }
+  if (p.own && p.own !== real.vault.status().pub) {
+    toast('Ta pozycja jest w innym walletcie — podłącz tamten klucz, żeby ją sprzedać');
+    return false;
+  }
+  if (real.busy.has(m) || realSellBusy(p)) {
+    toast('Transakcja na tym tokenie już trwa…');
+    return false;
+  }
+  const fr = Math.min(1, Math.max(0, f));
+  const raw = p.raw ? (fr >= 1 ? p.raw : String((BigInt(p.raw) * BigInt(Math.round(fr * 1000))) / 1000n)) : 'all';
+  real.busy.add(m);
+  // Marked in storage: another open tab won't sell the same position at the same time.
+  Object.assign(p, { sellAt: Date.now(), sellTab: TAB, sellF: fr, sellX: extra });
+  LS.set('positions', state.positions);
+  toast(`⏳ Sprzedaję ${fr < 1 ? `${Math.round(fr * 100)}% ` : ''}$${p.s || '?'}…`);
+  if (state.detail?.m === m) renderDetail(state.detail);
+  let sentSig = null;
+  try {
+    const onSent = ({ sig, blockhash }) => {
+      sentSig = sig;
+      const q = state.positions[m];
+      if (q) Object.assign(q, { sellSig: sig, sellBh: blockhash });
+      LS.set('positions', state.positions);
+    };
+    const r = await real.trader.sell(m, raw, { onSent, refPx: freshPrice(m) });
+    const q = state.positions[m];
+    // Booked once: here, unless another tab already booked this signature.
+    if (q && (!q.sellSig || q.sellSig === r.sig)) realBookSale(m, fr, extra, r);
+    return true;
+  } catch (e) {
+    const q = state.positions[m];
+    if ((sentSig || e?.sent) && !e.failed && !e.expired) {
+      // It went out and may have sold: the chain decides (realResolve), not a second sale.
+      toast(`⚠️ ${e.message} — sprawdzam w sieci`);
+      return false;
+    }
+    if (q) {
+      clearRealSell(q);
+      LS.set('positions', state.positions);
+    }
+    if (e?.empty) {
+      sellPosition(m, 1, 1e-30, { ...extra, gone: true });
+      toast('Tych tokenów nie ma już w walletcie — pozycja zamknięta');
+      return true;
+    }
+    toast(`❌ Sprzedaż nieudana: ${e?.message || e}`);
+    return false;
+  } finally {
+    real.busy.delete(m);
+    refreshRealBalance(true);
+    if (state.detail?.m === m) renderDetail(state.detail);
+    if (sheetOpen('pos')) renderPositions();
+  }
+}
+
+// Trades sent but not confirmed (a reload mid-swap, or no answer from the network): asked again
+// until the chain says what happened. One tab does it.
+function realLeader() {
+  try {
+    const l = JSON.parse(localStorage.getItem('mr:real:resolver') || 'null');
+    if (l && l.id !== TAB && Date.now() - l.at < 60_000) return false;
+    localStorage.setItem('mr:real:resolver', JSON.stringify({ id: TAB, at: Date.now() }));
+  } catch {
+    /* private mode: the only tab */
+  }
+  return true;
+}
+async function realResolve(lead) {
+  if (!real.trader || !real.vault?.status().hasKey || real.resolving) return;
+  real.resolving = true;
+  try {
+    for (const [m, e] of Object.entries(realPend)) {
+      // Each tab resolves its own trades; the leader also takes those of tabs that are gone.
+      if (real.busy.has(m) || (e.tab !== TAB && (!lead || tabAlive(e.tab)))) continue;
+      if (!e.sig) {
+        delete realPend[m]; // never sent
+        saveRealPend();
+        continue;
+      }
+      const st = await real.trader.resolve(e.sig, m, 'buy', e.bh).catch(() => ({ state: 'unknown' }));
+      const cur = realPend[m];
+      if (!cur || cur.sig !== e.sig) continue;
+      if (st.state === 'landed') {
+        delete realPend[m];
+        if (realOpenFromFill(m, cur, st.result)) toast(`✅ Zakup $${cur.s || '?'} potwierdzony w sieci`);
+      } else if (st.state === 'failed' || st.state === 'expired') {
+        delete realPend[m];
+        toast(`↩️ Zakup $${cur.s || '?'} nie wszedł — nic nie zostało pobrane`);
+      } else if (Date.now() - cur.t > 15 * 60_000) {
+        delete realPend[m];
+        toast(`⚠️ Nie udało się ustalić, czy zakup $${cur.s || '?'} wszedł — sprawdź Wallet → Tokeny`);
+      } else continue;
+      saveRealPend();
+    }
+    for (const [m, p] of Object.entries(state.positions)) {
+      if (real.busy.has(m) || (p.sellTab && p.sellTab !== TAB && (!lead || tabAlive(p.sellTab)))) continue;
+      if (!p.sellSig && !p.sellTab) continue;
+      if (!p.sellSig) {
+        if (p.sellTab && p.sellTab !== TAB) {
+          clearRealSell(p); // a sale that never went out (its tab is gone)
+          LS.set('positions', state.positions);
+        }
+        continue;
+      }
+      const st = await real.trader.resolve(p.sellSig, m, 'sell', p.sellBh).catch(() => ({ state: 'unknown' }));
+      const q = state.positions[m];
+      if (!q || q.sellSig !== p.sellSig) continue;
+      if (st.state === 'landed') realBookSale(m, q.sellF ?? 1, q.sellX || {}, { ...st.result, sig: q.sellSig });
+      else if (st.state === 'failed' || st.state === 'expired' || Date.now() - (q.sellAt || 0) > 15 * 60_000) {
+        clearRealSell(q); // stop loss / take profit will try again
+        LS.set('positions', state.positions);
+      } else continue;
+      if (sheetOpen('pos')) renderPositions();
+    }
+  } finally {
+    real.resolving = false;
+  }
+}
+setInterval(() => REAL && !document.hidden && realResolve(realLeader()), 20_000);
+// Leaving the page while a swap is on its way: the browser asks first.
+window.addEventListener('beforeunload', (e) => {
+  if (REAL && (real.busy.size || bot?.swapping?.())) {
+    e.preventDefault();
+    e.returnValue = '';
+  }
+});
+
+/** Wallet → Spot in REAL mode: connect (encrypted key), unlock, balance, settings, history. */
+function renderRealWallet() {
+  const body = $('#walletBody');
+  const st = real.vault?.status();
+  const view = real.err && !real.vault ? 'error' : !real.vault ? 'loading' : real.supported === false ? 'unsupported' : !st.hasKey ? (real.staged ? 'import2' : 'import') : !st.unlocked ? 'locked' : 'open';
+  // Forms are built once per view: live refreshes never touch a field being typed into.
+  if (body.dataset.view !== view) {
+    body.dataset.view = view;
+    body.innerHTML = realWalletShell(view);
+  }
+  const put = (id, html) => {
+    const el = body.querySelector(id);
+    if (el && el.dataset.html !== html) {
+      el.dataset.html = html;
+      el.innerHTML = html;
+    }
+  };
+  if (view === 'locked' || view === 'open') {
+    const pub = st.pub;
+    put('#rwCard', `<div class="wallet-card real">
+        <span>Twój wallet Solana ${st.unlocked ? '<i class="real-ok">● odblokowany</i>' : '<i class="real-lock">🔒 zablokowany</i>'}</span><b>${solTxt()}</b>
+        <div class="real-addr"><code>${esc(fmt.short(pub))}</code><button data-rw="copy">📋 Kopiuj adres</button><a href="https://solscan.io/account/${esc(pub)}" target="_blank" rel="noopener noreferrer">Solscan ↗</a><button data-rw="refresh">↻</button></div>
+        ${real.err ? `<p class="note real-warn">${esc(real.err)}</p>` : ''}
+      </div>`);
+  }
+  if (view === 'open') {
+    put('#rwCal', pnlCalendar());
+    const toks = [...(real.tokens || new Map())].filter(([, t]) => t.raw > 0n);
+    const name = (m) => state.positions[m]?.s || (ENGINE?.rowsFor?.('solana', [m])[0]?.s) || fmt.short(m);
+    // Tokens outside the app's positions (e.g. a buy that landed after a reload) can be sold here.
+    const own = (m) => state.positions[m] || realPend[m] || bot?.holds(m);
+    put('#rwTokens', `<h3 class="pos-h">Tokeny w walletcie <small>${toks.length}</small></h3><div class="pos-closed">${
+      toks.length
+        ? toks.map(([m, t]) => `<div><span>$${esc(name(m))}${own(m) ? ' <small>· w pozycji</small>' : ''}</span><b>${fmt.n(Number(t.raw) / 10 ** t.dec)}${own(m) ? '' : ` <button class="rw-sell" data-rw="sellall" data-m="${esc(m)}"${real.busy.has(m) || realPend[m] ? ' disabled' : ''}>Sprzedaj</button>`}</b></div>`).join('')
+        : '<div><span class="muted">Brak tokenów</span></div>'
+    }</div>`);
+    const TX = { open: ['💼', 'Kupno'], close: ['✅', 'Sprzedaż'] };
+    put('#rwHist', `<h3 class="pos-h">Historia transakcji</h3><div class="pos-closed">${
+      state.wallet.tx.filter((t) => TX[t.type]).slice(0, 30).map((t) => `<div><span>${TX[t.type][0]} ${TX[t.type][1]}${t.s ? ` <small>$${esc(t.s)}</small>` : ''} <small>· ${fmt.ago(t.t)}</small>${t.sig ? ` <a href="https://solscan.io/tx/${esc(t.sig)}" target="_blank" rel="noopener noreferrer">tx ↗</a>` : ''}</span><b class="${t.type === 'open' ? 'down' : 'up'}">${t.type === 'open' ? '−' : '+'}${fmt.usd(t.amount)}${t.pnl != null ? ` <small class="${t.pnl >= 0 ? 'up' : 'down'}">(${t.pnl >= 0 ? '+' : '−'}${fmt.usd(Math.abs(t.pnl))})</small>` : ''}</b></div>`).join('') || '<div><span class="muted">Jeszcze bez transakcji</span></div>'
+    }</div>`);
+  }
+}
+
+function realWalletShell(view) {
+  const rules = `<ul class="real-rules">
+      <li>Klucz zostaje <b>tylko na tym urządzeniu</b>, zaszyfrowany Twoim hasłem (AES-256, 600 000 rund PBKDF2). Nigdzie nie jest wysyłany.</li>
+      <li>Po odblokowaniu klucz jest <b>nieeksportowalny</b>: aplikacja może nim tylko podpisywać — nie da się go odczytać, wyświetlić ani skopiować. Nie ma funkcji pokazania klucza ani wypłaty na inny adres.</li>
+      <li>Każda transakcja jest sprawdzana przed podpisem: tylko swap Jupitera, <b>z Twojego konta na Twoje konto</b> (adresy liczone w aplikacji), dokładnie zlecona kwota, poślizg nie większy niż ustawiony, bez prowizji i bez żadnych innych operacji (przelewów, uprawnień, zmiany właściciela). Symulacja na węźle Solany musi pokazać, że tokeny / SOL wracają do Ciebie.</li>
+      <li>Gdy wallet jest odblokowany, może podpisywać — <b>blokuj go</b>, gdy nie handlujesz. Nie zapisuj tego hasła w przeglądarce ani menedżerze haseł na tym urządzeniu.</li>
+      <li><b>Używaj osobnego walletu</b> z kwotą, którą możesz stracić — nie głównego. Zapomniane hasło = klucz trzeba podłączyć od nowa (masz go w Phantom).</li>
+    </ul>`;
+  if (view === 'loading') return '<p class="note">Ładowanie bezpiecznego modułu walletu…</p>';
+  if (view === 'error') return `<div class="card"><h3>Wallet niedostępny</h3><p class="note real-warn">${esc(real.err)}</p></div>`;
+  if (view === 'unsupported') return '<div class="card"><h3>Przeglądarka nie obsługuje bezpiecznego podpisu</h3><p class="note real-warn">Tryb REAL wymaga podpisu Ed25519 w WebCrypto (iOS / Safari 17+, aktualny Chrome / Firefox). Zaktualizuj system lub przeglądarkę.</p></div>';
+  // Two steps: the key field and the password fields are never on screen together (a password
+  // manager must never take the key for a login), and the key field is emptied the moment it's read.
+  if (view === 'import')
+    return `<div class="card real-connect"><h3>🔐 Podłącz swój wallet Solana · 1/2</h3>
+      <p class="note">Wklej klucz prywatny (w Phantom: Ustawienia → Zarządzaj kontami → konto → Pokaż klucz prywatny). W następnym kroku ustawisz hasło, którym zostanie zaszyfrowany.</p>
+      <input id="rkKey" class="rk-key" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore data-lpignore="true" data-form-type="other" placeholder="Klucz prywatny (base58)" />
+      <label class="toggle-row"><input id="rkOk" type="checkbox" /> <span>Rozumiem: to osobny wallet z kwotą, którą mogę stracić, a handel memecoinami jest bardzo ryzykowny.</span></label>
+      <button class="real-btn" data-rw="stage" disabled>Dalej →</button>
+      ${rules}</div>`;
+  if (view === 'import2')
+    return `<div class="card real-connect"><h3>🔐 Ustaw hasło · 2/2</h3>
+      <p class="note">Klucz do walletu <b><code>${esc(fmt.short(real.S.b58encode(real.staged.claimedPub)))}</code></b> — sprawdź, czy to Twój adres. Hasło: min. ${real.minPass || 12} znaków, najlepiej kilka słów (np. „Zielony-Kot-Pije-7”). Nie da się go odzyskać.</p>
+      <input id="rkPass1" type="password" autocomplete="off" placeholder="Hasło" />
+      <input id="rkPass2" type="password" autocomplete="off" placeholder="Powtórz hasło" />
+      <button class="real-btn" data-rw="import">🔐 Zaszyfruj i podłącz</button>
+      <div class="d-acts"><button data-rw="cancel">Anuluj</button></div>
+      <p class="note">Schowek został wyczyszczony z klucza. Jeśli masz historię schowka (np. Gboard, Win+V), usuń go też stamtąd.</p></div>`;
+  if (view === 'locked')
+    return `<div id="rwCard"></div>
+      <div class="card"><h3>🔒 Odblokuj wallet</h3>
+        <div class="pos-form"><input id="ruPass" type="password" autocomplete="off" placeholder="Hasło" /><button data-rw="unlock">Odblokuj</button></div>
+        <p class="note">Hasło odszyfrowuje klucz tylko w pamięci tej karty. Po zamknięciu aplikacji wallet znów jest zablokowany.</p>
+      </div>
+      <div class="d-acts" style="margin-top:16px"><button data-rw="remove">🗑️ Usuń klucz z tego urządzenia</button></div>`;
+  return `<div id="rwCard"></div>
+    <div class="card"><h3>⬇️ Wpłata</h3><p class="note">Wyślij SOL na adres swojego walletu (przycisk „Kopiuj adres” wyżej) — z giełdy albo z Phantom. Saldo odświeży się samo. Zostaw zawsze ok. 0.01 SOL na opłaty sieci.</p></div>
+    <div id="rwCal"></div><div id="rwTokens"></div>
+    <div class="card"><h3>⚙️ Ustawienia transakcji</h3><div class="bot-grid">
+      <label><span>Poślizg kupno <small>%</small></span><input type="number" inputmode="decimal" data-rcfg="slipBuy" min="0.5" max="50" step="0.5" value="${esc(realCfg.slipBuy)}" /></label>
+      <label><span>Poślizg sprzedaż <small>%</small></span><input type="number" inputmode="decimal" data-rcfg="slipSell" min="0.5" max="50" step="0.5" value="${esc(realCfg.slipSell)}" /></label>
+      <label><span>Opłata priorytetowa <small>maks. SOL</small></span><input type="number" inputmode="decimal" data-rcfg="prio" min="0" max="0.01" step="0.0001" value="${esc(realCfg.prio)}" /></label>
+      <label><span>Auto-blokada <small>min</small></span><input type="number" inputmode="decimal" data-rcfg="lockMin" min="0" max="240" step="1" value="${esc(realCfg.lockMin)}" /></label>
+      </div>
+      <label class="real-rpc"><span>Własny węzeł RPC (opcjonalnie, np. Helius)</span><input type="url" data-rcfg="rpc" autocomplete="off" spellcheck="false" placeholder="https://…" value="${esc(realCfg.rpc)}" /></label>
+      <p class="note">Memecoiny potrzebują większego poślizgu (kupno ~10%, sprzedaż ~15%), inaczej transakcja się nie wykona. Auto-blokada nie działa, gdy masz otwarte pozycje albo bot jest włączony — ich stop loss musi móc sprzedać.</p>
+      <div class="bot-acts"><button data-rw="test">🔌 Sprawdź połączenie</button></div>
+    </div>
+    <div id="rwHist"></div>
+    <div class="d-acts" style="margin-top:16px"><button data-rw="lock">🔒 Zablokuj teraz</button><button data-rw="remove">🗑️ Usuń klucz z tego urządzenia</button></div>
+    ${rules}`;
+}
+
+function realCfgChange(inp) {
+  const k = inp.dataset.rcfg;
+  if (k === 'rpc') {
+    const v = inp.value.trim();
+    if (v && !RPC_RE.test(v)) {
+      inp.value = realCfg.rpc;
+      return toast('Adres RPC musi zaczynać się od https://');
+    }
+    realCfg.rpc = v;
+  } else {
+    const lim = REAL_LIM[k];
+    const v = Number(String(inp.value).replace(',', '.'));
+    // An emptied field is not 0: it goes back to the saved value.
+    if (!lim || String(inp.value).trim() === '' || !Number.isFinite(v)) return (inp.value = realCfg[k]);
+    realCfg[k] = Math.max(lim[0], Math.min(lim[1], v));
+    inp.value = realCfg[k];
+  }
+  LS.set('realCfg', realCfg);
+  toast('Zapisano ustawienia transakcji');
+}
+
+/** Clicks in the REAL wallet; true when handled. */
+function realWalletClick(e) {
+  const b = e.target.closest('[data-rw]');
+  if (!b) return false;
+  const act = b.dataset.rw;
+  const v = real.vault;
+  if (!v) return true;
+  if (act === 'stage') {
+    // Read and emptied at once — whatever happens next, the key isn't left in the page.
+    const inp = $('#rkKey');
+    const text = inp?.value || '';
+    if (inp) inp.value = '';
+    if (!$('#rkOk')?.checked) return toast('Zaznacz, że rozumiesz ryzyko'), true;
+    try {
+      real.staged = real.V.parseSecret(text);
+    } catch (err) {
+      return toast(`❌ ${err?.message || err}`), true;
+    }
+    navigator.clipboard?.writeText?.('').catch(() => {});
+    clearTimeout(real.stageTimer);
+    real.stageTimer = setTimeout(() => {
+      realWipeForms();
+      if (sheetOpen('wallet')) renderWallet();
+    }, 180_000);
+    renderWallet();
+  } else if (act === 'cancel') {
+    realWipeForms();
+    renderWallet();
+  } else if (act === 'import') {
+    const p1 = $('#rkPass1'), p2 = $('#rkPass2');
+    const pass = p1.value;
+    const again = p2.value;
+    p1.value = p2.value = '';
+    if (!real.staged) return toast('Wklej klucz jeszcze raz'), renderWallet(), true;
+    if (pass !== again) return toast('Hasła się różnią — wpisz je jeszcze raz'), true;
+    const weak = real.V.weakPassword(pass);
+    if (weak) return toast(`❌ ${weak}`), true;
+    const staged = real.staged;
+    real.staged = null;
+    clearTimeout(real.stageTimer);
+    b.disabled = true;
+    toast('🔐 Szyfruję klucz…');
+    v.importKey(staged, pass)
+      .then((pub) => {
+        toast(`✅ Podłączono wallet ${fmt.short(pub)}`);
+        realTouch = Date.now();
+      })
+      .catch((err) => toast(`❌ ${err?.message || err}`))
+      .finally(() => {
+        staged.seed.fill(0);
+        staged.claimedPub.fill(0);
+        b.disabled = false;
+        refreshRealBalance(true);
+        renderWallet();
+      });
+  } else if (act === 'unlock') {
+    const inp = $('#ruPass');
+    const pass = inp.value;
+    inp.value = '';
+    b.disabled = true;
+    v.unlock(pass)
+      .then(() => {
+        toast('🔓 Wallet odblokowany');
+        realTouch = Date.now();
+      })
+      .catch((err) => toast(`❌ ${err?.message || err}`))
+      .finally(() => {
+        b.disabled = false;
+        refreshRealBalance(true);
+        renderWallet();
+        if (state.detail) renderDetail(state.detail);
+      });
+  } else if (act === 'lock') {
+    if (Object.keys(state.positions).length || bot?.count() || bot?.running()) {
+      if (!confirm('Masz otwarte pozycje albo włączonego bota. Po zablokowaniu stop loss / take profit nie będą mogły sprzedać, dopóki nie odblokujesz walletu. Zablokować?')) return true;
+    }
+    v.lock();
+    toast('🔒 Wallet zablokowany');
+    renderWallet();
+  } else if (act === 'remove') {
+    // Possible with positions too (a forgotten password must not trap them): they stay recorded and
+    // can be sold again once the same key is connected.
+    if (realInUse() && !confirm('Masz otwarte pozycje REAL albo bota. Po usunięciu klucza aplikacja nie sprzeda ich (stop loss / take profit nie zadziałają), dopóki nie podłączysz TEGO SAMEGO klucza ponownie. Tokeny zostają w Twoim walletcie. Kontynuować?')) return true;
+    if (!confirm('Usunąć zaszyfrowany klucz z tego urządzenia? Środki zostają w walletcie na blockchainie (masz do nich dostęp np. w Phantom). Aby znów handlować w aplikacji, trzeba będzie podłączyć klucz od nowa.')) return true;
+    v.remove().then(() => {
+      real.sol = null;
+      real.tokens = null;
+      toast('🗑️ Klucz usunięty z urządzenia');
+      renderWallet();
+    });
+  } else if (act === 'sellall') {
+    const m = b.dataset.m;
+    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(m || '') || real.busy.has(m) || realPend[m] || state.positions[m] || bot?.holds(m)) return true;
+    if (!v.status().unlocked) return toast('🔒 Odblokuj wallet hasłem'), true;
+    real.busy.add(m);
+    b.disabled = true;
+    toast('⏳ Sprzedaję cały token za SOL…');
+    real.trader
+      .sell(m, 'all', { refPx: freshPrice(m) })
+      .then((r) => toast(`✅ Sprzedano za ${fmt.usd(r.usdReceived)}`))
+      .catch((err) => toast(`❌ Sprzedaż nieudana: ${err?.message || err}`))
+      .finally(() => {
+        real.busy.delete(m);
+        refreshRealBalance(true);
+      });
+  } else if (act === 'copy') copy(v.status().pub);
+  else if (act === 'refresh') refreshRealBalance(true);
+  else if (act === 'test') {
+    toast('🔌 Sprawdzam…');
+    Promise.all([
+      real.trader.balance().then(() => '✅ węzeł Solana', (err) => `❌ węzeł Solana (${err?.message || err})`),
+      fetch('https://lite-api.jup.ag/swap/v1/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v&amount=10000000&slippageBps=100').then((r) => (r.ok ? '✅ Jupiter' : `❌ Jupiter (HTTP ${r.status})`), () => '❌ Jupiter'),
+    ]).then((res) => toast(res.join(' · ')));
+  }
+  return true;
+}
+
+/** Empties the wallet forms and forgets a pasted key that wasn't saved yet. */
+function realWipeForms() {
+  for (const id of ['#rkKey', '#rkPass1', '#rkPass2', '#ruPass']) {
+    const el = $(id);
+    if (el) el.value = '';
+  }
+  if (real.staged) {
+    real.staged.seed.fill(0);
+    real.staged.claimedPub.fill(0);
+    real.staged = null;
+  }
+  clearTimeout(real.stageTimer);
+  const body = $('#walletBody');
+  if (body) body.dataset.view = ''; // rebuilt empty next time
+}
+if (REAL) {
+  // The key field can't be copied out (it is masked, but not a password field).
+  for (const ev of ['copy', 'cut', 'dragstart']) $('#walletBody').addEventListener(ev, (e) => e.target.id === 'rkKey' && e.preventDefault());
+  $('#walletBody').addEventListener('change', (e) => {
+    if (e.target.id === 'rkOk') $('[data-rw="stage"]').disabled = !e.target.checked;
+  });
+  window.addEventListener('pagehide', realWipeForms);
+  // Switching to another app: the typed fields are emptied (a key already read stays for its 3 min).
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) return;
+    for (const id of ['#rkKey', '#rkPass1', '#rkPass2', '#ruPass']) {
+      const el = $(id);
+      if (el) el.value = '';
+    }
+  });
+  // A key pasted but never confirmed doesn't stay in the field.
+  $('#walletBody').addEventListener('input', (e) => {
+    if (e.target.id !== 'rkKey') return;
+    clearTimeout(real.keyTimer);
+    real.keyTimer = setTimeout(() => {
+      const el = $('#rkKey');
+      if (el) el.value = '';
+    }, 120_000);
+  });
+}
+
+// ---------- DEMO ⇄ REAL switch (bottom bar) ----------
+function switchMode() {
+  if (REAL && (real.busy.size || bot?.swapping?.())) return toast('Poczekaj, aż transakcja się zakończy');
+  if (!REAL && !confirm('Przełączyć na tryb REAL?\n\nW trybie REAL kupujesz prawdziwe tokeny za SOL z własnego walletu Solana (podłączasz go w Wallet). Pozycje, wallet i bot są osobne od DEMO — wygląd i strategie te same.')) return;
+  if (REAL && (bot?.running() || bot?.count() || Object.keys(state.positions).length) && !confirm('Po przełączeniu na DEMO bot REAL i stop loss / take profit pozycji REAL przestaną działać, dopóki nie wrócisz do REAL (tokeny zostają w Twoim walletcie). Przełączyć?')) return;
+  try {
+    localStorage.setItem('mr:mode', REAL ? 'demo' : 'real');
+  } catch {
+    return toast('Nie mogę zapisać trybu (prywatny tryb przeglądarki?)');
+  }
+  location.reload();
+}
+function applyModeUi() {
+  document.body.classList.toggle('real-mode', REAL);
+  for (const t of $$('.demo-tag')) {
+    t.textContent = TAG;
+    t.classList.toggle('real', REAL);
+  }
+  const mb = $('#modeBtn');
+  if (mb) {
+    mb.querySelector('.mode-pill').textContent = TAG;
+    mb.classList.toggle('real', REAL);
+  }
+  $('#realBanner').hidden = !REAL;
+  const pb = $('#walletSeg [data-wmode="perps"]');
+  if (pb) pb.hidden = REAL;
+  if (REAL && state.walletMode === 'perps') state.walletMode = 'spot';
+}
+applyModeUi();
 
 // ---------- holder structure icons (Axiom-style) ----------
 const HICON = {
@@ -1742,6 +2542,8 @@ function markChain() {
 
 function setChain(id) {
   if (!ENGINE || id === ENGINE.chain) return;
+  // Off Solana the radar pauses its prices — and with them every REAL stop loss and the bot.
+  if (REAL && id !== 'solana' && realInUse()) return toast('W trybie REAL zostań na Solanie, dopóki masz otwarte pozycje albo działa bot — inaczej stop loss i bot nie widzą cen');
   ENGINE.setChain(id);
   LS.set('chain', ENGINE.chain);
   markChain();
@@ -2180,7 +2982,9 @@ function renderDetail(d) {
 
   // Trade journal: the viewer's own entry and live P&L.
   const pp = posPnl(d);
-  const posCard = pp
+  const posCard = REAL
+    ? realPosCard(d, pp)
+    : pp
     ? `<div class="card"><h3>💼 Pozycja <span class="demo-tag">DEMO</span> <small>od ${fmt.ago(pp.entry.t)}</small></h3>
       <div class="hstats">
         <div><span>MC wejścia</span><b>${fmt.usd(pp.entry.mc || (d.mc && d.p ? (pp.entry.p * d.mc) / d.p : null))}</b></div>
@@ -2373,6 +3177,9 @@ function renderChart(d, tab) {
     if (existing && existing.dataset.src === src) box.appendChild(existing);
     else {
       const f = document.createElement('iframe');
+      // Its own sandbox: it can't navigate this page (no top navigation), nor see where it runs.
+      f.sandbox = 'allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox';
+      f.referrerPolicy = 'no-referrer';
       f.src = src;
       f.dataset.src = src;
       f.title = 'Wykres DexScreener';
@@ -2671,6 +3478,10 @@ $('#drawer').addEventListener('click', (e) => {
   const sell = e.target.closest('[data-sell]');
   if (sell && state.selected && posHere(state.selected)) {
     const f = Number(sell.dataset.sell) / 100;
+    if (REAL) {
+      realSell(state.selected, f);
+      return;
+    }
     const fee = sellPosition(state.selected, f, state.detail ? tradeQuote(state.detail).p : null);
     toast(`${f >= 1 ? 'Pozycja DEMO zamknięta' : `Sprzedano ${Math.round(f * 100)}% pozycji DEMO`}${feeNote(fee)}`);
     if (state.detail) renderDetail(state.detail);
@@ -2763,6 +3574,12 @@ async function checkVersion() {
         /* private mode */
       }
       if (tried === v) return;
+      // A reload locks the wallet: stop losses and the bot would stop selling. Not mid-trading.
+      if (REAL && (realUnlocked() || realInUse())) {
+        if (state.updateToldFor !== v) toast('Nowa wersja aplikacji — odśwież ją, gdy skończysz handlować (wallet trzeba będzie odblokować)');
+        state.updateToldFor = v;
+        return;
+      }
       try {
         sessionStorage.setItem('mr:reloadFor', v);
       } catch {
@@ -2804,6 +3621,7 @@ window.addEventListener(
 $('#bottombar').addEventListener('click', (e) => {
   const b = e.target.closest('[data-nav]');
   if (!b) return;
+  if (b.dataset.nav === 'mode') return switchMode();
   // The bar stays on top of an open token window: any option closes the window first.
   if (state.selected) closeDetail();
   if (SHEETS[b.dataset.nav]) openSheet(b.dataset.nav);
@@ -2814,6 +3632,7 @@ $('#bottombar').addEventListener('click', (e) => {
   }
 });
 $('#walletSheet').addEventListener('change', (e) => {
+  if (REAL && e.target.dataset?.rcfg) return realCfgChange(e.target);
   if (e.target.dataset?.wallet !== 'fees') return;
   state.fees = e.target.checked;
   LS.set('fees', state.fees);
@@ -2822,6 +3641,7 @@ $('#walletSheet').addEventListener('change', (e) => {
 });
 $('#walletSheet').addEventListener('click', (e) => {
   if (e.target.closest('[data-sheet-close]')) return closeSheets();
+  if (REAL && state.walletMode === 'spot' && realWalletClick(e)) return;
   const cal = e.target.closest('[data-cal]');
   if (cal) {
     state.calMonth = Math.max(0, Math.min(12, state.calMonth + Number(cal.dataset.cal)));
@@ -2928,6 +3748,11 @@ $('#posSheet').addEventListener('click', (e) => {
     const x = positionList().find((p) => p.m === mint);
     const lastAt = x?.p.last?.at;
     const f = Number(sellBtn.dataset.posSell) / 100;
+    if (REAL) {
+      if (x?.p.chain && x.p.chain !== 'solana') return toast('Ta pozycja nie jest na Solanie');
+      realSell(mint, f);
+      return;
+    }
     const fee = sellPosition(mint, f, x?.r?.p || x?.p.last?.p);
     // Instant (no confirmation — timing matters); a position on another network sells at the
     // last price seen there.
@@ -3539,10 +4364,10 @@ function drawCandlesSvg(d) {
     const k = list[i];
     if (t.side === 'buy') {
       const yy = y(k[3]) + 6;
-      svg += `<path d="M${x(i)} ${yy} l6 10 h-12 z" class="mb"><title>Twoje kupno DEMO</title></path>`;
+      svg += `<path d="M${x(i)} ${yy} l6 10 h-12 z" class="mb"><title>Twoje kupno ${TAG}</title></path>`;
     } else {
       const yy = y(k[2]) - 6;
-      svg += `<path d="M${x(i)} ${yy} l6 -10 h-12 z" class="ms"><title>Twoja sprzedaż DEMO</title></path>`;
+      svg += `<path d="M${x(i)} ${yy} l6 -10 h-12 z" class="ms"><title>Twoja sprzedaż ${TAG}</title></path>`;
     }
   }
   // Time labels.
@@ -3816,7 +4641,7 @@ async function sharePnlCard(c) {
   g.fillText('DMN', 80, 140);
   g.fillStyle = '#f5b83d';
   g.font = font(800, 34);
-  g.fillText('DEMO · trening', 240, 136);
+  g.fillText(REAL ? 'REAL · Solana' : 'DEMO · trening', 240, 136);
   g.fillStyle = '#e8edf5';
   g.font = font(800, 76);
   g.fillText(String(c.sym ? `$${c.sym}` : c.name || 'Token').slice(0, 18), 80, 330);
@@ -3854,7 +4679,7 @@ async function sharePnlCard(c) {
   const file = new File([blob], `dmn-pnl-${c.sym || 'token'}.png`, { type: 'image/png' });
   try {
     if (navigator.canShare?.({ files: [file] })) {
-      await navigator.share({ files: [file], title: 'DMN — wynik DEMO' });
+      await navigator.share({ files: [file], title: `DMN — wynik ${TAG}` });
       return;
     }
   } catch (e) {
@@ -3940,7 +4765,8 @@ function reloadTradeState() {
   if (state.detail) renderDetail(state.detail);
 }
 window.addEventListener('storage', (e) => {
-  if (['mr:positions', 'mr:wallet', 'mr:closedPositions'].includes(e.key)) reloadTradeState();
+  if ([lsKey('positions'), lsKey('wallet'), lsKey('closedPositions')].includes(e.key)) reloadTradeState();
+  if (REAL && e.key === lsKey('realPend')) realPend = ((v) => (v && typeof v === 'object' ? v : {}))(LS.get('realPend', {}));
   if (e.key === 'mr:wallets') {
     reloadWallets();
     ENGINE?.setWallets(state.wallets);
@@ -3955,6 +4781,8 @@ function openDeepLink() {
   const deep = location.hash.match(/^#t=(?:(\w+):)?([1-9A-HJ-NP-Za-km-z]{32,44}|0x[0-9a-fA-F]{40})$/);
   if (!deep) return;
   const net = deep[1] || (deep[2].startsWith('0x') ? null : 'solana');
+  // REAL trades on Solana only: a link to another network doesn't move it there.
+  if (REAL && (net !== 'solana' || deep[2].startsWith('0x'))) return toast('W trybie REAL linki z innych sieci są wyłączone — przełącz na DEMO');
   const switched = !!(ENGINE && net && Object.hasOwn(ENGINE.chains, net) && net !== ENGINE.chain);
   if (switched) setChain(net);
   // After a network switch the link is written back (setChain cleared it).

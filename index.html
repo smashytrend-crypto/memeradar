@@ -2,15 +2,19 @@
 <html lang="pl">
 <head>
   <meta charset="utf-8" />
+  <!-- Only this site's own scripts may run (no inline / injected code); no plugins, no <base>, no form posts. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src * data: blob:; media-src 'self' data: blob:; connect-src 'self' https: wss:; frame-src https://dexscreener.com https://*.dexscreener.com; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'" />
+  <meta name="referrer" content="strict-origin-when-cross-origin" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>DMN — hype memecoinów na żywo</title>
   <meta name="description" content="Najbardziej hypowane memecoiny na Solanie, BNB Chain, Base, Ethereum i Robinhood Chain w czasie rzeczywistym." />
+  <meta name="mr-version" content="mvef1tbm" />
   <meta name="theme-color" content="#07090d" />
   <link rel="icon" href="favicon.svg" type="image/svg+xml" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=mvdpxmv5" />
+  <link rel="stylesheet" href="styles.css?v=mvef1tbm" />
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -20,6 +24,7 @@
       <linearGradient id="spark-down" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff4d6a" stop-opacity=".32"/><stop offset="1" stop-color="#ff4d6a" stop-opacity="0"/></linearGradient>
     </defs>
   </svg>
+  <div class="real-banner" id="realBanner" hidden>🔴 Tryb REAL — prawdziwe środki z Twojego walletu Solana</div>
   <header class="top">
     <a class="brand" href="./" aria-label="DMN">
       <svg class="brand-logo" viewBox="0 0 32 32" aria-hidden="true">
@@ -217,6 +222,7 @@
 
   <!-- Bottom bar: more options will land here over time -->
   <nav class="bottombar" id="bottombar" aria-label="Menu">
+    <button data-nav="mode" id="modeBtn" class="mode-btn" aria-label="Przełącz DEMO / REAL"><span class="mode-pill">DEMO</span><span class="bl">Tryb</span></button>
     <button data-nav="radar" class="on"><svg class="bi" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/><path d="M12 12l5.5-5.5"/><circle cx="12" cy="12" r="1" class="dot"/></svg><span class="bl">Radar</span></button>
     <button data-nav="bot"><svg class="bi" viewBox="0 0 24 24" aria-hidden="true"><rect x="4.5" y="8" width="15" height="11" rx="3"/><path d="M12 8V4.5M9.5 13h.01M14.5 13h.01M9.5 16.2h5M2.5 12.5v3M21.5 12.5v3"/><circle cx="12" cy="4" r="1" class="dot"/></svg><span class="bl">BOT</span><span class="bb-count" id="c-bot"></span></button>
     <button data-nav="pos"><svg class="bi" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="7.5" width="17" height="12" rx="2.5"/><path d="M9 7.5V6a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v1.5M3.5 12.5h17"/></svg><span class="bl">Pozycje</span><span class="bb-count" id="c-pos"></span></button>
@@ -229,7 +235,6 @@
     Dane: PumpPortal (on-chain), DexScreener, GeckoTerminal, Jupiter, RugCheck, GoPlus, X API. To nie jest porada inwestycyjna — memecoiny są skrajnie ryzykowne.
   </footer>
 
-  <script>window.__MR_VERSION = 'mvdpxmv5';</script>
-    <script type="module" src="boot.js?v=mvdpxmv5"></script>
+  <script type="module" src="boot.js?v=mvef1tbm"></script>
 </body>
 </html>

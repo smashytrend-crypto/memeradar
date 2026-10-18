@@ -2,8 +2,6 @@
 // and makes quick round trips — buy, then take profit / stop loss / trailing stop / time limit.
 // Own demo wallet (Wallet → BOT), separate from the spot positions. Runs while the app is open.
 
-const KEY = 'mr:bot';
-const LOCK = 'mr:botLock';
 const TICK_MS = 2000;
 const DAY_MS = 86_400_000;
 
@@ -168,14 +166,28 @@ export function checkGlitch(last, pend, price) {
   return { ok: false, pend: price };
 }
 
-export const EXIT_NAMES = { tp: '🎯 Take profit', part: '🎯 Połowa zysku', sl: '🛑 Stop loss', be: '🛡️ Stop na zero', trail: '📉 Trailing stop', stall: '😴 Brak ruchu', time: '⏱️ Limit czasu', manual: '✋ Ręcznie', reset: '♻️ Reset' };
+export const EXIT_NAMES = { tp: '🎯 Take profit', part: '🎯 Połowa zysku', sl: '🛑 Stop loss', be: '🛡️ Stop na zero', trail: '📉 Trailing stop', stall: '😴 Brak ruchu', time: '⏱️ Limit czasu', manual: '✋ Ręcznie', reset: '♻️ Reset', gone: '❔ Brak tokenów' };
 
 // ---------- the bot ----------
 
 export function createBot(deps) {
   const { toast, engine, tradeFee, excluded, openToken, openWallet, onChange, fmt, esc } = deps;
-  const tabId = Math.random().toString(36).slice(2);
-  const fresh = () => ({ cfgVer: CFG_VER, cash: 0, deposits: 0, on: false, cfg: { ...DEFAULTS }, pos: {}, hist: [], tx: [], log: [], cool: {}, feesPaid: 0, rev: 0 });
+  // Real mode: trades go through `exec` (signed Solana swaps) into the real bot's own storage.
+  const REAL = !!deps.exec;
+  const KEY = deps.key || 'mr:bot';
+  const LOCK = deps.lockKey || 'mr:botLock';
+  const canTrade = deps.canTrade || (() => true);
+  // Real trades on their way. In memory (this tab's swaps in flight) and in B.pend / p.sellSig
+  // (saved with the signature, so a reload mid-trade finds out from the chain what happened).
+  const pending = new Set();
+  const sellingNow = new Set();
+  const retryAt = new Map();
+  const myPend = new Map(); // this tab's buys in flight (re-applied if another tab's save drops them)
+  const mySell = new Map(); // this tab's sales in flight: mint → their markers
+  const tabId = deps.tabId || Math.random().toString(36).slice(2);
+  // Whether another tab is still open (its trades in flight are its own to finish).
+  const tabAlive = deps.tabAlive || ((id) => id === tabId);
+  const fresh = () => ({ cfgVer: CFG_VER, cash: 0, deposits: 0, on: false, cfg: { ...DEFAULTS }, pos: {}, pend: {}, booked: [], hist: [], tx: [], log: [], cool: {}, feesPaid: 0, rev: 0 });
   const load = () => {
     try {
       const v = JSON.parse(localStorage.getItem(KEY));
@@ -190,7 +202,14 @@ export function createBot(deps) {
         }
         for (const k of ['hist', 'tx', 'log']) if (!Array.isArray(b[k])) b[k] = [];
         if (!b.pos || typeof b.pos !== 'object') b.pos = {};
+        if (!b.pend || typeof b.pend !== 'object') b.pend = {};
+        if (!Array.isArray(b.booked)) b.booked = [];
         if (!b.cool || typeof b.cool !== 'object') b.cool = {};
+        // Older saves kept these runtime flags (a reload mid-sale left the position stuck).
+        for (const q of Object.values(b.pos)) {
+          delete q.selling;
+          delete q.retryAt;
+        }
         return b;
       }
     } catch {
@@ -217,6 +236,15 @@ export function createBot(deps) {
   window.addEventListener('storage', (e) => {
     if (e.key !== KEY) return;
     B = load();
+    // A save from another tab made before ours landed can lack this tab's trades in flight: put
+    // them back (with their reserved stake), so nothing is refunded or sold twice.
+    for (const [m, e2] of myPend) {
+      if (!B.pend[m] && !B.booked.includes(e2.sig || '-')) {
+        B.pend[m] = { ...e2 };
+        B.cash -= e2.usd;
+      }
+    }
+    for (const [m, mk] of mySell) if (B.pos[m] && !B.pos[m].sellTab) Object.assign(B.pos[m], mk);
     S.dirty = true;
     onChange?.();
   });
@@ -252,7 +280,175 @@ export function createBot(deps) {
   /** Mints the app should keep loaded on this network (their prices drive the exits). */
   const tracked = () => Object.keys(B.pos).filter((m) => B.pos[m].chain === chainNow());
 
+  /** Remembers a booked trade's signature (each one is booked once, whichever tab sees it first). */
+  const markBooked = (sig) => sig && (B.booked = [sig, ...B.booked.filter((x) => x !== sig)].slice(0, 100));
+  /** The market price of `m` now, when the radar has a fresh one. */
+  function priceNow(m, chain) {
+    const E = engine();
+    const r = E?.rowsFor?.(chain || 'solana', [m])[0];
+    return r?.p > 0 && r.pa > 0 && Date.now() - r.pa < 30_000 ? r.p : null;
+  }
+
+  /**
+   * A real buy's position from its on-chain fill. `reserved`: the stake still held for it in the
+   * budget (0 if another tab already gave it back, or a stale save dropped it).
+   */
+  function openFromFill(m, e, f, reserved) {
+    if (B.booked.includes(f.sig)) return false;
+    markBooked(f.sig);
+    const tokens = Number(f.tokensRaw) / 10 ** (f.decimals ?? 6);
+    if (!(tokens > 0) || !(f.usdSpent > 0)) {
+      // SOL went out with nothing to hold: the stake stays spent (the budget never overspends).
+      note(`⚠️ Zakup $${esc(e.s || '?')} przeszedł bez tokenów — sprawdź Wallet → Tokeny`);
+      return false;
+    }
+    // Like DEMO: the % moves (TP / SL / stall…) are measured from the market price at the moment of
+    // the purchase; the all-in cost per token (fees, rent, slippage) only goes into the $ result.
+    const cost = f.usdSpent / tokens;
+    const px = priceNow(m, e.chain) || (e.px > 0 ? e.px : cost);
+    B.cash += reserved - f.usdSpent; // what the swap really took
+    const prev = B.pos[m];
+    if (prev) {
+      // Two fills of one mint (two tabs): one position holding both.
+      const t2 = Number(prev.raw || 0) / 10 ** (prev.dec ?? 6) + tokens;
+      Object.assign(prev, { usd: prev.usd + f.usdSpent, p: (prev.usd + f.usdSpent) / t2, raw: String(BigInt(prev.raw || '0') + BigInt(f.tokensRaw)) });
+    } else {
+      B.pos[m] = { p: cost, px, usd: f.usdSpent, fee: 0, t: Date.now(), chain: e.chain || 'solana', n: e.n || '', s: e.s || '', i: e.i || '', lq: e.lq || 0, lq0: e.lq || 0, peak: px, last: px, lastAt: Date.now(), c5: e.c5, raw: f.tokensRaw, dec: f.decimals ?? 6, sig: f.sig };
+    }
+    B.tx.unshift({ t: Date.now(), type: 'open', amount: f.usdSpent, s: e.s || '', m, fee: 0, sig: f.sig });
+    note(`🟢 Kupiono $${esc(e.s || '?')} za ${fmt.usd(f.usdSpent)}`);
+    toast(`🤖 Bot kupił $${e.s || '?'} za ${fmt.usd(f.usdSpent)}`);
+    return true;
+  }
+
+  /** Real buy: the stake is reserved now, the position appears once the swap is confirmed. */
+  function buyReal(r) {
+    const usd = Math.min(B.cfg.buyUsd, B.cash);
+    if (!(usd >= 1) || pending.has(r.m) || B.pend[r.m]) return false;
+    pending.add(r.m);
+    B.cash -= usd;
+    const entry = { usd, t: Date.now(), tab: tabId, px: r.p, chain: chainNow(), n: r.n || '', s: r.s || '', i: r.i || '', lq: r.lq || 0, c5: r.c5 };
+    B.pend[r.m] = entry;
+    myPend.set(r.m, entry);
+    note(`⏳ Kupuję $${esc(r.s || '?')} za ${fmt.usd(usd)} · +${(r.c5 || 0).toFixed(1)}% w 5 min`);
+    let sentSig = null;
+    const onSent = ({ sig, blockhash }) => {
+      sentSig = sig;
+      Object.assign(entry, { sig, bh: blockhash });
+      if (B.pend[r.m]) Object.assign(B.pend[r.m], { sig, bh: blockhash });
+      save();
+    };
+    // Still this attempt's reservation in the budget?
+    const mine = () => {
+      const e = B.pend[r.m];
+      return e && e.tab === tabId && e.t === entry.t ? e : null;
+    };
+    deps.exec
+      .buy(r.m, usd, { onSent, refPx: r.p })
+      .then((f) => {
+        const e = mine();
+        if (e) delete B.pend[r.m];
+        openFromFill(r.m, e || entry, f, e ? e.usd : 0);
+      })
+      .catch((e) => {
+        B.cool[r.m] = Date.now(); // not again right away
+        if ((!sentSig && !e.sent) || e.failed || e.expired) {
+          // Proven that nothing was bought: the stake goes back.
+          const own = mine();
+          if (own) B.cash += own.usd;
+          if (own) delete B.pend[r.m];
+          note(`⚠️ Zakup $${esc(r.s || '?')} nieudany: ${esc(e.message || e)}`);
+          toast(`🤖 Zakup $${r.s || '?'} nieudany: ${e.message || e}`);
+        } else {
+          // It went out and may have landed: the stake stays reserved until the chain says.
+          note(`⚠️ Nie wiadomo jeszcze, czy zakup $${esc(r.s || '?')} wszedł — sprawdzam w sieci`);
+          toast(`🤖 Sprawdzam, czy zakup $${r.s || '?'} wszedł…`);
+        }
+      })
+      .finally(() => {
+        pending.delete(r.m);
+        myPend.delete(r.m);
+        save();
+      });
+    return true;
+  }
+
+  // Trades left unresolved (a reload mid-swap, or no answer from the network): asked again until
+  // the chain says what happened. Only the trading tab does it.
+  let resolving = false;
+  async function resolveOpen(lead) {
+    if (!REAL || resolving || !deps.exec.resolve) return;
+    resolving = true;
+    let changed = false;
+    try {
+      for (const [m, e] of Object.entries(B.pend)) {
+        // Each tab resolves its own trades; the trading tab also takes those of tabs that are gone.
+        if (pending.has(m) || (e.tab !== tabId && (!lead || tabAlive(e.tab)))) continue;
+        if (!e.sig) {
+          // Never signed and sent (stopped before): nothing was bought.
+          B.cash += e.usd;
+          delete B.pend[m];
+          note(`↩️ Zakup $${esc(e.s || '?')} przerwany przed wysłaniem — budżet zwrócony`);
+          changed = true;
+          continue;
+        }
+        const st = await deps.exec.resolve(e.sig, m, 'buy', e.bh).catch(() => ({ state: 'unknown' }));
+        const cur = B.pend[m];
+        if (!cur || cur.sig !== e.sig) continue;
+        if (st.state === 'landed') {
+          delete B.pend[m];
+          openFromFill(m, cur, st.result, cur.usd);
+        } else if (st.state === 'failed' || st.state === 'expired') {
+          B.cash += cur.usd;
+          delete B.pend[m];
+          B.cool[m] = Date.now();
+          note(`↩️ Zakup $${esc(cur.s || '?')} nie wszedł — budżet zwrócony`);
+        } else if (Date.now() - cur.t > 15 * 60_000) {
+          delete B.pend[m];
+          note(`⚠️ Nie udało się ustalić, czy zakup $${esc(cur.s || '?')} wszedł — sprawdź Wallet → Tokeny`);
+        } else continue;
+        changed = true;
+      }
+      for (const [m, p] of Object.entries(B.pos)) {
+        if (sellingNow.has(m)) continue;
+        if (p.sellTab && p.sellTab !== tabId && (!lead || tabAlive(p.sellTab))) continue;
+        if (!p.sellSig && !p.sellTab) continue;
+        if (!p.sellSig) {
+          // A sale that never went out (its tab is gone).
+          if (p.sellTab && p.sellTab !== tabId) {
+            clearSell(p);
+            changed = true;
+          }
+          continue;
+        }
+        const st = await deps.exec.resolve(p.sellSig, m, 'sell', p.sellBh).catch(() => ({ state: 'unknown' }));
+        const q = B.pos[m];
+        if (!q || q.sellSig !== p.sellSig) continue;
+        if (st.state === 'landed') {
+          bookReal(m, q, q.sellF ?? 1, q.sellWhy || 'manual', { ...st.result, sig: q.sellSig });
+        } else if (st.state === 'failed' || st.state === 'expired' || Date.now() - (q.sellAt || 0) > 15 * 60_000) {
+          clearSell(q); // the exits will try again
+        } else continue;
+        changed = true;
+      }
+    } finally {
+      resolving = false;
+      if (changed) save();
+    }
+  }
+  /** Whether this tab trades now (read only: doesn't take the lock). */
+  function isLeader() {
+    try {
+      const l = JSON.parse(localStorage.getItem(LOCK) || 'null');
+      return !l || l.id === tabId || Date.now() - l.at >= 3 * TICK_MS;
+    } catch {
+      return true;
+    }
+  }
+  setInterval(() => REAL && resolveOpen(isLeader()), 20_000);
+
   function buy(r) {
+    if (REAL) return buyReal(r);
     const cfg = B.cfg;
     const usd = Math.min(cfg.buyUsd, B.cash);
     if (!(usd >= 1)) return false;
@@ -277,8 +473,108 @@ export function createBot(deps) {
     return { gross, fee, back: gross - fee };
   }
 
+  /** Books a sale (real or simulated) into the bot's wallet and history. */
+  function book(m, p, f, back, fee, move, why) {
+    const part = p.usd * f;
+    const buyFee = (p.fee || 0) * f;
+    const pnl = back - part;
+    B.cash += back;
+    B.feesPaid += fee;
+    if (f >= 1) {
+      delete B.pos[m];
+      B.cool[m] = Date.now();
+    } else {
+      p.usd -= part;
+      p.fee = (p.fee || 0) - buyFee;
+      p.part = true;
+    }
+    B.hist.unshift({ m, s: p.s, n: p.n, chain: p.chain, usd: part, pnl, pct: move, fee: fee + buyFee, why, f, openedAt: p.t, closedAt: Date.now() });
+    B.tx.unshift({ t: Date.now(), type: 'close', amount: back, s: p.s || '', m, pnl, fee });
+    note(`${pnl >= 0 ? '✅' : '🔻'} ${EXIT_NAMES[why] || why}: $${esc(p.s || '?')} ${fmt.pct(move)} (${money(pnl)}${REAL ? '' : ' po opłatach'})`);
+    return pnl;
+  }
+
+  const clearSell = (q) => {
+    for (const k of ['sellSig', 'sellBh', 'sellF', 'sellWhy', 'sellAt', 'sellTab']) delete q[k];
+  };
+  /** Books a confirmed real sale. */
+  function bookReal(m, q, f, why, r) {
+    clearSell(q);
+    if (B.booked.includes(r.sig)) return null;
+    markBooked(r.sig);
+    const sold = Number(r.tokensSold) / 10 ** (q.dec ?? 6);
+    const move = sold > 0 ? (r.usdReceived / sold / (q.px || q.p) - 1) * 100 : 0;
+    if (f < 1) q.raw = String(BigInt(q.raw || '0') - BigInt(r.tokensSold || '0'));
+    const pnl = book(m, q, f, r.usdReceived, 0, move, why);
+    toast(`🤖 ${EXIT_NAMES[why] || why}: $${q.s || '?'} ${money(pnl)}`);
+    return pnl;
+  }
+
+  /** A sale of `m` running here or in another tab, or sent and not yet resolved. */
+  const sellBusy = (m, p) => sellingNow.has(m) || !!p.sellSig || (!!p.sellTab && p.sellTab !== tabId && tabAlive(p.sellTab));
+
+  /** Real sale: a swap of the position's tokens (all of them on a full close). */
+  function sellReal(m, why, frac, refPx) {
+    const p = B.pos[m];
+    if (!p || sellBusy(m, p) || Date.now() < (retryAt.get(m) || 0)) return null;
+    const f = Math.min(1, Math.max(0, frac));
+    const raw = f >= 1 || !p.raw ? p.raw || 'all' : String((BigInt(p.raw) * BigInt(Math.round(f * 1000))) / 1000n);
+    if (raw !== 'all' && !(BigInt(raw) > 0n)) {
+      if (f < 1) return null; // too little for a partial sale
+      book(m, p, 1, 0, 0, -100, 'gone'); // a record without tokens
+      return 0;
+    }
+    sellingNow.add(m);
+    const marks = { sellAt: Date.now(), sellTab: tabId, sellF: f, sellWhy: why };
+    Object.assign(p, marks);
+    mySell.set(m, marks);
+    save();
+    let sentSig = null;
+    const onSent = ({ sig, blockhash }) => {
+      sentSig = sig;
+      Object.assign(marks, { sellSig: sig, sellBh: blockhash });
+      const q = B.pos[m];
+      if (q) Object.assign(q, { sellSig: sig, sellBh: blockhash });
+      save();
+    };
+    deps.exec
+      .sell(m, raw, { onSent, refPx })
+      .then((r) => {
+        // Booked once: here, unless another tab already booked this signature.
+        const q = B.pos[m];
+        if (q && (!q.sellSig || q.sellSig === r.sig)) bookReal(m, q, f, why, r);
+      })
+      .catch((e) => {
+        const q = B.pos[m];
+        if (!q) return;
+        if ((sentSig || e.sent) && !e.failed && !e.expired) {
+          // It went out and may have sold: the chain decides (resolveOpen), not a second sale.
+          q.sellAt = Date.now();
+          note(`⚠️ Nie wiadomo jeszcze, czy sprzedaż $${esc(q.s || '?')} weszła — sprawdzam w sieci`);
+          return;
+        }
+        clearSell(q);
+        if (e.empty) {
+          // Sold outside the bot (or never arrived): nothing left to sell — the record closes.
+          book(m, q, 1, 0, 0, -100, 'gone');
+          note(`⚠️ $${esc(q.s || '?')}: brak tokenów w walletcie — pozycja zamknięta`);
+          return;
+        }
+        retryAt.set(m, Date.now() + 10_000);
+        note(`⚠️ Sprzedaż $${esc(q.s || '?')} nieudana: ${esc(e.message || e)} — ponowię`);
+        toast(`🤖 Sprzedaż $${q.s || '?'} nieudana — ponowię za 10 s`);
+      })
+      .finally(() => {
+        sellingNow.delete(m);
+        mySell.delete(m);
+        save();
+      });
+    return 0;
+  }
+
   /** Sells position `m` (all of it, or `frac` of it) at `price`; returns the result in $. */
   function sell(m, price, why, frac = 1) {
+    if (REAL) return sellReal(m, why, frac, price);
     const p = B.pos[m];
     if (!p) return null;
     let px = price > 0 ? price : p.last;
@@ -289,25 +585,8 @@ export function createBot(deps) {
     else if (why === 'tp') px = Math.min(px, (p.px || p.p) * (1 + B.cfg.tp / 100));
     else if (why === 'part') px = Math.min(px, (p.px || p.p) * (1 + B.cfg.partAt / 100));
     const f = Math.min(1, Math.max(0, frac));
-    const part = { ...p, usd: p.usd * f };
-    const { fee, back } = proceeds(part, px);
-    const move = movePct(p, px);
-    const buyFee = (p.fee || 0) * f;
-    const pnl = back - part.usd;
-    B.cash += back;
-    B.feesPaid += fee;
-    if (f >= 1) {
-      delete B.pos[m];
-      B.cool[m] = Date.now();
-    } else {
-      p.usd -= part.usd;
-      p.fee = (p.fee || 0) - buyFee;
-      p.part = true;
-    }
-    B.hist.unshift({ m, s: p.s, n: p.n, chain: p.chain, usd: part.usd, pnl, pct: move, fee: fee + buyFee, why, f, openedAt: p.t, closedAt: Date.now() });
-    B.tx.unshift({ t: Date.now(), type: 'close', amount: back, s: p.s || '', m, pnl, fee });
-    note(`${pnl >= 0 ? '✅' : '🔻'} ${EXIT_NAMES[why] || why}: $${esc(p.s || '?')} ${fmt.pct(move)} (${money(pnl)} po opłatach)`);
-    return pnl;
+    const { fee, back } = proceeds({ ...p, usd: p.usd * f }, px);
+    return book(m, p, f, back, fee, movePct(p, px), why);
   }
 
   function candidates() {
@@ -353,6 +632,7 @@ export function createBot(deps) {
     p.peak = Math.max(p.peak || 0, price);
     if (!why) return false;
     const pnl = sell(m, price, why, why === 'part' ? 0.5 : 1);
+    if (REAL) return false; // the swap books itself (and saves) once confirmed
     toast(`🤖 ${EXIT_NAMES[why]}: $${p.s || '?'} ${money(pnl)}`);
     return true;
   }
@@ -408,9 +688,9 @@ export function createBot(deps) {
       changed = true;
     }
     // Entries: one buy per tick at most, the strongest signal first.
-    if (B.on && Object.keys(B.pos).length < cfg.maxPos) {
+    if (B.on && Object.keys(B.pos).length + Object.keys(B.pend).length < cfg.maxPos && !(REAL && !canTrade())) {
       if (B.cash < 1) {
-        if (!S.lowCash) note('💸 Brak kapitału — doładuj bota w Wallet → BOT');
+        if (!S.lowCash) note(REAL ? '💸 Budżet bota wyczerpany — przydziel więcej w Wallet → BOT' : '💸 Brak kapitału — doładuj bota w Wallet → BOT');
         S.lowCash = true;
       } else {
         S.lowCash = false;
@@ -419,7 +699,7 @@ export function createBot(deps) {
         let checked = 0;
         const best = rows
           .filter((r) => {
-            if (B.pos[r.m] || excluded(r) || now - (B.cool[r.m] || 0) < cfg.cooldownMin * 60_000) return false;
+            if (B.pos[r.m] || B.pend[r.m] || pending.has(r.m) || excluded(r) || now - (B.cool[r.m] || 0) < cfg.cooldownMin * 60_000) return false;
             // A fresh price only (a paused network's rows are hours old for a moment after a switch).
             if (!(r.pa > 0) || now - r.pa > 60_000 || (E.since > 0 && r.pa < E.since)) return false;
             checked++;
@@ -428,7 +708,7 @@ export function createBot(deps) {
           .sort((a, b) => signalScore(b) - signalScore(a));
         S.lastScan = { t: now, n: checked, hits: best.length, chain };
         if (best[0] && buy(best[0])) {
-          toast(`🤖 Bot kupił $${best[0].s || '?'} za ${fmt.usd(B.pos[best[0].m].usd)}`);
+          if (!REAL) toast(`🤖 Bot kupił $${best[0].s || '?'} za ${fmt.usd(B.pos[best[0].m].usd)}`);
           changed = true;
         }
       }
@@ -479,20 +759,23 @@ export function createBot(deps) {
 
   function statusHtml() {
     const s = stats();
-    const low = B.cash < 1 && !Object.keys(B.pos).length;
+    const low = B.cash < 1 && !Object.keys(B.pos).length && !Object.keys(B.pend).length;
+    const locked = REAL && !canTrade();
     const scan = S.lastScan && Date.now() - S.lastScan.t < 10_000 ? `Skan: ${S.lastScan.n} tokenów, ${S.lastScan.hits} z sygnałem` : B.on ? 'Startuje…' : '';
     return `<div class="bot-head">
-        <div class="bot-title"><b>🤖 BOT DEMO</b><span class="bot-pill ${B.on ? 'on' : ''}">${B.on ? '● Działa' : 'Zatrzymany'}</span></div>
+        <div class="bot-title"><b>🤖 BOT ${REAL ? 'REAL' : 'DEMO'}</b><span class="bot-pill ${B.on ? 'on' : ''}">${B.on ? '● Działa' : 'Zatrzymany'}</span></div>
         <button class="bot-toggle ${B.on ? 'stop' : ''}" data-bot="toggle">${B.on ? '■ Stop' : '▶ Start'}</button>
       </div>
       <div class="bot-stats">
-        <div><span>Kapitał bota</span><b>${fmt.usd(B.cash)}</b></div>
+        <div><span>${REAL ? 'Budżet bota' : 'Kapitał bota'}</span><b>${fmt.usd(B.cash)}</b></div>
         <div><span>W pozycjach</span><b>${fmt.usd(s.inPos)}</b></div>
         <div><span>Dziś</span><b class="${s.today >= 0 ? 'up' : 'down'}">${s.n ? money(s.today) : '—'}</b></div>
         <div><span>Łącznie</span><b class="${s.total >= 0 ? 'up' : 'down'}">${s.n ? money(s.total) : '—'}</b></div>
         <div><span>Transakcje</span><b>${s.n}${s.rate != null ? ` <small>${Math.round(s.rate)}% wygr.</small>` : ''}</b></div>
       </div>
-      ${low ? `<div class="bot-warn">Bot nie ma kapitału. <button data-bot="wallet">⬇️ Doładuj w Wallet → BOT</button></div>` : ''}
+      ${locked ? `<div class="bot-warn">🔒 Wallet zablokowany — bot nie kupi ani nie sprzeda. <button data-bot="vault">Odblokuj</button></div>` : ''}
+      ${low ? `<div class="bot-warn">${REAL ? 'Bot nie ma budżetu.' : 'Bot nie ma kapitału.'} <button data-bot="wallet">⬇️ ${REAL ? 'Przydziel budżet' : 'Doładuj'} w Wallet → BOT</button></div>` : ''}
+      ${Object.keys(B.pend).length ? `<p class="note bot-scan">⏳ Zakupy w toku: ${Object.keys(B.pend).length}</p>` : ''}
       ${scan ? `<p class="note bot-scan">${scan}</p>` : ''}`;
   }
 
@@ -567,6 +850,10 @@ export function createBot(deps) {
     if (!b) return;
     const act = b.dataset.bot;
     if (act === 'toggle') {
+      if (!B.on && REAL) {
+        if (!canTrade()) return toast('Najpierw odblokuj wallet hasłem (Wallet → Spot)');
+        if (!confirm(`Uruchomić bota na PRAWDZIWYCH środkach?\n\nBudżet: ${fmt.usd(B.cash)} · zakup: ${fmt.usd(B.cfg.buyUsd)} · maks. ${B.cfg.maxPos} pozycje naraz.\nBot sam kupuje i sprzedaje z Twojego walletu, dopóki aplikacja jest otwarta.`)) return;
+      }
       B.on = !B.on;
       if (B.on && !engine()) {
         B.on = false;
@@ -581,6 +868,7 @@ export function createBot(deps) {
       save();
       toast('🏆 Ustawiono zalecaną strategię');
     } else if (act === 'wallet') openWallet();
+    else if (act === 'vault') (deps.openVault || openWallet)();
     else if (b.dataset.botOpen) openToken(b.dataset.botOpen);
     else if (b.dataset.botSell) {
       const m = b.dataset.botSell;
@@ -588,9 +876,16 @@ export function createBot(deps) {
       if (!p) return;
       if (p.chain !== chainNow()) return toast('Ta pozycja jest na innej sieci — przełącz sieć, żeby sprzedać');
       const r = liveRows().get(m);
-      const pnl = sell(m, r?.p || p.last, 'manual');
-      save();
-      toast(`🤖 Sprzedano $${p.s || '?'} ${money(pnl)}`);
+      if (REAL) {
+        if (!canTrade()) return toast('Najpierw odblokuj wallet hasłem');
+        if (sellBusy(m, p)) return toast('Sprzedaż już trwa…');
+        sell(m, r?.p || p.last, 'manual');
+        toast(`⏳ Sprzedaję $${p.s || '?'}…`);
+      } else {
+        const pnl = sell(m, r?.p || p.last, 'manual');
+        save();
+        toast(`🤖 Sprzedano $${p.s || '?'} ${money(pnl)}`);
+      }
     }
     S.touch = 0;
     render(b.closest('#botPanel'));
@@ -631,9 +926,9 @@ export function createBot(deps) {
     if (!el) return;
     const s = stats();
     const pnl = s.equity - B.deposits;
-    const TX = { deposit: ['⬇️', 'Doładowanie'], withdraw: ['⬆️', 'Wypłata do Spot'], open: ['🤖', 'Kupno bota'], close: ['✅', 'Sprzedaż bota'], reset: ['♻️', 'Reset bota'] };
+    const TX = { deposit: ['⬇️', REAL ? 'Przydzielony budżet' : 'Doładowanie'], withdraw: ['⬆️', 'Wypłata do Spot'], open: ['🤖', 'Kupno bota'], close: ['✅', 'Sprzedaż bota'], reset: ['♻️', 'Reset bota'] };
     const card = `<div class="wallet-card">
-        <span>Kapitał bota</span><b>${fmt.usd(B.cash)}</b>
+        <span>${REAL ? 'Budżet bota (wolny)' : 'Kapitał bota'}</span><b>${fmt.usd(B.cash)}</b>
         <div class="wallet-sub"><div><span>W pozycjach</span><b>${fmt.usd(s.inPos)}</b></div><div><span>Razem</span><b>${fmt.usd(s.equity)}</b></div>
           <div><span>Wynik</span><b class="${pnl >= 0 ? 'up' : 'down'}">${B.deposits > 0 ? `${money(pnl)} <small>${fmt.pct((pnl / B.deposits) * 100)}</small>` : '—'}</b></div></div>
       </div>`;
@@ -644,20 +939,28 @@ export function createBot(deps) {
         <div><span>Opłaty</span><b>${feeUsd(B.feesPaid)}</b></div>
         <div><span>Status</span><b>${B.on ? '● Działa' : 'Stop'}</b></div>
       </div></div>`;
-    const hist = `<p class="note">Wpłacono łącznie ${fmt.usd(B.deposits)}.</p><h3 class="pos-h">Historia</h3>
+    const hist = `<p class="note">${REAL ? 'Przydzielono' : 'Wpłacono'} łącznie ${fmt.usd(B.deposits)}.</p><h3 class="pos-h">Historia</h3>
       <div class="pos-closed">${
         B.tx.slice(0, 30).map((t) => `<div><span>${TX[t.type]?.[0] || '•'} ${TX[t.type]?.[1] || t.type}${t.s ? ` <small>$${esc(t.s)}</small>` : ''} <small>· ${fmt.ago(t.t)}</small></span><b class="${t.type === 'open' || t.type === 'withdraw' ? 'down' : t.type === 'reset' ? '' : 'up'}">${t.type === 'open' || t.type === 'withdraw' ? '−' : t.type === 'reset' ? '' : '+'}${fmt.usd(t.amount)}${t.pnl != null ? ` <small class="${t.pnl >= 0 ? 'up' : 'down'}">(${money(t.pnl)})</small>` : ''}${t.fee > 0 ? `<small class="muted tx-fee">opłaty ${feeUsd(t.fee)}</small>` : ''}</b></div>`).join('') ||
-        '<div><span class="muted">Brak operacji — doładuj kapitał bota, żeby zaczął handlować.</span></div>'
+        `<div><span class="muted">Brak operacji — ${REAL ? 'przydziel budżet' : 'doładuj kapitał bota'}, żeby zaczął handlować.</span></div>`
       }</div>`;
     if (!el.querySelector('#bwCard')) {
       el.innerHTML = `<div id="bwCard"></div><div id="bwCal"></div>
-        <div class="card wallet-top"><h3>Doładuj kapitał bota DEMO</h3>
+        ${REAL
+          ? `<div class="card wallet-top"><h3>Przydziel budżet botowi</h3>
+          <div class="pos-form"><input id="botTopUp" type="number" inputmode="decimal" min="0" step="any" placeholder="Kwota w $" /><button data-bw="topup">➕ Przydziel</button></div>
+          <div class="quick-amt">${[25, 50, 100, 250].map((v) => `<button data-bw-amt="${v}">+$${fmt.n(v)}</button>`).join('')}</div>
+          <p class="note">Budżet to limit, ile bot może łącznie zainwestować. Pieniądze zostają w Twoim walletcie Solana (SOL) aż do zakupu — bot nie wyda więcej niż budżet ani więcej SOL, niż masz.</p>
+        </div>
+        <div id="bwStats"></div><div id="bwHist"></div>
+        <div class="d-acts" style="margin-top:16px"><button data-bw="reset">♻️ Wyzeruj budżet i statystyki bota</button></div>`
+          : `<div class="card wallet-top"><h3>Doładuj kapitał bota DEMO</h3>
           <div class="pos-form"><input id="botTopUp" type="number" inputmode="decimal" min="0" step="any" placeholder="Kwota w $" /><button data-bw="topup">⬇️ Doładuj</button></div>
           <div class="quick-amt">${[100, 500, 1000, 5000].map((v) => `<button data-bw-amt="${v}">+$${fmt.n(v)}</button>`).join('')}</div>
           <p class="note">Osobny wallet bota — wirtualne pieniądze, niezależne od Spot i Perpetuals. Za kapitał bot kupuje tokeny według ustawień w zakładce BOT.</p>
         </div>
         <div id="bwStats"></div><div id="bwHist"></div>
-        <div class="d-acts" style="margin-top:16px"><button data-bw="reset">♻️ Wyzeruj bota DEMO</button></div>`;
+        <div class="d-acts" style="margin-top:16px"><button data-bw="reset">♻️ Wyzeruj bota DEMO</button></div>`}`;
       el.addEventListener('click', onWalletClick);
     }
     for (const [id, html] of [['#bwCard', card], ['#bwCal', calendarHtml()], ['#bwStats', statsCard], ['#bwHist', hist]]) {
@@ -682,12 +985,14 @@ export function createBot(deps) {
       B.cash += amt;
       B.deposits += amt;
       B.tx.unshift({ t: Date.now(), type: 'deposit', amount: amt });
-      note(`⬇️ Doładowano ${fmt.usd(amt)}`);
+      note(REAL ? `➕ Przydzielono budżet ${fmt.usd(amt)}` : `⬇️ Doładowano ${fmt.usd(amt)}`);
       if (inp && !b.dataset.bwAmt) inp.value = '';
       save();
-      toast(`🤖 Doładowano bota: +${fmt.usd(amt)}`);
+      toast(REAL ? `🤖 Budżet bota: +${fmt.usd(amt)}` : `🤖 Doładowano bota: +${fmt.usd(amt)}`);
     } else if (b.dataset.bw === 'reset') {
-      if (!confirm('Wyzerować bota DEMO? Kapitał, otwarte pozycje bota, historia i statystyki zostaną wyczyszczone. Ustawienia zostają.')) return;
+      // Real positions hold real tokens: they must be sold first, never just forgotten.
+      if (REAL && (Object.keys(B.pos).length || Object.keys(B.pend).length || pending.size)) return toast('Bot ma otwarte pozycje — najpierw je sprzedaj');
+      if (!confirm(REAL ? 'Wyzerować budżet i statystyki bota? Twoje środki w walletcie się nie zmienią. Ustawienia zostają.' : 'Wyzerować bota DEMO? Kapitał, otwarte pozycje bota, historia i statystyki zostaną wyczyszczone. Ustawienia zostają.')) return;
       B = { ...fresh(), cfg: B.cfg, tx: [{ t: Date.now(), type: 'reset', amount: 0 }] };
       save();
       toast('♻️ Bot wyzerowany');
@@ -701,7 +1006,11 @@ export function createBot(deps) {
     tracked,
     count: () => Object.keys(B.pos).length,
     running: () => B.on,
-    holds: (m) => !!B.pos[m],
+    holds: (m) => !!B.pos[m] || !!B.pend[m] || pending.has(m),
+    /** Real swaps running in this tab right now. */
+    swapping: () => pending.size + sellingNow.size,
+    /** Real trades in flight or not yet resolved (a reload now would leave them to be resolved). */
+    inFlight: () => pending.size + sellingNow.size + Object.keys(B.pend).length + Object.values(B.pos).filter((p) => p.sellSig).length,
     dirty: () => S.dirty,
   };
 }
