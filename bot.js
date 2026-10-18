@@ -118,6 +118,13 @@ export function rejectReason(r, cfg, now = Date.now(), ret = () => null) {
 /** Ranking of buy candidates: stronger move with more buyers first. */
 export const signalScore = (r) => (r.c5 || 0) * ((buyShare(r) ?? 50) / 50) + (r.c1 > 0 ? Math.min(r.c1, 50) / 10 : 0);
 
+/**
+ * Liquidity used for a sale's price impact. The feeds sometimes report an absurdly small pool for a
+ * moment ($50 instead of $30k); a real drain shows in the price itself (the stop loss handles it),
+ * so the pool is never taken below half of what it was at the buy.
+ */
+export const sellLiq = (lq0, lq) => Math.max(lq > 0 ? lq : 0, (lq0 > 0 ? lq0 : 0) * 0.5);
+
 /** Price impact of a trade of `usd` in a pool with `liq` total liquidity (constant product, ~usd/liq). */
 export const impact = (usd, liq) => (liq > 0 ? Math.min(0.25, usd / liq) : 0.02);
 
@@ -257,7 +264,7 @@ export function createBot(deps) {
     const entry = fill * (usd / (usd - fee));
     B.cash -= usd;
     B.feesPaid += fee;
-    B.pos[r.m] = { p: entry, px: r.p, usd, fee, t: Date.now(), chain, n: r.n || '', s: r.s || '', i: r.i || '', lq: r.lq || 0, peak: r.p, last: r.p, lastAt: Date.now(), c5: r.c5 };
+    B.pos[r.m] = { p: entry, px: r.p, usd, fee, t: Date.now(), chain, n: r.n || '', s: r.s || '', i: r.i || '', lq: r.lq || 0, lq0: r.lq || 0, peak: r.p, last: r.p, lastAt: Date.now(), c5: r.c5 };
     B.tx.unshift({ t: Date.now(), type: 'open', amount: usd, s: r.s || '', m: r.m, fee });
     note(`🟢 Kupno $${esc(r.s || '?')} za ${fmt.usd(usd)} · +${(r.c5 || 0).toFixed(1)}% w 5 min`);
     return true;
@@ -265,7 +272,7 @@ export function createBot(deps) {
 
   /** Selling position `p` at `px`: what comes back after the pool's price impact and the fees. */
   function proceeds(p, px) {
-    const gross = Math.max(0, p.usd * ((px * (1 - impact(p.usd * (px / p.px || 1), p.lq))) / p.p));
+    const gross = Math.max(0, p.usd * ((px * (1 - impact(p.usd * (px / p.px || 1), sellLiq(p.lq0 ?? p.lq, p.lq)))) / p.p));
     const fee = Math.min(gross, tradeFee(gross, p.chain));
     return { gross, fee, back: gross - fee };
   }
