@@ -1535,7 +1535,7 @@ function renderPositions() {
     <div class="pos-pnl">${w
       .map(([k, x]) => `<div><span>PnL ${k}</span><b class="${x.trades ? (x.pnl >= 0 ? 'up' : 'down') : 'muted'}">${x.trades ? money(x.pnl) : '—'}</b><small>${x.trades ? `${x.pct != null ? fmt.pct(x.pct) + ' · ' : ''}${x.trades} ${pl(x.trades, 'pozycja', 'pozycje', 'pozycji')}` : 'brak'}</small></div>`)
       .join('')}</div>
-    <p class="note">PnL okresu = pozycje otwarte w tym czasie (otwarte liczone po obecnej cenie, zamknięte po cenie zamknięcia). To pozycje treningowe — bez prawdziwych pieniędzy.</p>`;
+    <p class="note">PnL okresu = pozycje otwarte w tym czasie (otwarte liczone po obecnej cenie, zamknięte po cenie zamknięcia). ${REAL ? 'To prawdziwe transakcje z Twojego walletu Solana.' : 'To pozycje treningowe — bez prawdziwych pieniędzy.'}</p>`;
   const cards = list.length
     ? list
         .map((x) => {
@@ -1682,7 +1682,7 @@ state.walletMode = WALLET_MODES.includes(LS.get('walletMode', 'spot')) ? LS.get(
 // Loaded as its own module: if it can't load (e.g. the single-file preview), only perps are off.
 let perps = null;
 // Perpetuals are demo-only (real perps would need a separate Hyperliquid account and signer).
-(REAL ? Promise.reject(new Error('real')) : import('./perps.js?v=mvef1tbm'))
+(REAL ? Promise.reject(new Error('real')) : import('./perps.js?v=mvegrk6b'))
   .then(({ createPerps }) => {
     perps = createPerps({
       toast: (m) => toast(m),
@@ -1722,7 +1722,7 @@ function closeSheets() {
 
 // ---------- trading bot DEMO (BOT tab: the radar with the bot's panel on top) ----------
 let bot = null;
-import('./bot.js?v=mvef1tbm')
+import('./bot.js?v=mvegrk6b')
   .then(({ createBot }) => {
     bot = createBot({
       toast: (m) => toast(m),
@@ -1736,6 +1736,8 @@ import('./bot.js?v=mvef1tbm')
       key: REAL ? 'mr:real:bot' : 'mr:bot',
       tabId: TAB,
       tabAlive,
+      // REAL: the bot buys from the Spot wallet (keeping ~0.012 SOL for network fees).
+      walletCash: () => (real.sol != null ? Math.max(0, (real.sol - 0.012) * (state.nativeUsd.solana || 0)) : 0),
       lockKey: REAL ? 'mr:real:botLock' : 'mr:botLock',
       exec: REAL
         ? {
@@ -1796,7 +1798,7 @@ function freshPrice(m) {
   return r?.p > 0 && r.pa > 0 && Date.now() - r.pa < 60_000 ? r.p : 0;
 }
 const realReady = REAL && !REAL_BLOCK
-  ? Promise.all([import('./vault.js?v=mvef1tbm'), import('./solana.js?v=mvef1tbm'), import('./real.js?v=mvef1tbm')])
+  ? Promise.all([import('./vault.js?v=mvegrk6b'), import('./solana.js?v=mvegrk6b'), import('./real.js?v=mvegrk6b')])
       .then(async ([V, S, R]) => {
         real.V = V;
         real.S = S;
@@ -2156,6 +2158,7 @@ function renderRealWallet() {
     const pub = st.pub;
     put('#rwCard', `<div class="wallet-card real">
         <span>Twój wallet Solana ${st.unlocked ? '<i class="real-ok">● odblokowany</i>' : '<i class="real-lock">🔒 zablokowany</i>'}</span><b>${solTxt()}</b>
+        <div class="wallet-sub"><div><span>Pozycje radaru</span><b>${fmt.usd(positionList().reduce((a, x) => a + (x.value ?? x.p.usd ?? 0), 0))}</b></div><div><span>Pozycje bota</span><b>${fmt.usd(bot?.exposure?.() || 0)}</b></div><div><span>Wolne SOL</span><b>${real.sol != null ? `${Math.max(0, real.sol - 0.012).toFixed(3)}` : '—'}</b></div></div>
         <div class="real-addr"><code>${esc(fmt.short(pub))}</code><button data-rw="copy">📋 Kopiuj adres</button><a href="https://solscan.io/account/${esc(pub)}" target="_blank" rel="noopener noreferrer">Solscan ↗</a><button data-rw="refresh">↻</button></div>
         ${real.err ? `<p class="note real-warn">${esc(real.err)}</p>` : ''}
       </div>`);
@@ -4673,7 +4676,7 @@ async function sharePnlCard(c) {
   }
   g.fillStyle = '#5c6779';
   g.font = font(500, 30);
-  g.fillText(`${new Date().toLocaleString('pl-PL', { dateStyle: 'medium', timeStyle: 'short' })} · pozycja treningowa, bez prawdziwych pieniędzy`, 80, 1290);
+  g.fillText(`${new Date().toLocaleString('pl-PL', { dateStyle: 'medium', timeStyle: 'short' })} · ${REAL ? 'prawdziwa transakcja' : 'pozycja treningowa, bez prawdziwych pieniędzy'}`, 80, 1290);
   const blob = await new Promise((r) => cv.toBlob(r, 'image/png'));
   if (!blob) return toast('Nie udało się utworzyć obrazka');
   const file = new File([blob], `dmn-pnl-${c.sym || 'token'}.png`, { type: 'image/png' });

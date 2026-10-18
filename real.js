@@ -5,7 +5,7 @@
 // no more slippage than set. A simulation on a Solana node must then show the tokens / SOL arriving
 // on our account. Sent, re-sent until confirmed, and the real fill read back from chain.
 
-import { SOL_MINT, TOKEN_2022, TOKEN_PROGRAM, allAccounts, ataOf, b58encode, b64decode, b64encode, checkSwapTx, lookupAddresses, mintRisk, parseTx, swapInfo, withSignature } from './solana.js?v=mvef1tbm';
+import { SOL_MINT, TOKEN_2022, TOKEN_PROGRAM, allAccounts, ataOf, b58encode, b64decode, b64encode, checkSwapTx, lookupAddresses, mintRisk, parseTx, swapInfo, withSignature } from './solana.js?v=mvegrk6b';
 
 const JUP = 'https://lite-api.jup.ag/swap/v1';
 export const LAMPORTS = 1e9;

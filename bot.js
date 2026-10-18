@@ -187,6 +187,9 @@ export function createBot(deps) {
   const tabId = deps.tabId || Math.random().toString(36).slice(2);
   // Whether another tab is still open (its trades in flight are its own to finish).
   const tabAlive = deps.tabAlive || ((id) => id === tabId);
+  // REAL: the bot spends from the Spot wallet itself (the same SOL as manual trades) — what is free
+  // there now, minus buys already on their way. DEMO: its own virtual capital.
+  const freeCash = () => (REAL ? Math.max(0, (deps.walletCash?.() || 0) - Object.values(B.pend).reduce((a, e) => a + (e.usd || 0), 0)) : B.cash);
   const fresh = () => ({ cfgVer: CFG_VER, cash: 0, deposits: 0, on: false, cfg: { ...DEFAULTS }, pos: {}, pend: {}, booked: [], hist: [], tx: [], log: [], cool: {}, feesPaid: 0, rev: 0 });
   const load = () => {
     try {
@@ -323,7 +326,7 @@ export function createBot(deps) {
 
   /** Real buy: the stake is reserved now, the position appears once the swap is confirmed. */
   function buyReal(r) {
-    const usd = Math.min(B.cfg.buyUsd, B.cash);
+    const usd = Math.min(B.cfg.buyUsd, freeCash());
     if (!(usd >= 1) || pending.has(r.m) || B.pend[r.m]) return false;
     pending.add(r.m);
     B.cash -= usd;
@@ -689,8 +692,8 @@ export function createBot(deps) {
     }
     // Entries: one buy per tick at most, the strongest signal first.
     if (B.on && Object.keys(B.pos).length + Object.keys(B.pend).length < cfg.maxPos && !(REAL && !canTrade())) {
-      if (B.cash < 1) {
-        if (!S.lowCash) note(REAL ? '💸 Budżet bota wyczerpany — przydziel więcej w Wallet → BOT' : '💸 Brak kapitału — doładuj bota w Wallet → BOT');
+      if (freeCash() < 1) {
+        if (!S.lowCash) note(REAL ? '💸 Za mało SOL w walletcie Spot — wpłać SOL (Wallet → Spot)' : '💸 Brak kapitału — doładuj bota w Wallet → BOT');
         S.lowCash = true;
       } else {
         S.lowCash = false;
@@ -759,7 +762,7 @@ export function createBot(deps) {
 
   function statusHtml() {
     const s = stats();
-    const low = B.cash < 1 && !Object.keys(B.pos).length && !Object.keys(B.pend).length;
+    const low = freeCash() < 1 && !Object.keys(B.pos).length && !Object.keys(B.pend).length;
     const locked = REAL && !canTrade();
     const scan = S.lastScan && Date.now() - S.lastScan.t < 10_000 ? `Skan: ${S.lastScan.n} tokenów, ${S.lastScan.hits} z sygnałem` : B.on ? 'Startuje…' : '';
     return `<div class="bot-head">
@@ -767,14 +770,14 @@ export function createBot(deps) {
         <button class="bot-toggle ${B.on ? 'stop' : ''}" data-bot="toggle">${B.on ? '■ Stop' : '▶ Start'}</button>
       </div>
       <div class="bot-stats">
-        <div><span>${REAL ? 'Budżet bota' : 'Kapitał bota'}</span><b>${fmt.usd(B.cash)}</b></div>
+        <div><span>${REAL ? 'Wallet Spot (wolne)' : 'Kapitał bota'}</span><b>${fmt.usd(freeCash())}</b></div>
         <div><span>W pozycjach</span><b>${fmt.usd(s.inPos)}</b></div>
         <div><span>Dziś</span><b class="${s.today >= 0 ? 'up' : 'down'}">${s.n ? money(s.today) : '—'}</b></div>
         <div><span>Łącznie</span><b class="${s.total >= 0 ? 'up' : 'down'}">${s.n ? money(s.total) : '—'}</b></div>
         <div><span>Transakcje</span><b>${s.n}${s.rate != null ? ` <small>${Math.round(s.rate)}% wygr.</small>` : ''}</b></div>
       </div>
       ${locked ? `<div class="bot-warn">🔒 Wallet zablokowany — bot nie kupi ani nie sprzeda. <button data-bot="vault">Odblokuj</button></div>` : ''}
-      ${low ? `<div class="bot-warn">${REAL ? 'Bot nie ma budżetu.' : 'Bot nie ma kapitału.'} <button data-bot="wallet">⬇️ ${REAL ? 'Przydziel budżet' : 'Doładuj'} w Wallet → BOT</button></div>` : ''}
+      ${low ? (REAL ? `<div class="bot-warn">Za mało SOL w walletcie Spot. <button data-bot="vault">⬇️ Wpłać w Wallet → Spot</button></div>` : `<div class="bot-warn">Bot nie ma kapitału. <button data-bot="wallet">⬇️ Doładuj w Wallet → BOT</button></div>`) : ''}
       ${Object.keys(B.pend).length ? `<p class="note bot-scan">⏳ Zakupy w toku: ${Object.keys(B.pend).length}</p>` : ''}
       ${scan ? `<p class="note bot-scan">${scan}</p>` : ''}`;
   }
@@ -852,7 +855,7 @@ export function createBot(deps) {
     if (act === 'toggle') {
       if (!B.on && REAL) {
         if (!canTrade()) return toast('Najpierw odblokuj wallet hasłem (Wallet → Spot)');
-        if (!confirm(`Uruchomić bota na PRAWDZIWYCH środkach?\n\nBudżet: ${fmt.usd(B.cash)} · zakup: ${fmt.usd(B.cfg.buyUsd)} · maks. ${B.cfg.maxPos} pozycje naraz.\nBot sam kupuje i sprzedaje z Twojego walletu, dopóki aplikacja jest otwarta.`)) return;
+        if (!confirm(`Uruchomić bota na PRAWDZIWYCH środkach?\n\nBot kupuje za SOL z walletu Spot (wolne: ${fmt.usd(freeCash())}) — tymi samymi środkami co radar.\nZakup: ${fmt.usd(B.cfg.buyUsd)} · maks. ${B.cfg.maxPos} pozycje naraz (do ${fmt.usd(B.cfg.buyUsd * B.cfg.maxPos)} w pozycjach) · dzienny limit straty: ${B.cfg.maxDayLoss > 0 ? fmt.usd(B.cfg.maxDayLoss) : 'brak'}.\nBot sam kupuje i sprzedaje, dopóki aplikacja jest otwarta.`)) return;
       }
       B.on = !B.on;
       if (B.on && !engine()) {
@@ -925,6 +928,7 @@ export function createBot(deps) {
   function renderWallet(el) {
     if (!el) return;
     const s = stats();
+    if (REAL) return renderWalletReal(el, s);
     const pnl = s.equity - B.deposits;
     const TX = { deposit: ['⬇️', REAL ? 'Przydzielony budżet' : 'Doładowanie'], withdraw: ['⬆️', 'Wypłata do Spot'], open: ['🤖', 'Kupno bota'], close: ['✅', 'Sprzedaż bota'], reset: ['♻️', 'Reset bota'] };
     const card = `<div class="wallet-card">
@@ -946,15 +950,7 @@ export function createBot(deps) {
       }</div>`;
     if (!el.querySelector('#bwCard')) {
       el.innerHTML = `<div id="bwCard"></div><div id="bwCal"></div>
-        ${REAL
-          ? `<div class="card wallet-top"><h3>Przydziel budżet botowi</h3>
-          <div class="pos-form"><input id="botTopUp" type="number" inputmode="decimal" min="0" step="any" placeholder="Kwota w $" /><button data-bw="topup">➕ Przydziel</button></div>
-          <div class="quick-amt">${[25, 50, 100, 250].map((v) => `<button data-bw-amt="${v}">+$${fmt.n(v)}</button>`).join('')}</div>
-          <p class="note">Budżet to limit, ile bot może łącznie zainwestować. Pieniądze zostają w Twoim walletcie Solana (SOL) aż do zakupu — bot nie wyda więcej niż budżet ani więcej SOL, niż masz.</p>
-        </div>
-        <div id="bwStats"></div><div id="bwHist"></div>
-        <div class="d-acts" style="margin-top:16px"><button data-bw="reset">♻️ Wyzeruj budżet i statystyki bota</button></div>`
-          : `<div class="card wallet-top"><h3>Doładuj kapitał bota DEMO</h3>
+        ${`<div class="card wallet-top"><h3>Doładuj kapitał bota DEMO</h3>
           <div class="pos-form"><input id="botTopUp" type="number" inputmode="decimal" min="0" step="any" placeholder="Kwota w $" /><button data-bw="topup">⬇️ Doładuj</button></div>
           <div class="quick-amt">${[100, 500, 1000, 5000].map((v) => `<button data-bw-amt="${v}">+$${fmt.n(v)}</button>`).join('')}</div>
           <p class="note">Osobny wallet bota — wirtualne pieniądze, niezależne od Spot i Perpetuals. Za kapitał bot kupuje tokeny według ustawień w zakładce BOT.</p>
@@ -972,13 +968,60 @@ export function createBot(deps) {
     }
   }
 
+  /**
+   * Wallet → BOT in REAL: no separate money — the bot trades from the Spot wallet (shared with the
+   * radar); here are its share of it, its results and its history.
+   */
+  function renderWalletReal(el, s) {
+    const total = B.hist.reduce((a, h) => a + h.pnl, 0);
+    const TX = { open: ['🤖', 'Kupno bota'], close: ['✅', 'Sprzedaż bota'], reset: ['♻️', 'Reset statystyk'] };
+    const card = `<div class="wallet-card real">
+        <span>Wallet Spot — wspólny dla radaru i bota</span><b>${fmt.usd(freeCash())} <small>wolne</small></b>
+        <div class="wallet-sub"><div><span>W pozycjach bota</span><b>${fmt.usd(s.inPos)}</b></div><div><span>Dziś</span><b class="${s.today >= 0 ? 'up' : 'down'}">${s.n ? money(s.today) : '—'}</b></div>
+          <div><span>Wynik bota</span><b class="${total >= 0 ? 'up' : 'down'}">${s.n ? money(total) : '—'}</b></div></div>
+      </div>`;
+    const statsCard = `<div class="card"><h3>Statystyki bota</h3><div class="bot-stats">
+        <div><span>Transakcje</span><b>${s.n}</b></div>
+        <div><span>Wygrane</span><b class="up">${s.wins}</b></div>
+        <div><span>Skuteczność</span><b>${s.rate != null ? `${Math.round(s.rate)}%` : '—'}</b></div>
+        <div><span>Maks. w pozycjach</span><b>${fmt.usd(B.cfg.buyUsd * B.cfg.maxPos)}</b></div>
+        <div><span>Status</span><b>${B.on ? '● Działa' : 'Stop'}</b></div>
+      </div></div>`;
+    const tx = B.tx.filter((t) => TX[t.type]).slice(0, 30);
+    const hist = `<h3 class="pos-h">Historia bota</h3><div class="pos-closed">${
+      tx.map((t) => `<div><span>${TX[t.type][0]} ${TX[t.type][1]}${t.s ? ` <small>$${esc(t.s)}</small>` : ''} <small>· ${fmt.ago(t.t)}</small>${t.sig ? ` <a href="https://solscan.io/tx/${esc(t.sig)}" target="_blank" rel="noopener noreferrer">tx ↗</a>` : ''}</span><b class="${t.type === 'open' ? 'down' : t.type === 'reset' ? '' : 'up'}">${t.type === 'open' ? '−' : t.type === 'reset' ? '' : '+'}${fmt.usd(t.amount)}${t.pnl != null ? ` <small class="${t.pnl >= 0 ? 'up' : 'down'}">(${money(t.pnl)})</small>` : ''}</b></div>`).join('') ||
+      '<div><span class="muted">Bot jeszcze nie handlował.</span></div>'
+    }</div>`;
+    if (!el.querySelector('#bwCard') || el.dataset.real !== '1') {
+      el.dataset.real = '1';
+      el.innerHTML = `<div id="bwCard"></div>
+        <div class="card"><p class="note" style="margin:0">Bot handluje <b>tymi samymi środkami co radar</b> — SOL z walletu Spot. Nie ma osobnego budżetu: SOL wpłacasz w <b>Wallet → Spot</b>, a ryzyko bota ograniczasz w zakładce BOT: kwota zakupu × maks. liczba pozycji i dzienny limit straty. Zostaw w walletcie ok. 0.01 SOL na opłaty.</p>
+          <div class="bot-acts"><button data-bw="spot">👛 Wallet → Spot</button></div></div>
+        <div id="bwCal"></div><div id="bwStats"></div><div id="bwHist"></div>
+        <div class="d-acts" style="margin-top:16px"><button data-bw="reset">♻️ Wyzeruj statystyki bota</button></div>`;
+      if (!el.dataset.click) {
+        el.dataset.click = '1';
+        el.addEventListener('click', onWalletClick);
+      }
+    }
+    for (const [id, html] of [['#bwCard', card], ['#bwCal', calendarHtml()], ['#bwStats', statsCard], ['#bwHist', hist]]) {
+      const box = el.querySelector(id);
+      if (box.dataset.html !== html) {
+        box.dataset.html = html;
+        box.innerHTML = html;
+      }
+    }
+  }
+
   function onWalletClick(e) {
     const b = e.target.closest('button');
     if (!b) return;
     const el = b.closest('#walletBotBody');
     if (b.dataset.bcal) {
       S.calMonth = Math.max(0, Math.min(12, S.calMonth + Number(b.dataset.bcal)));
-    } else if (b.dataset.bwAmt || b.dataset.bw === 'topup') {
+    } else if (b.dataset.bw === 'spot') {
+      return (deps.openVault || openWallet)();
+    } else if (!REAL && (b.dataset.bwAmt || b.dataset.bw === 'topup')) {
       const inp = el?.querySelector('#botTopUp');
       const amt = b.dataset.bwAmt ? Number(b.dataset.bwAmt) : Number(String(inp?.value || '').replace(',', '.'));
       if (!(amt > 0) || amt > 1e12) return toast('Wpisz kwotę doładowania');
@@ -992,7 +1035,7 @@ export function createBot(deps) {
     } else if (b.dataset.bw === 'reset') {
       // Real positions hold real tokens: they must be sold first, never just forgotten.
       if (REAL && (Object.keys(B.pos).length || Object.keys(B.pend).length || pending.size)) return toast('Bot ma otwarte pozycje — najpierw je sprzedaj');
-      if (!confirm(REAL ? 'Wyzerować budżet i statystyki bota? Twoje środki w walletcie się nie zmienią. Ustawienia zostają.' : 'Wyzerować bota DEMO? Kapitał, otwarte pozycje bota, historia i statystyki zostaną wyczyszczone. Ustawienia zostają.')) return;
+      if (!confirm(REAL ? 'Wyzerować statystyki i historię bota? Twoje środki w walletcie się nie zmienią. Ustawienia zostają.' : 'Wyzerować bota DEMO? Kapitał, otwarte pozycje bota, historia i statystyki zostaną wyczyszczone. Ustawienia zostają.')) return;
       B = { ...fresh(), cfg: B.cfg, tx: [{ t: Date.now(), type: 'reset', amount: 0 }] };
       save();
       toast('♻️ Bot wyzerowany');
@@ -1005,6 +1048,8 @@ export function createBot(deps) {
     renderWallet,
     tracked,
     count: () => Object.keys(B.pos).length,
+    /** Value of the bot's open positions now ($). */
+    exposure: () => stats().inPos,
     running: () => B.on,
     holds: (m) => !!B.pos[m] || !!B.pend[m] || pending.has(m),
     /** Real swaps running in this tab right now. */
