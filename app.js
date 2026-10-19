@@ -29,23 +29,33 @@ if (REAL && window.top !== window.self) throw new Error('DMN REAL cannot run in 
 // worker controls it (this app installs none). Only a basic guard: on a shared origin (several sites
 // under one github.io address) a page of the same origin can still reach this window — the real
 // protection there is an origin used by this app alone.
+// Any opener counts, of any origin: one that can't read this window can still send it to a fake
+// "session expired — paste your key" page later. A tab opened directly has none.
 const REAL_BLOCK = !REAL
   ? ''
-  : (() => {
-      try {
-        if (window.opener && window.opener.location.href) return 'Aplikację otworzyła inna strona — otwórz ją bezpośrednio (zakładka / ekran początkowy), żeby użyć walletu.';
-      } catch {
-        /* a cross-origin opener can't reach this window */
-      }
-      return navigator.serviceWorker?.controller ? 'Tę stronę kontroluje obcy service worker — wallet wyłączony dla bezpieczeństwa.' : '';
-    })();
+  : window.opener
+  ? 'Tę kartę otworzyła inna strona — dla bezpieczeństwa wallet działa tylko w karcie otwartej bezpośrednio (zakładka, wpisany adres albo ikona na ekranie początkowym). Zamknij tę kartę i otwórz aplikację od nowa.'
+  : navigator.serviceWorker?.controller
+  ? 'Tę stronę kontroluje obcy service worker — wallet wyłączony dla bezpieczeństwa.'
+  : '';
+if (REAL) {
+  try {
+    window.opener = null; // this side's link to the opener (it keeps its own handle — hence the block)
+  } catch {
+    /* read-only in some engines */
+  }
+}
 // The crypto primitives the vault uses can't be swapped out by code that runs later: frozen, and the
-// vault gets the objects captured here (a later getter on window.crypto changes nothing).
+// vault gets the objects captured here (a later getter on window.crypto changes nothing). Only a
+// second line: what really keeps foreign code out of this page is the CSP (no inline / injected
+// scripts) — code that did run here could still read what is typed into the page.
 const CRYPTO = globalThis.crypto;
 if (REAL) {
   try {
     Object.freeze(SubtleCrypto.prototype);
     Object.freeze(Crypto.prototype);
+    Object.freeze(CryptoKey.prototype);
+    Object.freeze(TextEncoder.prototype);
     Object.freeze(CRYPTO.subtle);
     Object.freeze(CRYPTO);
     Object.defineProperty(globalThis, 'crypto', { value: CRYPTO, writable: false, configurable: false });
@@ -1682,7 +1692,7 @@ state.walletMode = WALLET_MODES.includes(LS.get('walletMode', 'spot')) ? LS.get(
 // Loaded as its own module: if it can't load (e.g. the single-file preview), only perps are off.
 let perps = null;
 // Perpetuals are demo-only (real perps would need a separate Hyperliquid account and signer).
-(REAL ? Promise.reject(new Error('real')) : import('./perps.js?v=mvegrk6b'))
+(REAL ? Promise.reject(new Error('real')) : import('./perps.js?v=mveuqr33'))
   .then(({ createPerps }) => {
     perps = createPerps({
       toast: (m) => toast(m),
@@ -1722,7 +1732,7 @@ function closeSheets() {
 
 // ---------- trading bot DEMO (BOT tab: the radar with the bot's panel on top) ----------
 let bot = null;
-import('./bot.js?v=mvegrk6b')
+import('./bot.js?v=mveuqr33')
   .then(({ createBot }) => {
     bot = createBot({
       toast: (m) => toast(m),
@@ -1798,7 +1808,7 @@ function freshPrice(m) {
   return r?.p > 0 && r.pa > 0 && Date.now() - r.pa < 60_000 ? r.p : 0;
 }
 const realReady = REAL && !REAL_BLOCK
-  ? Promise.all([import('./vault.js?v=mvegrk6b'), import('./solana.js?v=mvegrk6b'), import('./real.js?v=mvegrk6b')])
+  ? Promise.all([import('./vault.js?v=mveuqr33'), import('./solana.js?v=mveuqr33'), import('./real.js?v=mveuqr33')])
       .then(async ([V, S, R]) => {
         real.V = V;
         real.S = S;
@@ -2208,12 +2218,13 @@ function realWalletShell(view) {
       <input id="rkPass2" type="password" autocomplete="off" placeholder="Powtórz hasło" />
       <button class="real-btn" data-rw="import">🔐 Zaszyfruj i podłącz</button>
       <div class="d-acts"><button data-rw="cancel">Anuluj</button></div>
-      <p class="note">Schowek został wyczyszczony z klucza. Jeśli masz historię schowka (np. Gboard, Win+V), usuń go też stamtąd.</p></div>`;
+      <p class="note">${real.clipCleared ? 'Schowek został wyczyszczony z klucza.' : '⚠️ Przeglądarka nie pozwoliła wyczyścić schowka — skopiuj teraz cokolwiek innego, żeby klucz w nim nie został.'} Jeśli masz historię schowka (np. Gboard, Win+V), usuń go też stamtąd.</p></div>`;
   if (view === 'locked')
     return `<div id="rwCard"></div>
       <div class="card"><h3>🔒 Odblokuj wallet</h3>
         <div class="pos-form"><input id="ruPass" type="password" autocomplete="off" placeholder="Hasło" /><button data-rw="unlock">Odblokuj</button></div>
         <p class="note">Hasło odszyfrowuje klucz tylko w pamięci tej karty. Po zamknięciu aplikacji wallet znów jest zablokowany.</p>
+        <p class="note real-warn">🛡️ Gdy klucz jest zapisany, aplikacja prosi już <b>tylko o hasło</b> — nigdy o ponowne wklejenie klucza. Jeśli jakaś strona prosi Cię o klucz, to oszustwo: sprawdź adres w pasku przeglądarki.</p>
       </div>
       <div class="d-acts" style="margin-top:16px"><button data-rw="remove">🗑️ Usuń klucz z tego urządzenia</button></div>`;
   return `<div id="rwCard"></div>
@@ -2263,17 +2274,18 @@ function realWalletClick(e) {
   const v = real.vault;
   if (!v) return true;
   if (act === 'stage') {
-    // Read and emptied at once — whatever happens next, the key isn't left in the page.
+    // Read and emptied at once — whatever happens next, the key isn't left in the page, nor in the
+    // clipboard (cleared first, while this tap still counts as the user's gesture).
     const inp = $('#rkKey');
     const text = inp?.value || '';
     if (inp) inp.value = '';
+    realClearClipboard();
     if (!$('#rkOk')?.checked) return toast('Zaznacz, że rozumiesz ryzyko'), true;
     try {
       real.staged = real.V.parseSecret(text);
     } catch (err) {
       return toast(`❌ ${err?.message || err}`), true;
     }
-    navigator.clipboard?.writeText?.('').catch(() => {});
     clearTimeout(real.stageTimer);
     real.stageTimer = setTimeout(() => {
       realWipeForms();
@@ -2372,6 +2384,20 @@ function realWalletClick(e) {
   return true;
 }
 
+/** Overwrites the clipboard (a pasted key must not stay there); remembers whether it worked. */
+function realClearClipboard() {
+  real.clipCleared = false;
+  const done = navigator.clipboard?.writeText?.('');
+  if (!done) return;
+  done.then(
+    () => {
+      real.clipCleared = true;
+      const n = $('.real-connect .note:last-child');
+      if (n && sheetOpen('wallet') && $('#walletBody').dataset.view === 'import2') n.textContent = 'Schowek został wyczyszczony z klucza. Jeśli masz historię schowka (np. Gboard, Win+V), usuń go też stamtąd.';
+    },
+    () => {},
+  );
+}
 /** Empties the wallet forms and forgets a pasted key that wasn't saved yet. */
 function realWipeForms() {
   for (const id of ['#rkKey', '#rkPass1', '#rkPass2', '#ruPass']) {
@@ -2402,6 +2428,8 @@ if (REAL) {
       if (el) el.value = '';
     }
   });
+  // Pasting the key clears the clipboard right after (the field already holds it).
+  $('#walletBody').addEventListener('paste', (e) => e.target.id === 'rkKey' && setTimeout(realClearClipboard, 0));
   // A key pasted but never confirmed doesn't stay in the field.
   $('#walletBody').addEventListener('input', (e) => {
     if (e.target.id !== 'rkKey') return;
@@ -2607,7 +2635,7 @@ function setView(view) {
 // ---------- feed ----------
 const FEED_IC = { launch: '✨', whale: '🐋', wallet: '👛', migrate: '🎓', spike: '🔥', x: '𝕏', surge: '🚀', ai: '🤖' };
 function feedItem(it) {
-  return `<li class="fi ${it.type}" data-m="${it.mint}"><span class="fi-ic">${FEED_IC[it.type] || '•'}</span>
+  return `<li class="fi ${it.type}" data-m="${esc(it.mint)}"><span class="fi-ic">${FEED_IC[it.type] || '•'}</span>
     <div class="fi-t">${esc(it.text)}<small data-at="${it.at}">${fmt.ago(it.at)} temu</small></div></li>`;
 }
 function renderFeed() {
@@ -2854,7 +2882,7 @@ function renderDetail(d) {
   const m = d.market || {};
   const watched = isWatched(d.m);
   const ch = chainCfg();
-  const dexLink = ['DexScreener', d.dexUrl || `https://dexscreener.com/${ch.dex}/${d.pair || d.m}`, true];
+  const dexLink = ['DexScreener', linkUrl(d.dexUrl) || `https://dexscreener.com/${ch.dex}/${d.pair || d.m}`, true];
   const chainLinks = ch.evm
     ? [
         ch.buy ? [ch.buyName, ch.buy(d.m)] : null,
@@ -2910,7 +2938,7 @@ function renderDetail(d) {
     ['Zmiana 4h', `<span class="${cls(d.c4)}">${fmt.pct(d.c4)}</span>`],
     ['Zmiana 6h', `<span class="${cls(d.c6)}">${fmt.pct(d.c6)}</span>`],
     ['Zmiana 24h', `<span class="${cls(d.c24)}">${fmt.pct(d.c24)}</span>`],
-    d.bp != null ? ['Bonding curve', `${d.bp.toFixed(1)}%`] : ['Status', d.gr ? '🎓 Na DEX' : d.dexId || '—'],
+    d.bp != null ? ['Bonding curve', `${d.bp.toFixed(1)}%`] : ['Status', d.gr ? '🎓 Na DEX' : esc(d.dexId) || '—'],
     ['Organic score', d.organicScore != null ? `${Math.round(d.organicScore)} ${d.organicLabel ? `<small class="muted">${esc(d.organicLabel)}</small>` : ''}` : '—'],
     ['Wybicie wolumenu 5m', d.vs ? `<span class="${d.vs >= 2 ? 'up' : ''}">${d.vs.toFixed(1)}×</span> <small class="muted">średniej</small>` : '—'],
     ['Pozycja w rankingu', d.rank ? `#${d.rank}` : '—'],

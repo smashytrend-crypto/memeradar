@@ -3,15 +3,15 @@
 // cross-origin reads). One engine per network, created the first time the viewer opens it; only
 // the network on screen polls its sources, the others pause (and keep their data for a quick
 // switch back).
-import { Store } from './server/store.js?v=mvegrk6b';
-import { RateLimiter, every, getJSON, num } from './server/util.js?v=mvegrk6b';
-import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=mvegrk6b';
-import { startPumpPortal } from './server/sources/pumpportal.js?v=mvegrk6b';
-import { startDexScreener } from './server/sources/dexscreener.js?v=mvegrk6b';
-import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=mvegrk6b';
-import { startJupiter } from './server/sources/jupiter.js?v=mvegrk6b';
-import { startRugCheck } from './server/sources/rugcheck.js?v=mvegrk6b';
-import { startGoPlus } from './server/sources/goplus.js?v=mvegrk6b';
+import { Store } from './server/store.js?v=mveuqr33';
+import { RateLimiter, every, getJSON, num } from './server/util.js?v=mveuqr33';
+import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=mveuqr33';
+import { startPumpPortal } from './server/sources/pumpportal.js?v=mveuqr33';
+import { startDexScreener } from './server/sources/dexscreener.js?v=mveuqr33';
+import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=mveuqr33';
+import { startJupiter } from './server/sources/jupiter.js?v=mveuqr33';
+import { startRugCheck } from './server/sources/rugcheck.js?v=mveuqr33';
+import { startGoPlus } from './server/sources/goplus.js?v=mveuqr33';
 
 const baseConfig = {
   demo: false,
@@ -136,7 +136,7 @@ function createEngine(chainId) {
   // Tracked wallets launching a token (from the free new-token stream, Solana).
   store.launchHook = (l) => {
     const w = wallets.get(normAddr(chain, l.creator));
-    if (!w) return;
+    if (!w || !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(l.mint || '')) return; // a real mint address only
     store.pushFeed({ type: 'wallet', mint: l.mint, text: `${w.emoji || '👛'} ${w.name} wypuścił nowy token ${l.symbol ? '$' + l.symbol : l.name || ''}` });
   };
 
