@@ -214,16 +214,17 @@ export function applyFill(a, { coin, side, sz, px, fee, lev, cross, t, reason = 
       // An isolated position never loses more than its margin (the rest would be bad debt).
       a.cash += Math.max(0, release + realized);
     }
-    p.fees += feePart;
     p.realized = (p.realized || 0) + realized;
+    // The row gets its share of the opening fees plus the whole closing fee of this fill.
+    const openFees = (p.fees * closeSz) / p.sz;
     // An isolated position never loses more than its margin: the history shows the money lost.
     const row = {
       coin, side: p.side, sz: closeSz, entry: p.entry, exit: px, lev: p.lev, cross: p.cross, pnl: Math.max(realized, -released),
-      fees: (p.fees * closeSz) / p.sz, funding: (p.funding * closeSz) / p.sz, openedAt: p.openedAt, t, reason,
+      fees: openFees + feePart, funding: (p.funding * closeSz) / p.sz, openedAt: p.openedAt, t, reason,
       full: closeSz >= p.sz - EPS,
     };
     out.closed.push(row);
-    p.fees -= row.fees;
+    p.fees -= openFees;
     p.funding -= row.funding;
     p.sz -= closeSz;
     left -= closeSz;
@@ -278,7 +279,7 @@ export function triggerHit(p, mark) {
  * Liquidation pass at the given marks. Returns events [{ coin, kind: 'book' | 'backstop',
  * partial, pnl, returned }]; mutates the account.
  */
-export function liquidate(a, marks, tiersOf, t, { replay = false } = {}) {
+export function liquidate(a, marks, tiersOf, t, { replay = false, prev = null } = {}) {
   const events = [];
   // Replaying candles jumps between prices that were passed continuously: the exchange would have
   // liquidated through the book where equity crossed maintenance, never skipping to the backstop.
@@ -290,7 +291,11 @@ export function liquidate(a, marks, tiersOf, t, { replay = false } = {}) {
     const mark = marks[p.coin] ?? p.entry;
     const liq = replay ? liqAt.get(p.coin) : null;
     if (!(liq > 0)) return mark;
-    return p.side > 0 ? Math.max(liq, mark) : Math.min(liq, mark);
+    const px = p.side > 0 ? Math.max(liq, mark) : Math.min(liq, mark);
+    // Never better than the coin actually traded during the replayed step (between prev and mark).
+    const pv = prev?.[p.coin];
+    if (!(pv > 0)) return px;
+    return p.side > 0 ? Math.min(px, Math.max(pv, mark)) : Math.max(px, Math.min(pv, mark));
   };
   const close = (p, frac, kind) => {
     if (replay && kind === 'backstop') kind = 'book';

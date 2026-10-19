@@ -11,7 +11,7 @@
 // There is deliberately no way to display or export the key from the app. While unlocked, code
 // running in the page could still ask it to sign — hence the strict CSP and the transaction checks.
 
-import { b58decode, b58encode } from './solana.js?v=mveuyl2z';
+import { b58decode, b58encode } from './solana.js?v=mvfudd8b';
 
 const ITER = 600_000;
 const PKCS8_ED25519 = [0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20];
@@ -185,6 +185,7 @@ export function createVault(store = idbStore(), cr = globalThis.crypto) {
 
     /** Decrypts with the password into a non-extractable signing key. */
     async unlock(password) {
+      if (!password) throw new Error('Wpisz hasło'); // never a counted failure
       if (busy) throw new Error('Sprawdzam hasło…');
       busy = true;
       let seed = null;

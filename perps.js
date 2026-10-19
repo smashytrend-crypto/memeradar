@@ -2,7 +2,7 @@
 // candles straight from Hyperliquid's public API (free, no key), trading rules from perps-math.js.
 // The account lives in this browser only (localStorage 'mr:perps') — virtual dollars.
 
-import * as M from './perps-math.js?v=mveuyl2z';
+import * as M from './perps-math.js?v=mvfudd8b';
 
 const API = 'https://api.hyperliquid.xyz/info';
 const WS_URL = 'wss://api.hyperliquid.xyz/ws';
@@ -346,8 +346,11 @@ export function createPerps({ toast, loadLW, onChange, nav }) {
   }
   const fresh = (c) => mkt(c)?.mark > 0 && Date.now() - (mkt(c).at || 0) < 30_000;
   /** Why trading is paused right now (null: go). */
+  // A sleep not replayed yet (e.g. a failed catch-up waiting to retry): the account still sits at
+  // lastTick, so nothing may be added that the replay would judge at older prices.
+  const syncing = () => S.catching || (busy() && A.lastTick > 0 && Date.now() - A.lastTick > 20_000);
   const blocked = (coin) =>
-    S.catching ? 'Synchronizuję konto z rynkiem — chwila…' : !fresh(coin) ? 'Brak aktualnej ceny z Hyperliquid — spróbuj za chwilę' : null;
+    syncing() ? 'Synchronizuję konto z rynkiem — chwila…' : !fresh(coin) ? 'Brak aktualnej ceny z Hyperliquid — spróbuj za chwilę' : null;
   async function placeOrder(form) {
     if (S.placing) return;
     S.placing = true;
@@ -381,6 +384,8 @@ export function createPerps({ toast, loadLW, onChange, nav }) {
     if (S.type === 'limit') {
       const px = M.roundPx(Number(form.px), m.szDec);
       if (!(px > 0)) return toast('Wpisz cenę limit');
+      if (tp && (side > 0 ? tp <= px : tp >= px)) return toast(`TP musi być ${side > 0 ? 'powyżej' : 'poniżej'} ceny limit`);
+      if (sl && (side > 0 ? sl >= px : sl <= px)) return toast(`SL musi być ${side > 0 ? 'poniżej' : 'powyżej'} ceny limit`);
       const sz = M.roundSz(ntl / px, m.szDec);
       if (!(sz > 0)) return toast('Za mała wielkość dla tego rynku');
       if (adds && sz * px < MIN_ORDER) return toast(`Minimalne zlecenie na Hyperliquid to $${MIN_ORDER}`);
@@ -472,7 +477,7 @@ export function createPerps({ toast, loadLW, onChange, nav }) {
 
   // ---------- engine: limit fills, TP / SL, liquidations, funding ----------
   /** One pass at the given prices (live or replayed). Returns whether the account changed. */
-  function step(t, mk, mids, notes, live) {
+  function step(t, mk, mids, notes, live, prev = null) {
     let changed = false;
     for (const o of [...A.orders]) {
       if (o.t > t) continue; // replay: placed after this moment
@@ -490,8 +495,8 @@ export function createPerps({ toast, loadLW, onChange, nav }) {
       const r = bookFill({ coin: o.coin, side: o.side, sz: o.sz, px: o.px, fee, lev: o.lev, cross: o.cross, t }, 'limit');
       const p = A.pos[o.coin];
       if (p && p.side === o.side) {
-        if (o.tp) p.tp = o.tp;
-        if (o.sl) p.sl = o.sl;
+        if (o.tp && (o.side > 0 ? o.tp > o.px : o.tp < o.px)) p.tp = o.tp;
+        if (o.sl && (o.side > 0 ? o.sl < o.px : o.sl > o.px)) p.sl = o.sl;
       }
       record(r.closed.length ? 'close' : 'open', { coin: o.coin, side: o.side, sz: o.sz, px: o.px, fee, pnl: r.closed.length ? r.realized : null, reason: 'limit' });
       notes.push(`📌 Limit ${sideTxt(o.side)} ${o.sz} ${o.coin} wykonany @ ${fmtPx(o.px)}`);
@@ -512,7 +517,7 @@ export function createPerps({ toast, loadLW, onChange, nav }) {
       notes.push(`${hit === 'sl' ? '🛑 SL' : '🎯 TP'} ${p.coin} @ ${fmtPx(f.px)} · PnL ${money(r.realized - fee, true)}`);
       changed = true;
     }
-    const ev = M.liquidate(A, mk, tiersOf, t, { replay: !live });
+    const ev = M.liquidate(A, mk, tiersOf, t, { replay: !live, prev });
     for (const e of ev) {
       A.stats.liqs++;
       A.stats.fees += e.fee || 0;
@@ -585,6 +590,7 @@ export function createPerps({ toast, loadLW, onChange, nav }) {
     S.catching = true;
     const notes = [];
     const snapshotAcct = JSON.stringify(A);
+    const fundAt0 = A.fundAt; // an hour already settled stays settled
     try {
       const coins = coinsInUse();
       const gap = to - from;
@@ -611,7 +617,11 @@ export function createPerps({ toast, loadLW, onChange, nav }) {
         }
         // Every coin in use: a limit order can open a position during the gap.
         const fh = await paged((st, en) => ({ type: 'fundingHistory', coin, startTime: st, endTime: en }), fundFrom + 1, to, (f) => f.time);
-        for (const f of fh) if (f.time > fundFrom && f.time <= to) pts.push({ t: Math.max(f.time, from), ft: f.time, coin, fund: Number(f.fundingRate), k: 1 });
+        for (const f of fh) {
+          // By the hour it settles (stamped a few ms after it): an hour settled before isn't paid again.
+          const fhr = Math.floor(f.time / M.HOUR) * M.HOUR;
+          if (fhr > fundFrom && f.time <= to) pts.push({ t: Math.max(f.time, from), ft: fhr, coin, fund: Number(f.fundingRate), k: 1 });
+        }
         for (const f of fh) lastFund = Math.max(lastFund, f.time);
       }
       pts.sort((a, b) => a.t - b.t || (a.k || 0) - (b.k || 0));
@@ -622,6 +632,7 @@ export function createPerps({ toast, loadLW, onChange, nav }) {
         const t = pts[i].t;
         const group = [];
         while (i < pts.length && pts[i].t === t) group.push(pts[i++]);
+        const prev = { ...mk }; // the prices before this step (a replayed fill stays within them)
         for (const pt of group) if (pt.fund == null) mk[pt.coin] = pt.px;
         for (const pt of group) {
           if (pt.fund == null) continue;
@@ -636,12 +647,12 @@ export function createPerps({ toast, loadLW, onChange, nav }) {
         if (!coinsInUse().every((c) => mk[c] > 0)) continue;
         const mids = {};
         for (const pt of group) if (pt.fund == null) mids[pt.coin] = pt.px;
-        step(t, mk, mids, notes, false);
+        step(t, mk, mids, notes, false, prev);
       }
       if (Math.abs(funded) >= 0.01) notes.push(`⏱ Funding w tym czasie: ${money(-funded, true)}`);
       // Hours whose rate is not published yet are settled by the live path.
       const lastHour = Math.floor(to / M.HOUR) * M.HOUR;
-      A.fundAt = lastFund >= lastHour - 60_000 || to - lastHour > 5 * 60_000 ? lastHour : lastHour - M.HOUR;
+      A.fundAt = Math.max(fundAt0 || 0, lastFund >= lastHour - 60_000 || to - lastHour > 5 * 60_000 ? lastHour : lastHour - M.HOUR);
       A.lastTick = to;
       S.catchFails = 0;
     } catch {
@@ -676,7 +687,7 @@ export function createPerps({ toast, loadLW, onChange, nav }) {
         const snap = S.fundSnap;
         settledRates(hour, [...new Set(snap.list.map((h) => h.coin))])
           .then(({ rates, complete }) => {
-            if (A.fundAt >= hour || !complete) return;
+            if (S.catching || A.fundAt >= hour || !complete) return;
             const paid = settleFunding(snap.list, rates);
             A.fundAt = hour;
             S.fundSnap = null;
@@ -957,7 +968,10 @@ export function createPerps({ toast, loadLW, onChange, nav }) {
     const px = S.type === 'limit' && Number(val('pfPx')) > 0 ? Number(val('pfPx')) : (S.side > 0 ? S.book[coin]?.asks?.[0]?.px : S.book[coin]?.bids?.[0]?.px) || m.mid || m.mark;
     const sz = ntl > 0 ? M.roundSz(ntl / px, m.szDec) : 0;
     const fee = sz * px * (S.type === 'limit' ? M.PERP_FEES.maker : M.PERP_FEES.taker);
-    const margin = sz > 0 ? M.fillNeeds(A, { coin, side: S.side, sz, px, lev }) - sz * px * M.PERP_FEES.taker : 0;
+    // Only the part that opens (or flips) a position needs margin, and only its fee is inside fillNeeds.
+    const p0 = A.pos[coin];
+    const opens = p0 && p0.side !== S.side ? Math.max(0, sz - p0.sz) : sz;
+    const margin = sz > 0 ? M.fillNeeds(A, { coin, side: S.side, sz, px, lev }) - opens * px * M.PERP_FEES.taker : 0;
     const liq = sz > 0 ? M.previewLiq(A, { coin, side: S.side, sz, px, lev, cross: crossOf(coin) }, mk, tiersOf) : null;
     const maxNtl = avail / (1 / lev + M.PERP_FEES.taker);
     const liqDist = liq ? Math.abs((liq - px) / px) * 100 : null;
@@ -1071,7 +1085,7 @@ export function createPerps({ toast, loadLW, onChange, nav }) {
     if (!t) return;
     syncFromStorage();
     const d = t.dataset;
-    if (S.catching && MUTATING.some((k) => d[k] !== undefined)) return toast('Synchronizuję konto z rynkiem — chwila…');
+    if (syncing() && MUTATING.some((k) => d[k] !== undefined)) return toast('Synchronizuję konto z rynkiem — chwila…');
     if (d.pfSide) S.side = Number(d.pfSide);
     else if (d.pfType) S.type = d.pfType;
     else if (d.pfMode) {
@@ -1297,7 +1311,9 @@ export function createPerps({ toast, loadLW, onChange, nav }) {
       toast(`⬇️ Doładowano ${money(v)} — wallet Perpetuals ${money(M.totalValue(A, marks()))}`);
     } else if (act === 'reset') {
       if (!confirm('Wyzerować wallet Perpetuals DEMO? Saldo, otwarte pozycje, zlecenia i historia perpów zostaną usunięte.')) return;
+      const rev = A.rev; // kept: the cross-tab guard compares revisions
       A = M.newAccount();
+      A.rev = Number.isFinite(rev) ? rev : 0;
       A.stats = { fees: 0, funding: 0, liqs: 0 };
       record('reset', { amount: 0 });
       save();

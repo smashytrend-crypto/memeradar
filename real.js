@@ -5,7 +5,7 @@
 // no more slippage than set. A simulation on a Solana node must then show the tokens / SOL arriving
 // on our account. Sent, re-sent until confirmed, and the real fill read back from chain.
 
-import { SOL_MINT, TOKEN_2022, TOKEN_PROGRAM, allAccounts, ataOf, b58encode, b64decode, b64encode, checkSwapTx, lookupAddresses, mintRisk, parseTx, swapInfo, withSignature } from './solana.js?v=mveuyl2z';
+import { SOL_MINT, TOKEN_2022, TOKEN_PROGRAM, allAccounts, ataOf, b58encode, b64decode, b64encode, checkSwapTx, lookupAddresses, mintRisk, parseTx, swapInfo, withSignature } from './solana.js?v=mvfudd8b';
 
 const JUP = 'https://lite-api.jup.ag/swap/v1';
 export const LAMPORTS = 1e9;
@@ -51,7 +51,14 @@ export function fillFromTx(t, owner, mint) {
   const amt = (list, m) => (list || []).filter((b) => b.owner === owner && b.mint === m).reduce((a, b) => a + BigInt(b.uiTokenAmount.amount), 0n);
   const delta = (m) => amt(t.meta.postTokenBalances, m) - amt(t.meta.preTokenBalances, m);
   const dec = [...(t.meta.postTokenBalances || []), ...(t.meta.preTokenBalances || [])].find((b) => b.mint === mint)?.uiTokenAmount.decimals;
-  return { solDelta: native + (mint === SOL_MINT ? 0n : delta(SOL_MINT)), tokenDelta: delta(mint), decimals: dec ?? null };
+  // Rent of a token account of ours for `mint` this transaction created: a deposit that stays in
+  // the wallet (refundable when the account is closed), not part of the price paid.
+  const pre = t.meta.preBalances || [];
+  const post = t.meta.postBalances || [];
+  const rent = (t.meta.postTokenBalances || [])
+    .filter((b) => b.owner === owner && b.mint === mint && Number.isInteger(b.accountIndex) && !(Number(pre[b.accountIndex]) > 0))
+    .reduce((a, b) => a + BigInt(post[b.accountIndex] || 0), 0n);
+  return { solDelta: native + (mint === SOL_MINT ? 0n : delta(SOL_MINT)), tokenDelta: delta(mint), decimals: dec ?? null, ...(rent > 0n ? { rent } : {}) };
 }
 
 /** SPL token account bytes → { mint, owner, amount } (null when not a token account). */
@@ -304,7 +311,7 @@ export function createTrader({ vault, rpc, solUsd, settings, onStep = () => {}, 
 
   const buyResult = (f, px) => {
     const solSpent = Number(-f.solDelta) / LAMPORTS;
-    return { sig: f.sig, tokensRaw: f.tokenDelta.toString(), decimals: f.decimals, solSpent, usdSpent: solSpent * px, estimated: !!f.estimated };
+    return { sig: f.sig, tokensRaw: f.tokenDelta.toString(), decimals: f.decimals, solSpent, usdSpent: solSpent * px, rentUsd: (Number(f.rent || 0n) / LAMPORTS) * px, estimated: !!f.estimated };
   };
   const sellResult = (f, px, asked) => {
     const solGot = Number(f.solDelta) / LAMPORTS;

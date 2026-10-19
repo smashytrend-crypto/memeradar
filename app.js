@@ -125,6 +125,7 @@ if (ENGINE) ENGINE.setChain(REAL ? 'solana' : LS.get('chain', 'solana'));
 
 const state = {
   view: ((v) => (v === 'pos' ? 'hype' : ENGINE && (v === 'new' || v === 'graduating') ? 'graduated' : v))(LS.get('view', 'hype')), // 'pos' was a tab in an older version
+  viewAt: Date.now(), // the "remove unloaded watched tokens" offer waits 20 s from boot / tab change
   filters: LS.get('filters', { minMcap: 0, minLiq: 0, maxAgeH: 0, safe: false }),
   watch: new Set(LS.get('watch', [])),
   watchChain: LS.get('watchChain', {}) || {}, // mint -> network it was starred on
@@ -171,6 +172,7 @@ const fmt = {
     if (a >= 1e6) return `$${(v / 1e6).toFixed(2)}M`;
     if (a >= 1e4) return `$${(v / 1e3).toFixed(1)}K`;
     if (a >= 1e3) return `$${(v / 1e3).toFixed(2)}K`;
+    if (a < 10) return `$${v.toFixed(2)}`; // small amounts with cents ($0.32, not $0)
     return `$${v.toFixed(0)}`;
   },
   price(p) {
@@ -229,6 +231,8 @@ const fmt = {
   },
 };
 const cls = (v) => (v == null || !Number.isFinite(v) || Math.abs(v) < 0.05 ? 'flat' : v > 0 ? 'up' : 'down');
+// (declared up here: the first render runs while this module is still being evaluated)
+const scoreCls = (v) => (v >= 70 ? 'up' : v >= 40 ? 'warn' : 'down');
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const safeUrl = (u) => (/^(https?:|data:image\/)/i.test(u || '') ? u : '');
 
@@ -410,6 +414,12 @@ function seenBase(d) {
   return s;
 }
 
+/** Chart axis $ with 5 significant digits (fmt.usd's 3 would print the same label on several ticks). */
+const axisUsd = (v) => {
+  const a = Math.abs(v);
+  const [d, u] = a >= 1e9 ? [1e9, 'B'] : a >= 1e6 ? [1e6, 'M'] : a >= 1e3 ? [1e3, 'K'] : [1, ''];
+  return `$${Number((v / d).toPrecision(5))}${u}`;
+};
 const fmtX = (r) => `${r >= 10 ? r.toFixed(0) : r >= 2 ? r.toFixed(1) : r.toFixed(2)}×`;
 
 /** Baseline plus the highest multiple reached since first seen (fresh DexScreener prices only). */
@@ -438,6 +448,13 @@ setInterval(() => {
   if (!seenDirty) return;
   seenDirty = false;
   const now = Date.now();
+  // Another tab's sightings too: the earlier first sighting wins, the highest multiple is kept.
+  for (const [m, s] of Object.entries(LS.get('seen', {}) || {})) {
+    if (!(s?.p > 0)) continue;
+    const cur = seen.get(m);
+    if (!cur || s.t < cur.t) seen.set(m, { ...s, m: Math.max(s.m || 1, cur?.m || 1) });
+    else if ((s.m || 1) > (cur.m || 1)) cur.m = s.m;
+  }
   for (const [m, s] of seen) if (now - s.t > SEEN_TTL) seen.delete(m);
   if (seen.size > 3000) {
     const oldest = [...seen.entries()].sort((a, b) => a[1].t - b[1].t).slice(0, seen.size - 3000);
@@ -509,20 +526,20 @@ const SRC_LABEL = { pumpportal: 'pump.fun', dexscreener: 'DexScreener', jupiter:
 const CHAIN_SOURCES = { solana: ['pumpportal', 'dexscreener', 'jupiter', 'geckoterminal', 'rugcheck', 'x', 'ai'], evm: ['dexscreener', 'geckoterminal', 'goplus', 'x', 'ai'] };
 function renderSources(src) {
   const el = $('#sources');
-  // Rebuild only when a source's state or message changes (not on every snapshot).
   const keys = CHAIN_SOURCES[chainCfg().evm ? 'evm' : 'solana'];
-  const html = Object.entries(SRC_LABEL)
-    // Sources switched off in this build (X and AI without keys) are left out entirely.
-    .filter(([k]) => keys.includes(k) && src[k]?.state !== 'off')
-    .map(([k, label]) => {
-      const s = src[k] || { state: 'connecting', msg: 'oczekiwanie…' };
-      return `<span class="src ${s.state}" tabindex="0"><i></i><span class="lbl">${label}</span>
-        <span class="tip"><b>${label}</b><br>${esc(s.msg || s.state)}</span></span>`;
-    })
-    .join('');
-  if (el.dataset.html !== html) {
-    el.dataset.html = html;
-    el.innerHTML = html;
+  // Sources switched off in this build (X and AI without keys) are left out entirely.
+  const shown = Object.keys(SRC_LABEL).filter((k) => keys.includes(k) && src[k]?.state !== 'off');
+  // Rebuilt only when the set of sources changes; state and message update in place, so a tapped
+  // dot keeps its tip open (its counters change on every refresh).
+  if (el.dataset.keys !== shown.join('|')) {
+    el.dataset.keys = shown.join('|');
+    el.innerHTML = shown.map((k) => `<span class="src" data-src="${k}" tabindex="0"><i></i><span class="lbl">${SRC_LABEL[k]}</span>
+        <span class="tip"><b>${SRC_LABEL[k]}</b><br><span class="tip-m"></span></span></span>`).join('');
+  }
+  for (const node of el.children) {
+    const s = src[node.dataset.src] || { state: 'connecting', msg: 'oczekiwanie…' };
+    setIf(node, 'className', `src ${s.state}`);
+    setIf(node.querySelector('.tip-m'), 'textContent', s.msg || s.state);
   }
 }
 
@@ -623,7 +640,7 @@ function updateRow(entry, d, idx) {
   if (d.bp != null) chips.push(`${lpChip(d.lp)}<span class="bc"><span class="bc-bar"><i style="width:${d.bp}%"></i></span>${d.bp.toFixed(0)}%</span>`);
   else if (d.gr) chips.push('<span class="chip grad">🎓 DEX</span>');
   const pos = posPnl(d);
-  if (pos) chips.push(`<span class="chip pos ${pos.cls}" title="Twoja pozycja ${TAG}: ${fmt.pct(pos.pct)}${pos.usd != null ? ` (${pos.usd >= 0 ? '+' : ''}${fmt.usd(pos.usd)})` : ''}">💼 DEMO ${fmt.pct(pos.pct)}</span>`);
+  if (pos) chips.push(`<span class="chip pos ${pos.cls}" title="Twoja pozycja ${TAG}: ${fmt.pct(pos.pct)}${pos.usd != null ? ` (${pos.usd >= 0 ? '+' : ''}${fmt.usd(pos.usd)})` : ''}">💼 ${TAG} ${fmt.pct(pos.pct)}</span>`);
   if (d.fz && FRESH[d.fz]) chips.push(`<span class="chip fz ${FRESH[d.fz][2]}" title="Hype teraz: ${FRESH[d.fz][1]}">${FRESH[d.fz][0]} ${FRESH[d.fz][1]}</span>`);
   const serial = creatorWarning(d);
   if (serial) chips.push(`<span class="chip warnc" title="${esc(serial.tip)}">${serial.short}</span>`);
@@ -782,7 +799,12 @@ function renderRows(rows) {
     if (!entry) {
       entry = { el: rowTemplate() };
       entry.el.dataset.m = d.m;
-      if (!state.firstSnapshot) entry.el.classList.add('enter');
+      if (!state.firstSnapshot) {
+        // The fade-in plays once: moving a row (reorder) would restart its CSS animation.
+        const el = entry.el;
+        el.classList.add('enter');
+        setTimeout(() => el.classList.remove('enter'), 700);
+      }
       state.rows.set(d.m, entry);
     }
     updateRow(entry, d, idx);
@@ -818,13 +840,24 @@ function renderRows(rows) {
 
   if (reordered) state.prevRanks = new Map(list.map((d, i) => [d.m, i + 1]));
   const empty = $('#empty');
-  empty.hidden = list.length > 0;
-  if (!list.length) empty.innerHTML = emptyText();
+  // Watched tokens that can't be loaded (gone from the exchanges) can still be removed.
+  const missing = state.view === 'watch' && list.length && Date.now() - (state.viewAt || 0) > 20_000 ? watchedHere().filter((m) => !state.rows.has(m)).length : 0;
+  empty.hidden = list.length > 0 && !missing;
+  const html = !list.length ? emptyText() : missing ? `Nie udało się wczytać ${missing} obserwowanych.<br><button class="btn" data-act="unwatch-missing">Usuń je z listy</button>` : '';
+  // Rewritten only on change: a 2 s re-render must not swallow the tap (iOS).
+  if (!empty.hidden && empty.dataset.html !== html) {
+    empty.dataset.html = html;
+    empty.innerHTML = html;
+  }
   return list;
 }
 
 function emptyText() {
-  if (state.view === 'watch') return '<b>Brak obserwowanych tokenów</b>Kliknij ☆ przy tokenie, aby dodać go do listy.';
+  if (state.view === 'watch') {
+    const n = watchedHere().length;
+    if (!n) return '<b>Brak obserwowanych tokenów</b>Kliknij ☆ przy tokenie, aby dodać go do listy.';
+    return `<b>Wczytuję obserwowane (${n})…</b>${Date.now() - (state.viewAt || 0) > 20_000 ? 'Części tokenów nie da się wczytać (mogły zniknąć z giełd).<br><button class="btn" data-act="unwatch-missing">Usuń niewczytane z listy</button>' : ''}`;
+  }
   if (state.view === 'surge' && !state.firstSnapshot)
     return '<b>Brak wybić wolumenu w tej chwili</b>Pojawią się tu tokeny, których wolumen z 5 min jest co najmniej 2× wyższy niż ich średnia.';
   if (state.firstSnapshot) return '<b>Łączenie ze źródłami danych…</b>Pierwsze tokeny pojawią się w ciągu kilku sekund.';
@@ -886,11 +919,13 @@ function applySnapshot(snap) {
   if (snap.stats.solPrice > 0) state.nativeUsd[ENGINE?.chain || 'solana'] = snap.stats.solPrice;
   renderStats(snap.stats);
   renderSources(snap.sources);
-  $('#liveBadge').className = `live-badge${state.paused ? ' paused' : ''}`;
-  $('#liveBadge').lastChild.textContent = STATIC ? 'MIGAWKA' : state.paused ? 'PAUZA' : 'LIVE';
-  if (snap.view === 'hype') $('#c-hype').textContent = fmt.n(snap.stats.ranked);
+  const stale = !STATIC && Date.now() - state.lastSnapshot > 8000;
+  $('#liveBadge').className = `live-badge${stale ? ' off' : state.paused ? ' paused' : ''}`;
+  $('#liveBadge').lastChild.textContent = STATIC ? 'MIGAWKA' : stale ? 'OFFLINE' : state.paused ? 'PAUZA' : 'LIVE';
+  $('#c-hype').textContent = fmt.n(snap.stats.ranked);
   // Paused: keep the table frozen — but a new tab / network still gets its first render.
-  if ((state.paused && !state.firstSnapshot) || snap.view !== state.view) return;
+  if ((state.paused && !state.firstSnapshot && !state.renderOnce) || snap.view !== state.view) return;
+  state.renderOnce = false;
   if (state.firstSnapshot) $('#rows').innerHTML = '';
   renderRows(snap.rows);
   state.firstSnapshot = false;
@@ -918,12 +953,15 @@ function staticSnapshot() {
 }
 
 function connect() {
+  // The user changed what the list shows: re-sort on the next snapshot (instead of appending new
+  // rows at the bottom), and render it once even while the table is frozen.
+  state.order = null;
+  state.renderOnce = true;
   if (ENGINE) {
     clearInterval(state.tick);
     const f = state.filters;
     const filters = { minMcap: f.minMcap || 0, minLiq: f.minLiq || 0, maxAgeH: f.maxAgeH || 0, safe: !!f.safe, q: '' };
     const run = () => {
-      state.lastSnapshot = Date.now();
       // The win rate always counts the main Hype list, whichever tab is open.
       // Viewer-side filters (hidden, holders, safety…) need more rows than the 100 shown.
       const vf = state.filters;
@@ -933,7 +971,11 @@ function connect() {
       const posHere = Object.keys(state.positions).filter((m) => (state.positions[m].chain || 'solana') === ENGINE.chain);
       // …and with the watched ones, their trades feed the whale / tracked-wallet alerts.
       ENGINE.track([...new Set([...posHere, ...watchedHere(), ...(bot?.tracked() || [])])]);
-      applySnapshot(ENGINE.snapshot(state.view, filters, lim, state.view === 'watch' ? watchedHere() : []));
+      const snap = ENGINE.snapshot(state.view, filters, lim, state.view === 'watch' ? watchedHere() : []);
+      // LIVE only while the device is online and prices (DexScreener) come in; otherwise the stamp
+      // ages and the badge turns OFFLINE.
+      if (navigator.onLine !== false && snap.sources?.dexscreener?.state !== 'error') state.lastSnapshot = Date.now();
+      applySnapshot(snap);
       if (sheetOpen('pos') && !sheetBusy()) renderPositions();
       if (sheetOpen('wallet') && !sheetBusy()) renderWallet();
       if (sheetOpen('track') && !sheetBusy()) renderTracker();
@@ -1226,7 +1268,7 @@ function quickBuy(usd) {
   const buy = entryAfterFees(d.p, usd);
   if (!buy) return toast(`Za mała kwota — opłaty transakcji (${feeUsd(tradeFee(usd))}) zjadłyby większość`);
   if (!savePosition(state.selected, buy.price, usd, d.mc, d, buy.fee)) return;
-  toast(`💼 ${had ? 'Dokupiono' : 'Kupiono'} ${TAG} za ${fmt.usd(usd)} przy MC ${fmt.usd(d.mc)}${feeNote(buy.fee)}`);
+  toast(`💼 ${had ? 'Dokupiono' : 'Kupiono'} ${TAG} za $${qbAmt(usd)} przy MC ${fmt.usd(d.mc)}${feeNote(buy.fee)}`);
   renderDetail(d0);
 }
 
@@ -1241,8 +1283,10 @@ function editQuickBuy() {
   toast('Zapisano przyciski szybkiego zakupu');
 }
 
+/** A quick-buy amount as it will be bought ($2.5 stays 2.5, not 3). */
+const qbAmt = (v) => (Number.isInteger(v) || Math.abs(v) >= 1e4 ? fmt.n(v) : v.toFixed(2).replace(/\.?0+$/, ''));
 const quickBuyRow = (label) =>
-  `<div class="qb-row"><span>${label}</span>${state.quickBuy.map((v) => `<button data-act="qbuy" data-usd="${v}">+$${fmt.n(v)}</button>`).join('')}<button class="qb-edit" data-act="qbuy-edit" aria-label="Ustaw kwoty szybkiego zakupu" title="Ustaw kwoty">⚙︎</button></div>`;
+  `<div class="qb-row"><span>${label}</span>${state.quickBuy.map((v) => `<button data-act="qbuy" data-usd="${v}">+$${qbAmt(v)}</button>`).join('')}<button class="qb-edit" data-act="qbuy-edit" aria-label="Ustaw kwoty szybkiego zakupu" title="Ustaw kwoty">⚙︎</button></div>`;
 const sellRow = (attr) =>
   `<div class="qs-row">${[25, 50, 75, 100].map((v) => `<button ${attr}="${v}">${v === 100 ? 'Sprzedaj 100%' : `${v}%`}</button>`).join('')}</div>`;
 
@@ -1349,7 +1393,7 @@ function exitClick(mint, value) {
     const x = positionList().find((y) => y.m === mint);
     p.be = true;
     // Armed right away when already above +BE_PCT; otherwise once the price gets there.
-    p.bea = x?.pct > BE_PCT;
+    p.bea = !!x && !x.stale && x.pct > BE_PCT; // armed only from a fresh price
     LS.set('positions', state.positions);
     return toast(p.bea ? `🛡️ Break even: sprzeda całość, gdy cena spadnie do +${BE_PCT}%` : `🛡️ Break even włączy się, gdy zysk przekroczy +${BE_PCT}%`);
   }
@@ -1388,6 +1432,8 @@ function checkExits() {
     if (REAL) {
       // A real sale is a swap: started here, booked when confirmed (the flag goes once it sold).
       if (real.busy.has(x.m) || realSellBusy(x.p)) continue;
+      // A sale that failed waits (5 s, 10 s, 20 s… up to 1 min) instead of being retried every 2 s.
+      if (Date.now() < (real.exitRetry.get(x.m)?.at || 0)) continue;
       if (!realUnlocked()) {
         if (Date.now() - (real.lockWarnAt || 0) > 60_000) {
           real.lockWarnAt = Date.now();
@@ -1395,8 +1441,20 @@ function checkExits() {
         }
         continue;
       }
+      if (x.p.own && x.p.own !== real.vault?.status().pub) {
+        if (Date.now() - (real.ownWarnAt || 0) > 60_000) {
+          real.ownWarnAt = Date.now();
+          toast(`${EXITS[kind].name} $${x.p.s || '?'} — ta pozycja jest w innym walletcie; podłącz tamten klucz, żeby ją sprzedać`);
+        }
+        continue;
+      }
       realSell(x.m, f, { [kind]: true }).then((ok) => {
         const left = state.positions[x.m];
+        if (ok) real.exitRetry.delete(x.m);
+        else if (left && !realSellBusy(left)) {
+          const n = (real.exitRetry.get(x.m)?.n || 0) + 1;
+          real.exitRetry.set(x.m, { n, at: Date.now() + Math.min(60_000, 5_000 * 2 ** (n - 1)) });
+        }
         if (ok && left) {
           delete left[kind];
           LS.set('positions', state.positions);
@@ -1475,20 +1533,21 @@ function pnlWindow(list, ms) {
   const now = Date.now();
   let pnl = 0;
   let cost = 0;
-  let trades = 0;
+  // Positions counted once each (a partial sale is a closed entry of the same position).
+  const keys = new Set();
   for (const x of list) {
     if (now - x.p.t > ms || x.pnl == null) continue;
     pnl += x.pnl;
     cost += x.p.usd;
-    trades++;
+    keys.add(`${x.m}:${x.p.t}`);
   }
   for (const c of state.closed) {
     if (c.w === false || now - c.openedAt > ms) continue;
     pnl += c.pnl;
     cost += c.usd;
-    trades++;
+    keys.add(`${c.m}:${c.openedAt}`);
   }
-  return { pnl, pct: cost > 0 ? (pnl / cost) * 100 : null, trades };
+  return { pnl, pct: cost > 0 ? (pnl / cost) * 100 : null, trades: keys.size };
 }
 
 /** Profitable / losing demo positions, each counted once by its total result: open ones by the
@@ -1561,7 +1620,7 @@ function renderPositions() {
               <div><span>Zysk / strata</span><b class="${(x.pnl ?? 0) >= 0 ? 'up' : 'down'}">${x.pnl != null ? money(x.pnl) : '—'}</b></div>
               ${x.p.fees > 0 ? `<div><span>Zapłacone opłaty</span><b>${feeUsd(x.p.fees)}</b></div>` : ''}
             </div>
-            ${x.p.usd > 0 ? sellRow('data-pos-sell') : '<div class="qs-row"><button data-pos-sell="100">✖ Zamknij</button></div>'}
+            ${REAL && x.p.own && x.p.own !== real.vault?.status().pub ? '<p class="note real-warn">Ta pozycja jest w innym walletcie — podłącz tamten klucz, żeby ją sprzedać.</p><div class="qs-row"><button data-pos-forget>✖ Usuń z listy</button></div>' : x.p.usd > 0 ? sellRow('data-pos-sell') : '<div class="qs-row"><button data-pos-sell="100">✖ Zamknij</button></div>'}
             ${exitRows(x.p, 'data-pos-exit')}
             <div class="pos-acts"><button data-pos-open>Otwórz token</button>${x.pct != null ? '<button data-pos-share>📸 Karta PnL</button>' : ''}</div>
           </div>`;
@@ -1692,7 +1751,7 @@ state.walletMode = WALLET_MODES.includes(LS.get('walletMode', 'spot')) ? LS.get(
 // Loaded as its own module: if it can't load (e.g. the single-file preview), only perps are off.
 let perps = null;
 // Perpetuals are demo-only (real perps would need a separate Hyperliquid account and signer).
-(REAL ? Promise.reject(new Error('real')) : import('./perps.js?v=mveuyl2z'))
+(REAL ? Promise.reject(new Error('real')) : import('./perps.js?v=mvfudd8b'))
   .then(({ createPerps }) => {
     perps = createPerps({
       toast: (m) => toast(m),
@@ -1732,7 +1791,7 @@ function closeSheets() {
 
 // ---------- trading bot DEMO (BOT tab: the radar with the bot's panel on top) ----------
 let bot = null;
-import('./bot.js?v=mveuyl2z')
+import('./bot.js?v=mvfudd8b')
   .then(({ createBot }) => {
     bot = createBot({
       toast: (m) => toast(m),
@@ -1751,9 +1810,34 @@ import('./bot.js?v=mveuyl2z')
       lockKey: REAL ? 'mr:real:botLock' : 'mr:botLock',
       exec: REAL
         ? {
-            buy: (m, usd, o) => realReady.then(() => real.trader.buy(m, usd, o)),
-            sell: (m, raw, o) => realReady.then(() => real.trader.sell(m, raw, o)),
-            resolve: (sig, m, kind, bh) => realReady.then(() => (real.trader ? real.trader.resolve(sig, m, kind, bh) : { state: 'unknown' })),
+            // The Spot balance the bot spends from is updated right after each of its swaps.
+            buy: (m, usd, o) =>
+              realReady
+                .then(() => real.trader.buy(m, usd, o))
+                .then((f) => {
+                  if (real.sol != null) real.sol = Math.max(0, real.sol - (f.solSpent || 0));
+                  return f;
+                })
+                .finally(() => {
+                  refreshRealBalance(true);
+                }),
+            sell: (m, raw, o) =>
+              realReady
+                .then(() => real.trader.sell(m, raw, o))
+                .then((f) => {
+                  if (real.sol != null) real.sol += f.solReceived || 0;
+                  return f;
+                })
+                .finally(() => {
+                  refreshRealBalance(true);
+                }),
+            resolve: (sig, m, kind, bh) =>
+              realReady
+                .then(() => (real.trader ? real.trader.resolve(sig, m, kind, bh) : { state: 'unknown' }))
+                .then((st) => {
+                  if (st?.state === 'landed') refreshRealBalance(true);
+                  return st;
+                }),
           }
         : null,
       canTrade: () => realUnlocked() && (ENGINE?.chain || 'solana') === 'solana',
@@ -1771,6 +1855,14 @@ import('./bot.js?v=mveuyl2z')
   .catch(() => {
     $('#botPanel').innerHTML = '<div class="empty"><b>Bot niedostępny</b>Nie udało się wczytać modułu.</div>';
   });
+// The logo / LIVE badge go back to the radar without reloading the page (a reload locks the REAL wallet).
+document.querySelector('.brand')?.addEventListener('click', (e) => {
+  e.preventDefault();
+  if (state.selected) closeDetail();
+  closeSheets();
+  setBotView(false);
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+});
 function setBotView(on) {
   state.botView = on;
   $('#botPanel').hidden = !on;
@@ -1794,7 +1886,7 @@ const realCfg = ((v) => {
   }
   return out;
 })(LS.get('realCfg', {}));
-const real = { vault: null, trader: null, V: null, sol: null, tokens: null, balAt: 0, busy: new Set(), supported: null, err: REAL_BLOCK, staged: null, resolving: false };
+const real = { vault: null, trader: null, V: null, sol: null, tokens: null, balAt: 0, busy: new Set(), supported: null, err: REAL_BLOCK, staged: null, resolving: false, exitRetry: new Map() };
 // Manual buys sent but not yet confirmed (saved with the signature: a reload can resolve them).
 let realPend = ((v) => (v && typeof v === 'object' ? v : {}))(LS.get('realPend', {}));
 const saveRealPend = () => LS.set('realPend', realPend);
@@ -1808,7 +1900,7 @@ function freshPrice(m) {
   return r?.p > 0 && r.pa > 0 && Date.now() - r.pa < 60_000 ? r.p : 0;
 }
 const realReady = REAL && !REAL_BLOCK
-  ? Promise.all([import('./vault.js?v=mveuyl2z'), import('./solana.js?v=mveuyl2z'), import('./real.js?v=mveuyl2z')])
+  ? Promise.all([import('./vault.js?v=mvfudd8b'), import('./solana.js?v=mvfudd8b'), import('./real.js?v=mvfudd8b')])
       .then(async ([V, S, R]) => {
         real.V = V;
         real.S = S;
@@ -1818,7 +1910,7 @@ const realReady = REAL && !REAL_BLOCK
         real.minPass = V.MIN_PASSWORD;
         real.trader = R.createTrader({
           vault: real.vault,
-          rpc: S.createRpc(() => realCfg.rpc),
+          rpc: (real.rpc = S.createRpc(() => realCfg.rpc)),
           solUsd: () => state.nativeUsd.solana || 0,
           settings: () => ({ slipBuyBps: Math.round(realCfg.slipBuy * 100), slipSellBps: Math.round(realCfg.slipSell * 100), priorityMaxLamports: Math.round(realCfg.prio * 1e9) }),
         });
@@ -1832,8 +1924,13 @@ const realReady = REAL && !REAL_BLOCK
   : null;
 const realUnlocked = () => !!real.vault?.status().unlocked;
 /** Anything that needs the key right now: positions to protect, the bot, trades in flight. */
+/** Positions held by the connected wallet (one from another wallet can't be sold here anyway). */
+const ownPositions = () => {
+  const pub = real.vault?.status().pub;
+  return Object.values(state.positions).filter((p) => !p.own || p.own === pub).length;
+};
 const realInUse = () =>
-  Object.keys(state.positions).length || Object.keys(realPend).length || real.busy.size || (bot ? bot.count() || bot.running() || bot.inFlight?.() : storedBotBusy());
+  ownPositions() || Object.keys(realPend).length || real.busy.size || (bot ? bot.count() || bot.running() || bot.inFlight?.() : storedBotBusy());
 /** Before the bot module loads: whether its saved state has positions, buys in flight or is on. */
 function storedBotBusy() {
   try {
@@ -1921,10 +2018,12 @@ function realOpenFromFill(m, e, f) {
     toast(`⚠️ Zakup $${e.s || '?'} przeszedł bez tokenów — sprawdź Wallet → Tokeny`);
     return false;
   }
-  const price = f.usdSpent / tokens;
+  // The new token account's rent stays in the wallet as a deposit: not part of the entry price.
+  const spent = f.usdSpent - Math.min(f.rentUsd || 0, f.usdSpent * 0.5);
+  const price = spent / tokens;
   const mc = e.px > 0 && e.mc > 0 ? e.mc * (price / e.px) : e.mc;
   const oldRaw = state.positions[m]?.raw || '0';
-  if (!savePosition(m, price, f.usdSpent, mc, { n: e.n, s: e.s, i: e.i, p: e.px, mc: e.mc }, 0)) {
+  if (!savePosition(m, price, spent, mc, { n: e.n, s: e.s, i: e.i, p: e.px, mc: e.mc }, 0)) {
     toast('⚠️ Tokeny są w walletcie, ale pozycji nie udało się dopisać — sprzedasz je w Wallet → Tokeny');
     return false;
   }
@@ -1955,7 +2054,7 @@ async function realBuy(d, usd) {
   real.busy.add(m);
   realPend[m] = { usd, t: Date.now(), tab: TAB, px: d.p, mc: d.mc, n: d.n || '', s: d.s || '', i: d.i || '' };
   saveRealPend();
-  toast(`⏳ Kupuję $${d.s || '?'} za ${fmt.usd(usd)}…`);
+  toast(`⏳ Kupuję $${d.s || '?'} za $${qbAmt(usd)}…`);
   if (state.detail?.m === m) renderDetail(state.detail);
   let sentSig = null;
   const started = realPend[m].t;
@@ -2178,7 +2277,7 @@ function renderRealWallet() {
     const toks = [...(real.tokens || new Map())].filter(([, t]) => t.raw > 0n);
     const name = (m) => state.positions[m]?.s || (ENGINE?.rowsFor?.('solana', [m])[0]?.s) || fmt.short(m);
     // Tokens outside the app's positions (e.g. a buy that landed after a reload) can be sold here.
-    const own = (m) => state.positions[m] || realPend[m] || bot?.holds(m);
+    const own = (m) => (state.positions[m] && (!state.positions[m].own || state.positions[m].own === st.pub)) || realPend[m] || bot?.holds(m);
     put('#rwTokens', `<h3 class="pos-h">Tokeny w walletcie <small>${toks.length}</small></h3><div class="pos-closed">${
       toks.length
         ? toks.map(([m, t]) => `<div><span>$${esc(name(m))}${own(m) ? ' <small>· w pozycji</small>' : ''}</span><b>${fmt.n(Number(t.raw) / 10 ** t.dec)}${own(m) ? '' : ` <button class="rw-sell" data-rw="sellall" data-m="${esc(m)}"${real.busy.has(m) || realPend[m] ? ' disabled' : ''}>Sprzedaj</button>`}</b></div>`).join('')
@@ -2326,6 +2425,7 @@ function realWalletClick(e) {
     const inp = $('#ruPass');
     const pass = inp.value;
     inp.value = '';
+    if (!pass) return toast('Wpisz hasło'), true; // an empty tap isn't a failed attempt
     b.disabled = true;
     v.unlock(pass)
       .then(() => {
@@ -2370,6 +2470,7 @@ function realWalletClick(e) {
       .catch((err) => toast(`❌ Sprzedaż nieudana: ${err?.message || err}`))
       .finally(() => {
         real.busy.delete(m);
+        b.disabled = false;
         refreshRealBalance(true);
       });
   } else if (act === 'copy') copy(v.status().pub);
@@ -2377,7 +2478,9 @@ function realWalletClick(e) {
   else if (act === 'test') {
     toast('🔌 Sprawdzam…');
     Promise.all([
-      real.trader.balance().then(() => '✅ węzeł Solana', (err) => `❌ węzeł Solana (${err?.message || err})`),
+      realCfg.rpc
+        ? real.rpc('getHealth', [], { only: realCfg.rpc }).then(() => '✅ własny węzeł RPC', (err) => `❌ własny węzeł RPC (${err?.message || err})`)
+        : real.trader.balance().then(() => '✅ węzeł Solana', (err) => `❌ węzeł Solana (${err?.message || err})`),
       fetch('https://lite-api.jup.ag/swap/v1/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v&amount=10000000&slippageBps=100').then((r) => (r.ok ? '✅ Jupiter' : `❌ Jupiter (HTTP ${r.status})`), () => '❌ Jupiter'),
     ]).then((res) => toast(res.join(' · ')));
   }
@@ -2584,7 +2687,7 @@ function setChain(id) {
   renderFeed();
   $('#search').value = '';
   $('#searchResults').hidden = true;
-  $('#sources').dataset.html = '';
+  $('#sources').dataset.keys = '';
   renderWatchCount();
   renderPosCount();
   setView(state.view === 'watch' ? 'hype' : state.view);
@@ -2627,6 +2730,7 @@ function setView(view) {
   state.rows.clear();
   state.prevRanks.clear();
   state.firstSnapshot = true;
+  state.viewAt = Date.now();
   $('#empty').hidden = true;
   skeleton();
   connect();
@@ -2657,7 +2761,35 @@ setInterval(() => {
 }, 5000);
 
 // ---------- watchlist ----------
+// Watched tokens that never load (gone from the exchanges) can be removed from the list.
+$('#empty').addEventListener('click', (e) => {
+  if (!e.target.closest('[data-act="unwatch-missing"]')) return;
+  reloadLists();
+  const gone = watchedHere().filter((m) => !state.rows.has(m));
+  for (const m of gone) {
+    state.watch.delete(m);
+    delete state.watchChain[m];
+  }
+  LS.set('watch', [...state.watch]);
+  LS.set('watchChain', state.watchChain);
+  renderWatchCount();
+  toast(`Usunięto ${gone.length} z obserwowanych`);
+  connect();
+});
+
+/** Watchlist, hidden, blocked and presets as stored (another tab may have changed them). */
+function reloadLists() {
+  const arr = (v) => (Array.isArray(v) ? v : []);
+  state.watch = new Set(arr(LS.get('watch', [])));
+  const wc = LS.get('watchChain', {});
+  state.watchChain = wc && typeof wc === 'object' ? wc : {};
+  state.hidden = new Set(arr(LS.get('hidden', [])));
+  state.blocked = new Set(arr(LS.get('blocked', [])));
+  state.presets = arr(LS.get('presets', []));
+}
+
 function toggleWatch(mint) {
+  reloadLists();
   if (isWatched(mint)) {
     state.watch.delete(mint);
     delete state.watchChain[mint];
@@ -3358,11 +3490,13 @@ $('#fPreset').addEventListener('change', (e) => {
   } else if (v === 'save') {
     const name = (prompt('Nazwa presetu (np. „Moje gemy”):') || '').trim().slice(0, 30);
     if (!name) return;
+    reloadLists();
     state.presets = [...state.presets.filter((p) => p.name !== name), { name, f: { ...state.filters } }];
     LS.set('presets', state.presets);
     renderPresets();
     toast(`Zapisano preset „${name}”`);
   } else if (v === 'del') {
+    reloadLists();
     const list = state.presets.map((p, i) => `${i + 1}. ${p.name}`).join('\n');
     const n = Number(prompt(`Który preset usunąć? Podaj numer:\n${list}`));
     if (n >= 1 && n <= state.presets.length) {
@@ -3382,6 +3516,7 @@ function renderHiddenBtn() {
   $('#hiddenN').textContent = n;
 }
 function hideToken(mint) {
+  reloadLists();
   state.hidden.add(mint);
   LS.set('hidden', [...state.hidden]);
   renderHiddenBtn();
@@ -3391,6 +3526,7 @@ function hideToken(mint) {
 }
 function blockCreator(creator) {
   if (!creator) return;
+  reloadLists();
   state.blocked.add(creator);
   LS.set('blocked', [...state.blocked]);
   renderHiddenBtn();
@@ -3774,6 +3910,14 @@ $('#posSheet').addEventListener('click', (e) => {
     renderPositions();
     return;
   }
+  if (e.target.closest('[data-pos-forget]')) {
+    if (!confirm('Usunąć tę pozycję z listy? Tokeny zostają w tamtym walletcie — aplikacja przestanie ją śledzić.')) return;
+    delete state.positions[mint];
+    LS.set('positions', state.positions);
+    renderPosCount();
+    renderPositions();
+    return;
+  }
   const sellBtn = e.target.closest('[data-pos-sell]');
   if (sellBtn) {
     const x = positionList().find((p) => p.m === mint);
@@ -3973,7 +4117,7 @@ let tradesBusy = false;
 async function loadTrades(mint) {
   if (!ENGINE?.trades || tradesBusy) return;
   // The chart's history goes first on the shared free API budget (up to ~10 s after opening).
-  if (state.chartTab === 'candles' && !(state.candles?.key?.startsWith(`${mint}|`) && state.candles.at > 0 && !state.candles.err) && Date.now() - (state.openedAt || 0) < 10_000) return;
+  if (state.chartTab === 'candles' && !(state.candles?.key?.startsWith(candleKey(mint, '')) && state.candles.at > 0 && !state.candles.err) && Date.now() - (state.openedAt || 0) < 10_000) return;
   if (state.tr?.m === mint && Date.now() - state.tr.at < 40_000) return;
   tradesBusy = true;
   try {
@@ -4085,7 +4229,6 @@ function copySection(d) {
 }
 
 // ---------- safety score ----------
-const scoreCls = (v) => (v >= 70 ? 'up' : v >= 40 ? 'warn' : 'down');
 function safetyBlock(sf) {
   if (!sf) return '<p class="note">Ocena bezpieczeństwa pojawi się po pierwszym raporcie (RugCheck / GoPlus).</p>';
   const c = scoreCls(sf.score);
@@ -4301,7 +4444,7 @@ function drawCandlesSvg(d) {
   const nowP = live?.p || d.p;
   // Market-cap axis: MC moves 1:1 with price (fixed supply), so prices are scaled to MC.
   const mcK = (live?.mc || d.mc) > 0 && nowP > 0 ? (live?.mc || d.mc) / nowP : 0;
-  const money = (v) => (mcK ? fmt.usd(v * mcK) : fmt.price(v));
+  const money = (v) => (mcK ? axisUsd(v * mcK) : fmt.price(v));
   // Drawn at the box's real pixel size, so labels keep their shape on any screen.
   const W = Math.max(300, Math.round(box.clientWidth || 660));
   const H = Math.max(220, Math.round((box.clientHeight || 360) - 24));
@@ -4468,7 +4611,7 @@ function drawCandlesLW(d) {
       localization: { locale: 'pl-PL' },
     });
     // Below zero is only the empty margin under the candles: no label there.
-    const fmtV = (v) => (v < 0 ? '' : state.lw?.K ? fmt.usd(v) : fmt.price(v));
+    const fmtV = (v) => (v < 0 ? '' : state.lw?.K ? axisUsd(v) : fmt.price(v));
     const candle = chart.addCandlestickSeries({
       upColor: '#1fd68f', downColor: '#ff4d6a', borderVisible: false, wickUpColor: '#1fd68f', wickDownColor: '#ff4d6a',
       priceFormat: { type: 'custom', minMove: 1e-12, formatter: fmtV },
@@ -4610,7 +4753,7 @@ function stopLive() {
 function applyLive(p, at) {
   const c = state.candles;
   // Only the list of the timeframe on screen (another one's bars have a different spacing).
-  if (!c?.list || c.key !== `${state.selected}|${state.candleTf}`) return;
+  if (!c?.list || c.key !== candleKey(state.selected, state.candleTf)) return;
   const ms = TF_MS[state.candleTf] || 300e3;
   if (!c.list.length) {
     // Nothing to download for this pool: the chart starts from the live price (never while the
@@ -4782,6 +4925,7 @@ function walletTrackerCard() {
 // Positions and the wallet live in localStorage: another tab (or an older Safari tab coming
 // back) must pick up the latest copy instead of overwriting it with its stale one.
 function reloadTradeState() {
+  state.fees = LS.get('fees', true) !== false; // the fees switch, as another tab may have set it
   const positions = LS.get('positions', {});
   state.positions = positions && typeof positions === 'object' ? positions : {};
   for (const p of Object.values(state.positions)) if (p && p.w === undefined) p.w = false;
@@ -4796,7 +4940,14 @@ function reloadTradeState() {
   if (state.detail) renderDetail(state.detail);
 }
 window.addEventListener('storage', (e) => {
-  if ([lsKey('positions'), lsKey('wallet'), lsKey('closedPositions')].includes(e.key)) reloadTradeState();
+  if ([lsKey('positions'), lsKey('wallet'), lsKey('closedPositions'), lsKey('fees')].includes(e.key)) reloadTradeState();
+  if (['mr:watch', 'mr:watchChain', 'mr:hidden', 'mr:blocked', 'mr:presets'].includes(e.key)) {
+    reloadLists();
+    renderWatchCount();
+    renderHiddenBtn();
+    renderPresets();
+    connect();
+  }
   if (REAL && e.key === lsKey('realPend')) realPend = ((v) => (v && typeof v === 'object' ? v : {}))(LS.get('realPend', {}));
   if (e.key === 'mr:wallets') {
     reloadWallets();

@@ -63,8 +63,9 @@ a { color: inherit; text-decoration: none; }
   border-bottom: 1px solid var(--line);
 }
 .brand { display: flex; align-items: center; gap: 10px; flex: none; }
-.brand-logo { width: 30px; height: 30px; }
-.brand-logo .sweep { transform-origin: 16px 16px; animation: sweep 3.2s linear infinite; }
+.brand-logo { position: relative; flex: none; width: 30px; height: 30px; }
+.brand-logo svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.brand-logo .sweep { animation: sweep 3.2s linear infinite; }
 @keyframes sweep { to { transform: rotate(360deg); } }
 .brand-name { font-weight: 800; font-size: 20px; letter-spacing: 0.04em; }
 .brand-name span { background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
@@ -73,10 +74,13 @@ a { color: inherit; text-decoration: none; }
   font: 700 10px/1 var(--mono); letter-spacing: 0.08em;
   color: var(--up); background: var(--up-bg); padding: 5px 8px; border-radius: 99px;
 }
-.live-badge i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 0 currentColor; animation: ping 1.6s infinite; }
+.live-badge i { position: relative; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+/* The ping ring scales and fades (composited) instead of animating box-shadow (a repaint every frame). */
+.live-badge i::after, .pulse::after { content: ''; position: absolute; inset: 0; border-radius: 50%; background: currentColor; animation: ping 1.6s infinite; }
+.live-badge.off i::after, .live-badge.paused i::after { animation: none; opacity: 0; }
 .live-badge.off { color: var(--down); background: var(--down-bg); }
 .live-badge.paused { color: var(--warn); background: var(--warn-bg); }
-@keyframes ping { 0% { box-shadow: 0 0 0 0 rgba(31, 214, 143, 0.6); } 80%, 100% { box-shadow: 0 0 0 6px rgba(31, 214, 143, 0); } }
+@keyframes ping { 0% { transform: scale(1); opacity: 0.6; } 80%, 100% { transform: scale(3); opacity: 0; } }
 
 /* ---------- network switcher ---------- */
 .chains { display: flex; gap: 6px; flex: none; }
@@ -364,7 +368,7 @@ a { color: inherit; text-decoration: none; }
 }
 .feed-head { padding: 14px 14px 10px; border-bottom: 1px solid var(--line); }
 .feed-head h2 { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; font-size: 14px; font-weight: 700; }
-.pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--up); animation: ping 1.6s infinite; }
+.pulse { position: relative; width: 8px; height: 8px; border-radius: 50%; background: var(--up); color: var(--up); }
 .chips { display: flex; flex-wrap: wrap; gap: 5px; }
 .chips button { padding: 4px 9px; border-radius: 99px; border: 1px solid var(--line2); background: none; font-size: 11.5px; font-weight: 600; color: var(--muted); }
 .chips button.active { background: var(--text); color: var(--bg); border-color: var(--text); }
@@ -464,6 +468,8 @@ a { color: inherit; text-decoration: none; }
   font-weight: 600; font-size: 13px; transition: 0.25s; pointer-events: none; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
 }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
+/* As wide as the message needs (not half the screen), within the screen. */
+.toast { width: max-content; max-width: calc(100vw - 32px); text-align: center; }
 .foot { padding: 6px 20px 26px; color: var(--dim); font-size: 12px; text-align: center; }
 
 /* ---------- responsive ---------- */
@@ -492,6 +498,8 @@ a { color: inherit; text-decoration: none; }
   .c-5m, .c-4h, .c-bs { display: none; }
 }
 @container board (max-width: 703px) {
+  /* Cards off screen skip layout and paint (the list refreshes every 2 s). */
+  .tbody .row { content-visibility: auto; contain-intrinsic-size: auto 220px; }
   /* Narrower action column so token names get more room on phones. */
   .table { --cols: 22px minmax(0, 1fr) 80px 58px; }
   .thead { display: none; }
@@ -884,7 +892,10 @@ body.sheet-open { overflow: hidden; }
 .pos-wl > div { padding: 10px 12px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line2); min-width: 0; }
 .pos-wl > div.win { border-color: rgba(31, 214, 143, 0.35); background: rgba(31, 214, 143, 0.06); }
 .pos-wl > div.loss { border-color: rgba(255, 77, 106, 0.35); background: rgba(255, 77, 106, 0.06); }
-.pos-wl span { display: block; font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.pos-wl span { display: block; font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 374px) {
+  .qs-row button { font-size: 12px; padding: 0 4px; white-space: normal; line-height: 1.1; }
+}
 .pos-wl b { display: block; margin-top: 3px; font: 700 18px/1.2 var(--mono); }
 .pos-wl .win b { color: var(--up); }
 .pos-wl .loss b { color: var(--down); }
@@ -1016,6 +1027,13 @@ svg.candles .th { fill: #e4c15a; stroke: #0b0f17; stroke-width: 1.2; }
 .c-now { top: 4px; font-size: 14px; line-height: 18px; display: grid; grid-template-columns: auto auto; align-items: center; column-gap: 5px; justify-items: end; }
 .c-now small { grid-column: 1 / -1; margin: 0; line-height: 12px; }
 .tf-row button { min-width: 34px; padding: 0 6px; }
+/* The live MC readout never takes the timeframe buttons' taps; narrow phones get tighter buttons. */
+.c-now { pointer-events: none; }
+@media (max-width: 374px) {
+  .tf-row { gap: 3px; }
+  .tf-row button { min-width: 0; padding: 0 4px; }
+  .c-now { font-size: 12px; }
+}
 /* Auto-pause of the list under a finger / while scrolling. */
 .hold-badge { position: fixed; top: calc(env(safe-area-inset-top, 0px) + 8px); left: 50%; transform: translateX(-50%); z-index: 45; padding: 5px 12px; border-radius: 999px; background: rgba(20, 26, 36, 0.92); border: 1px solid var(--line2); color: var(--muted); font-size: 12px; font-weight: 600; pointer-events: none; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
 .hold-badge[hidden] { display: none; }

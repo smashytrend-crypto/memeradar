@@ -370,16 +370,15 @@ export function withSignature(tx, sig) {
 export const DEFAULT_RPCS = ['https://solana-rpc.publicnode.com', 'https://api.mainnet-beta.solana.com'];
 
 export function createRpc(getCustom = () => '') {
-  let idx = 0;
-  const list = () => {
+  let idx = 0; // rotates among DEFAULT_RPCS only: a custom node (Helius…) is always asked first
+  return async function rpc(method, params = [], { timeout = 12_000, only = '' } = {}) {
     const c = String(getCustom() || '').trim();
-    return /^https:\/\/[^\s"'<>]+$/.test(c) ? [c, ...DEFAULT_RPCS] : DEFAULT_RPCS;
-  };
-  return async function rpc(method, params = [], { timeout = 12_000 } = {}) {
-    const urls = list();
+    const d = DEFAULT_RPCS;
+    const s = idx % d.length;
+    const urls = only ? [only] : [...(/^https:\/\/[^\s"'<>]+$/.test(c) ? [c] : []), ...d.slice(s), ...d.slice(0, s)];
     let last;
     for (let i = 0; i < urls.length; i++) {
-      const url = urls[(idx + i) % urls.length];
+      const url = urls[i];
       const ctl = new AbortController();
       const timer = setTimeout(() => ctl.abort(), timeout);
       try {
@@ -392,7 +391,8 @@ export function createRpc(getCustom = () => '') {
           e.rpc = j.error;
           throw e;
         }
-        idx = (idx + i) % urls.length;
+        const k = d.indexOf(url);
+        if (k >= 0) idx = k;
         return j.result;
       } catch (e) {
         last = e;

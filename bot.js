@@ -520,6 +520,14 @@ export function createBot(deps) {
   function sellReal(m, why, frac, refPx) {
     const p = B.pos[m];
     if (!p || sellBusy(m, p) || Date.now() < (retryAt.get(m) || 0)) return null;
+    if (!canTrade()) {
+      // Locked: nothing can be signed. The next price after the unlock sells; one reminder a minute.
+      if (Date.now() - (S.lockWarnAt || 0) > 60_000) {
+        S.lockWarnAt = Date.now();
+        toast(`🔒 ${EXIT_NAMES[why] || why} na $${p.s || '?'} — odblokuj wallet, żeby bot mógł sprzedać`);
+      }
+      return null;
+    }
     const f = Math.min(1, Math.max(0, frac));
     const raw = f >= 1 || !p.raw ? p.raw || 'all' : String((BigInt(p.raw) * BigInt(Math.round(f * 1000))) / 1000n);
     if (raw !== 'all' && !(BigInt(raw) > 0n)) {
@@ -621,12 +629,15 @@ export function createBot(deps) {
   }
 
   /** A new price for position `m`: exits checked right away. True when it was sold. */
-  function onPrice(m, price, lq, now = Date.now()) {
+  function onPrice(m, price, lq, now = Date.now(), at = 0) {
     const p = B.pos[m];
     if (!p || !(price > 0)) return false;
+    // The held read itself (the same radar row again, no new data) never confirms itself.
+    if (p.pend > 0 && at > 0 && at === p.pendAt) return false;
     // A feed glitch (one read ×3 off) must not sell: such a price counts once the next read agrees.
     const g = checkGlitch(p.last, p.pend, price);
     p.pend = g.pend;
+    p.pendAt = g.pend ? at : 0;
     if (!g.ok) return false;
     p.last = price;
     p.lastAt = now;
@@ -682,7 +693,7 @@ export function createBot(deps) {
     const live = liveRows();
     for (const m of Object.keys(B.pos)) {
       const r = live.get(m);
-      if (r && !(B.pos[m].liveAt > (r.pa || 0))) changed = onPrice(m, r.p, r.lq, now) || changed;
+      if (r && !(B.pos[m].liveAt > (r.pa || 0))) changed = onPrice(m, r.p, r.lq, now, r.pa) || changed;
     }
     if (B.on && cfg.maxDayLoss > 0 && pnlToday() <= -cfg.maxDayLoss) {
       B.on = false;
@@ -744,14 +755,23 @@ export function createBot(deps) {
     const pos = positionsView();
     const inPos = pos.reduce((a, x) => a + x.value, 0);
     const done = B.hist;
-    const wins = done.filter((h) => h.pnl > 0).length;
-    return { pos, inPos, equity: B.cash + inPos, total: done.reduce((a, h) => a + h.pnl, 0), today: pnlToday(), n: done.length, wins, rate: done.length ? (wins / done.length) * 100 : null };
+    // Finished trades = positions (a half sale and the rest are one trade); a partly sold position
+    // still open counts once it closes.
+    const trades = new Map();
+    for (const h of done) {
+      if (B.pos[h.m]?.t === h.openedAt) continue;
+      const k = `${h.m}:${h.openedAt}`;
+      trades.set(k, (trades.get(k) ?? 0) + h.pnl);
+    }
+    const n = trades.size;
+    const wins = [...trades.values()].filter((v) => v > 0).length;
+    return { pos, inPos, equity: B.cash + inPos, total: done.reduce((a, h) => a + h.pnl, 0), today: pnlToday(), any: done.length > 0, n, wins, rate: n ? (wins / n) * 100 : null };
   }
 
   function settingsHtml() {
     const c = B.cfg;
     return `<details class="bot-set" ${B.cfg.open === false ? '' : 'open'}><summary>⚙️ Ustawienia bota</summary>
-      ${FIELD_GROUPS.map(([title, fields]) => `<h4 class="bot-gh">${title}</h4><div class="bot-grid">${fields.map(([k, label, unit, min, max, step, hint]) => `<label title="${esc(hint)}"><span>${label}${unit ? ` <small>${unit}</small>` : ''}</span><input type="number" inputmode="decimal" data-bot-cfg="${k}" min="${min}" max="${max}" step="${step}" value="${c[k]}" /></label>`).join('')}</div>`).join('')}
+      ${FIELD_GROUPS.map(([title, fields]) => `<h4 class="bot-gh">${title}</h4><div class="bot-grid">${fields.map(([k, label, unit, min, max, step, hint]) => `<label title="${esc(hint)}"><span>${label}${unit ? ` <small>${unit}</small>` : ''}</span><input type="number"${min < 0 ? '' : ' inputmode="decimal"'} data-bot-cfg="${k}" min="${min}" max="${max}" step="${step}" value="${c[k]}" /></label>`).join('')}</div>`).join('')}
       <label class="toggle-row"><input type="checkbox" data-bot-cfg="rising" ${c.rising ? 'checked' : ''} /> <span>Wymagaj rosnących ostatnich cen</span></label>
       <label class="toggle-row"><input type="checkbox" data-bot-cfg="gradOnly" ${c.gradOnly ? 'checked' : ''} /> <span>Tylko tokeny po graduacji (bez bonding curve)</span></label>
       <div class="bot-acts"><button data-bot="defaults">🏆 Zalecana strategia</button></div>
@@ -764,7 +784,9 @@ export function createBot(deps) {
     const s = stats();
     const low = freeCash() < 1 && !Object.keys(B.pos).length && !Object.keys(B.pend).length;
     const locked = REAL && !canTrade();
-    const scan = S.lastScan && Date.now() - S.lastScan.t < 10_000 ? `Skan: ${S.lastScan.n} tokenów, ${S.lastScan.hits} z sygnałem` : B.on ? 'Startuje…' : '';
+    const full = Object.keys(B.pos).length + Object.keys(B.pend).length >= B.cfg.maxPos;
+    const idle = !isLeader() ? 'Bot handluje w innej karcie' : full ? 'Komplet pozycji — czekam na wyjście' : locked ? '' : freeCash() < 1 ? '' : 'Startuje…';
+    const scan = S.lastScan && Date.now() - S.lastScan.t < 10_000 ? `Skan: ${S.lastScan.n} tokenów, ${S.lastScan.hits} z sygnałem` : B.on ? idle : '';
     return `<div class="bot-head">
         <div class="bot-title"><b>🤖 BOT ${REAL ? 'REAL' : 'DEMO'}</b><span class="bot-pill ${B.on ? 'on' : ''}">${B.on ? '● Działa' : 'Zatrzymany'}</span></div>
         <button class="bot-toggle ${B.on ? 'stop' : ''}" data-bot="toggle">${B.on ? '■ Stop' : '▶ Start'}</button>
@@ -772,8 +794,8 @@ export function createBot(deps) {
       <div class="bot-stats">
         <div><span>${REAL ? 'Wallet Spot (wolne)' : 'Kapitał bota'}</span><b>${fmt.usd(freeCash())}</b></div>
         <div><span>W pozycjach</span><b>${fmt.usd(s.inPos)}</b></div>
-        <div><span>Dziś</span><b class="${s.today >= 0 ? 'up' : 'down'}">${s.n ? money(s.today) : '—'}</b></div>
-        <div><span>Łącznie</span><b class="${s.total >= 0 ? 'up' : 'down'}">${s.n ? money(s.total) : '—'}</b></div>
+        <div><span>Dziś</span><b class="${s.today >= 0 ? 'up' : 'down'}">${s.any ? money(s.today) : '—'}</b></div>
+        <div><span>Łącznie</span><b class="${s.total >= 0 ? 'up' : 'down'}">${s.any ? money(s.total) : '—'}</b></div>
         <div><span>Transakcje</span><b>${s.n}${s.rate != null ? ` <small>${Math.round(s.rate)}% wygr.</small>` : ''}</b></div>
       </div>
       ${locked ? `<div class="bot-warn">🔒 Wallet zablokowany — bot nie kupi ani nie sprzeda. <button data-bot="vault">Odblokuj</button></div>` : ''}
@@ -839,8 +861,10 @@ export function createBot(deps) {
     if (inp.type === 'checkbox') B.cfg[k] = inp.checked;
     else {
       const f = FIELDS.find((x) => x[0] === k);
-      const v = Number(String(inp.value).replace(',', '.'));
-      if (!Number.isFinite(v)) return (inp.value = B.cfg[k]);
+      const raw = String(inp.value).trim();
+      const v = Number(raw.replace(',', '.'));
+      // An emptied / unparseable field is not 0: the saved value comes back.
+      if (!f || raw === '' || inp.validity?.badInput || !Number.isFinite(v)) return (inp.value = B.cfg[k]);
       B.cfg[k] = Math.max(f[3], Math.min(f[4], v));
       inp.value = B.cfg[k];
     }
@@ -882,7 +906,8 @@ export function createBot(deps) {
       if (REAL) {
         if (!canTrade()) return toast('Najpierw odblokuj wallet hasłem');
         if (sellBusy(m, p)) return toast('Sprzedaż już trwa…');
-        sell(m, r?.p || p.last, 'manual');
+        retryAt.delete(m); // a tap is the retry: no waiting out the 10 s back-off
+        if (sell(m, r?.p || p.last, 'manual') == null) return toast('Nie mogę teraz sprzedać — spróbuj za chwilę');
         toast(`⏳ Sprzedaję $${p.s || '?'}…`);
       } else {
         const pnl = sell(m, r?.p || p.last, 'manual');
@@ -900,12 +925,17 @@ export function createBot(deps) {
     const first = new Date(now.getFullYear(), now.getMonth() - S.calMonth, 1);
     const days = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
     const byDay = new Map();
+    const counted = new Set(); // one trade per position and day (a half sale + the rest)
     for (const h of B.hist) {
       const dt = new Date(h.closedAt);
       if (dt.getFullYear() !== first.getFullYear() || dt.getMonth() !== first.getMonth()) continue;
       const o = byDay.get(dt.getDate()) || { pnl: 0, n: 0 };
       o.pnl += h.pnl;
-      o.n++;
+      const ck = `${h.m}:${h.openedAt}:${dt.getDate()}`;
+      if (!counted.has(ck)) {
+        counted.add(ck);
+        o.n++;
+      }
       byDay.set(dt.getDate(), o);
     }
     const total = [...byDay.values()].reduce((a, o) => a + o.pnl, 0);
@@ -977,8 +1007,8 @@ export function createBot(deps) {
     const TX = { open: ['🤖', 'Kupno bota'], close: ['✅', 'Sprzedaż bota'], reset: ['♻️', 'Reset statystyk'] };
     const card = `<div class="wallet-card real">
         <span>Wallet Spot — wspólny dla radaru i bota</span><b>${fmt.usd(freeCash())} <small>wolne</small></b>
-        <div class="wallet-sub"><div><span>W pozycjach bota</span><b>${fmt.usd(s.inPos)}</b></div><div><span>Dziś</span><b class="${s.today >= 0 ? 'up' : 'down'}">${s.n ? money(s.today) : '—'}</b></div>
-          <div><span>Wynik bota</span><b class="${total >= 0 ? 'up' : 'down'}">${s.n ? money(total) : '—'}</b></div></div>
+        <div class="wallet-sub"><div><span>W pozycjach bota</span><b>${fmt.usd(s.inPos)}</b></div><div><span>Dziś</span><b class="${s.today >= 0 ? 'up' : 'down'}">${s.any ? money(s.today) : '—'}</b></div>
+          <div><span>Wynik bota</span><b class="${total >= 0 ? 'up' : 'down'}">${s.any ? money(total) : '—'}</b></div></div>
       </div>`;
     const statsCard = `<div class="card"><h3>Statystyki bota</h3><div class="bot-stats">
         <div><span>Transakcje</span><b>${s.n}</b></div>

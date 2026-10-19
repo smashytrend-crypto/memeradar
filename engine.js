@@ -3,15 +3,15 @@
 // cross-origin reads). One engine per network, created the first time the viewer opens it; only
 // the network on screen polls its sources, the others pause (and keep their data for a quick
 // switch back).
-import { Store } from './server/store.js?v=mveuyl2z';
-import { RateLimiter, every, getJSON, num } from './server/util.js?v=mveuyl2z';
-import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=mveuyl2z';
-import { startPumpPortal } from './server/sources/pumpportal.js?v=mveuyl2z';
-import { startDexScreener } from './server/sources/dexscreener.js?v=mveuyl2z';
-import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=mveuyl2z';
-import { startJupiter } from './server/sources/jupiter.js?v=mveuyl2z';
-import { startRugCheck } from './server/sources/rugcheck.js?v=mveuyl2z';
-import { startGoPlus } from './server/sources/goplus.js?v=mveuyl2z';
+import { Store } from './server/store.js?v=mvfudd8b';
+import { RateLimiter, every, getJSON, num } from './server/util.js?v=mvfudd8b';
+import { CHAINS, getChain, isAddressOn, normAddr } from './server/chains.js?v=mvfudd8b';
+import { startPumpPortal } from './server/sources/pumpportal.js?v=mvfudd8b';
+import { startDexScreener } from './server/sources/dexscreener.js?v=mvfudd8b';
+import { startGeckoTerminal } from './server/sources/geckoterminal.js?v=mvfudd8b';
+import { startJupiter } from './server/sources/jupiter.js?v=mvfudd8b';
+import { startRugCheck } from './server/sources/rugcheck.js?v=mvfudd8b';
+import { startGoPlus } from './server/sources/goplus.js?v=mvfudd8b';
 
 const baseConfig = {
   demo: false,
@@ -325,11 +325,17 @@ function createEngine(chainId) {
       if (!list.length) {
         if (alt) altPool.delete(t.mint);
         else {
-          const pools = await src.gt.tokenPools(t, 2).catch(() => []);
+          // Only "not on GeckoTerminal" (404) means no candles; a rate limit or a network error is
+          // rethrown, so the chart keeps what it has and asks again soon (not 5 min of nothing).
+          const notFound = (e) => {
+            if (e?.status !== 404) throw e;
+            return [];
+          };
+          const pools = await src.gt.tokenPools(t, 2).catch(notFound);
           const other = pools.find((p) => p.toLowerCase() !== String(t.pairAddress).toLowerCase()) || null;
           if (other) {
             altPool.set(t.mint, { pool: other, pair: t.pairAddress, at: Date.now() });
-            list = await src.gt.candles(t, tf, 2, other).catch(() => []);
+            list = await src.gt.candles(t, tf, 2, other).catch(notFound);
           }
         }
       }
