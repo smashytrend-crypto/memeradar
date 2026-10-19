@@ -189,17 +189,30 @@ export function mintRisk(bytes, program) {
   const decimals = bytes[44];
   if (u32(bytes, 46) === 1) return { decimals, bad: 'twórca może zamrozić Twoje tokeny (freeze authority)' };
   if (program === TOKEN_2022 && bytes.length > 166 && bytes[165] === 1) {
+    // Token-2022 extensions: only known harmless ones pass; anything else (PermanentDelegate,
+    // TransferHook, NonTransferable, Pausable, confidential transfers, future ones…) is refused.
     const zero = (d) => d.every((b) => b === 0);
+    const NAMES = { 9: 'token nie może być przenoszony (NonTransferable)', 12: 'ktoś może zabrać tokeny z Twojego konta (PermanentDelegate)', 14: 'każdy transfer uruchamia obcy program (TransferHook)', 26: 'twórca może wstrzymać transfery tokena (Pausable)' };
     for (let at = 166; at + 4 <= bytes.length; ) {
       const type = bytes[at] | (bytes[at + 1] << 8);
       const len = bytes[at + 2] | (bytes[at + 3] << 8);
       const v = bytes.subarray(at + 4, at + 4 + len);
       at += 4 + len;
-      if (type === 9) return { decimals, bad: 'token nie może być przenoszony (NonTransferable)' };
-      if (type === 12 && v.length >= 32 && !zero(v.subarray(0, 32))) return { decimals, bad: 'ktoś może zabrać tokeny z Twojego konta (PermanentDelegate)' };
-      if (type === 14 && v.length >= 64 && !zero(v.subarray(32, 64))) return { decimals, bad: 'każdy transfer uruchamia obcy program (TransferHook)' };
-      if (type === 6 && v[0] === 2) return { decimals, bad: 'nowe konta są zamrożone (DefaultAccountState)' };
-      if (type === 1 && v.length >= 108 && (v[106] | (v[107] << 8)) > 100) return { decimals, bad: 'podatek od transferu powyżej 1% (TransferFee)' };
+      if (type === 0 && len === 0) break; // padding
+      if (type === 12 && v.length >= 32 && zero(v.subarray(0, 32))) continue; // no delegate set
+      if (type === 14 && v.length >= 64 && zero(v.subarray(32, 64))) continue; // no hook program
+      if (type === 6) {
+        if (v[0] === 2) return { decimals, bad: 'nowe konta są zamrożone (DefaultAccountState)' };
+        continue;
+      }
+      if (type === 1) {
+        // A transfer fee: at most 1%, and nobody able to raise it later.
+        if (v.length < 108 || (v[106] | (v[107] << 8)) > 100 || (v[88] | (v[89] << 8)) > 100) return { decimals, bad: 'podatek od transferu powyżej 1% (TransferFee)' };
+        if (!zero(v.subarray(0, 32))) return { decimals, bad: 'twórca może podnieść podatek od transferu (TransferFee)' };
+        continue;
+      }
+      if ([3, 10, 18, 19, 20, 21, 22, 23, 25].includes(type)) continue; // close authority, interest, metadata, groups, UI scale
+      return { decimals, bad: NAMES[type] || `nieznane rozszerzenie tokena (Token-2022 #${type})` };
     }
   }
   return { decimals, bad: null };
@@ -291,7 +304,7 @@ export function swapInfo(p) {
  *    never Transfer, Approve (delegate), SetAuthority (new owner) or a close paid to someone else.
  * We must be the only signer and the fee payer.
  */
-export function checkSwapTx(p, owner, { maxTransfer = 0n, maxFeeLamports = 0, inAmount = null, maxSlipBps = 0, src = [], dst = [], wsolAta = null } = {}) {
+export function checkSwapTx(p, owner, { maxTransfer = 0n, maxFeeLamports = 0, inAmount = null, maxSlipBps = 0, src = [], dst = [], wsolAta = null, quotedOut = null, minOut = 0n } = {}) {
   const ours = new Set([wsolAta, ...src, ...dst]); // the only token accounts a swap may create
   if (p.header.required !== 1 || p.nSig !== 1) return 'transakcja wymaga więcej niż jednego podpisu';
   if (p.keys[0] !== owner) return 'płatnikiem transakcji nie jest Twój wallet';
@@ -308,6 +321,10 @@ export function checkSwapTx(p, owner, { maxTransfer = 0n, maxFeeLamports = 0, in
   if (sw.fee !== JUP || sw.feeBps !== 0) return 'swap pobiera dodatkową prowizję';
   if (inAmount != null && sw.inAmount !== BigInt(inAmount)) return 'swap ma inną kwotę niż zlecona';
   if (sw.slippageBps > maxSlipBps) return 'swap ma większy poślizg niż ustawiony';
+  // The minimum the Jupiter program will accept on chain: the quote that was checked, and at least
+  // the floor the app worked out itself.
+  if (quotedOut != null && sw.quotedOut !== BigInt(quotedOut)) return 'swap ma inną wycenę niż sprawdzona';
+  if ((sw.quotedOut * BigInt(10_000 - sw.slippageBps)) / 10_000n < BigInt(minOut)) return 'swap przyjąłby za mało w zamian';
   let cuLimit = 1_400_000;
   let cuPrice = 0n; // micro-lamports per compute unit
   let moved = 0n;

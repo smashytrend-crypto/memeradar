@@ -1692,7 +1692,7 @@ state.walletMode = WALLET_MODES.includes(LS.get('walletMode', 'spot')) ? LS.get(
 // Loaded as its own module: if it can't load (e.g. the single-file preview), only perps are off.
 let perps = null;
 // Perpetuals are demo-only (real perps would need a separate Hyperliquid account and signer).
-(REAL ? Promise.reject(new Error('real')) : import('./perps.js?v=mveuqr33'))
+(REAL ? Promise.reject(new Error('real')) : import('./perps.js?v=mveuyl2z'))
   .then(({ createPerps }) => {
     perps = createPerps({
       toast: (m) => toast(m),
@@ -1732,7 +1732,7 @@ function closeSheets() {
 
 // ---------- trading bot DEMO (BOT tab: the radar with the bot's panel on top) ----------
 let bot = null;
-import('./bot.js?v=mveuqr33')
+import('./bot.js?v=mveuyl2z')
   .then(({ createBot }) => {
     bot = createBot({
       toast: (m) => toast(m),
@@ -1808,7 +1808,7 @@ function freshPrice(m) {
   return r?.p > 0 && r.pa > 0 && Date.now() - r.pa < 60_000 ? r.p : 0;
 }
 const realReady = REAL && !REAL_BLOCK
-  ? Promise.all([import('./vault.js?v=mveuqr33'), import('./solana.js?v=mveuqr33'), import('./real.js?v=mveuqr33')])
+  ? Promise.all([import('./vault.js?v=mveuyl2z'), import('./solana.js?v=mveuyl2z'), import('./real.js?v=mveuyl2z')])
       .then(async ([V, S, R]) => {
         real.V = V;
         real.S = S;

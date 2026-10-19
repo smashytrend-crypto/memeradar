@@ -1,18 +1,18 @@
 const pageVersion = document.querySelector('meta[name="mr-version"]')?.content || window.__MR_VERSION;
-if (pageVersion && pageVersion !== 'mveuqr33') {
+if (pageVersion && pageVersion !== 'mveuyl2z') {
   let tried = '1';
   try {
     tried = sessionStorage.getItem('mr:vfix');
-    sessionStorage.setItem('mr:vfix', 'mveuqr33');
+    sessionStorage.setItem('mr:vfix', 'mveuyl2z');
   } catch {}
-  if (tried !== 'mveuqr33') {
-    location.replace(location.pathname + '?v=mveuqr33' + location.hash);
+  if (tried !== 'mveuyl2z') {
+    location.replace(location.pathname + '?v=mveuyl2z' + location.hash);
     throw new Error('stale page');
   }
 }
-window.__MR_VERSION = 'mveuqr33';
+window.__MR_VERSION = 'mveuyl2z';
 // Starts the in-browser engine, then the regular UI (which detects it and skips the server).
-import { engine } from './engine.js?v=mveuqr33';
+import { engine } from './engine.js?v=mveuyl2z';
 
 window.__MR_ENGINE = engine;
-await import('./app.js?v=mveuqr33');
+await import('./app.js?v=mveuyl2z');
